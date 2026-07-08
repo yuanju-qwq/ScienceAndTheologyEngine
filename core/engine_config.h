@@ -107,12 +107,12 @@ struct EngineConfig {
 //   - Unknown fields: silently ignored (forward-compatible).
 //   - Missing fields: fall back to the defaults from the struct above.
 //
-// Example JSON (config/engine.json):
+// Example JSON (game/config/engine.json):
 //   {
 //     "window":  { "width": 1920, "height": 1080, "title": "SNT" },
 //     "render":  { "vert_shader_path": "shaders/mesh.vert.spv" },
 //     "camera":  { "fov": 75.0, "move_speed": 5.0 },
-//     "assets":  { "default_mesh_path": "assets/cube.obj" }
+//     "assets":  { "default_mesh_path": "test_assets/cube.obj" }
 //   }
 Expected<EngineConfig> load_engine_config(const std::string& path);
 

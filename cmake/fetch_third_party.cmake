@@ -1,5 +1,5 @@
 # Fetch third-party libraries from pre-downloaded archives.
-# Run engine/cmake/download_third_party.ps1 BEFORE cmake configure.
+# Run snt_engine/cmake/download_third_party.ps1 BEFORE cmake configure.
 # This avoids cmake's curl/schannel issues with GitHub redirects.
 
 include(FetchContent)

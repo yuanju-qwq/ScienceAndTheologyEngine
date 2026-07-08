@@ -1,8 +1,8 @@
 # Third-party dependencies managed as git submodules.
 #
 # Setup:
-#   git submodule add https://github.com/libsdl-org/SDL.git engine/third_party/SDL
-#   cd engine/third_party/SDL && git checkout release-3.2.x
+#   git submodule add https://github.com/libsdl-org/SDL.git snt_engine/third_party/SDL
+#   cd snt_engine/third_party/SDL && git checkout release-3.2.x
 #
 # Header-only libraries (VMA, EnTT, stb, nlohmann_json, vulkan-headers)
 # are NOT submodules — they are fetched by ../cmake/fetch_third_party.cmake.

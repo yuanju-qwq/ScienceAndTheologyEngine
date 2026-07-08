@@ -1,8 +1,8 @@
 # Engine application layer: thin executable wrapper around Engine class.
 # P2.B1: main.cpp is reduced to Engine::init/run/shutdown; all subsystem
 # setup lives in the snt_engine static lib.
-# P2.E: copies config/engine.json next to the executable so the runtime
-# relative path "config/engine.json" resolves from the bin/$<CONFIG>/ cwd.
+# P2.E: copies game/config/engine.json next to the executable so the runtime
+# relative path "game/config/engine.json" resolves from the bin/$<CONFIG>/ cwd.
 
 add_executable(snt_engine_app
     main.cpp
@@ -14,34 +14,46 @@ target_link_libraries(snt_engine_app PRIVATE
 # Ensure shaders are compiled + copied before the engine runs.
 add_dependencies(snt_engine_app snt_copy_shaders)
 
-# Copy the engine config file next to the executable. Missing file is
+# Copy the game config directory next to the executable. Missing file is
 # non-fatal at runtime (EngineConfig falls back to defaults), but having
 # the JSON present lets users tweak settings without rebuilding.
 #
-# Source path: the config/ directory at the repository root (one level
-# above CMAKE_SOURCE_DIR, which points at engine/). Keeping the config
-# outside engine/ lets it be shared with the legacy Godot project and
-# avoids duplicating it under engine/.
+# Source path: game/config/ at the project root (CMAKE_SOURCE_DIR points
+# at the project root since the top-level CMakeLists.txt is there).
+# The game/ directory holds all game-specific content (config, scenes,
+# assets), separate from engine built-in resources (shaders/, builtin/).
 add_custom_target(snt_copy_config ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/../config
-    ${CMAKE_BINARY_DIR}/bin/$<CONFIG>/config
-    COMMENT "Copying engine config to output directory"
+    ${CMAKE_SOURCE_DIR}/game/config
+    ${CMAKE_BINARY_DIR}/bin/$<CONFIG>/game/config
+    COMMENT "Copying game config to output directory"
 )
 add_dependencies(snt_engine_app snt_copy_config)
 
-# Copy the scenes/ directory (binary scene files) next to the executable.
-# Engine::init loads config.scene.path (default "scenes/default_scene.bin")
-# via path_utils::resolve, which prepends the engine root. Missing file
-# is fatal to Engine::init (load_scene returns an Error), so the scenes
-# must be present at runtime.
+# Copy the game scenes directory (binary scene files) next to the executable.
+# Engine::init loads config.scene.path (default "game/scenes/default_scene.bin")
+# via path_utils::resolve. Missing file is fatal to Engine::init (load_scene
+# returns an Error), so the scenes must be present at runtime.
 add_custom_target(snt_copy_scenes ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/../scenes
-    ${CMAKE_BINARY_DIR}/bin/$<CONFIG>/scenes
-    COMMENT "Copying scenes to output directory"
+    ${CMAKE_SOURCE_DIR}/game/scenes
+    ${CMAKE_BINARY_DIR}/bin/$<CONFIG>/game/scenes
+    COMMENT "Copying game scenes to output directory"
 )
 add_dependencies(snt_engine_app snt_copy_scenes)
+
+# Copy the test_assets/ directory (placeholder meshes for development).
+# Engine::init loads config.assets.default_mesh_path
+# (default "test_assets/cube.obj") via path_utils::resolve. The test_assets/
+# directory holds placeholder resources used during engine development;
+# real games will use their own assets/ directory under game/.
+add_custom_target(snt_copy_test_assets ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/test_assets
+    ${CMAKE_BINARY_DIR}/bin/$<CONFIG>/test_assets
+    COMMENT "Copying test assets to output directory"
+)
+add_dependencies(snt_engine_app snt_copy_test_assets)
 
 # Output name for convenience.
 set_target_properties(snt_engine_app PROPERTIES OUTPUT_NAME snt_engine)

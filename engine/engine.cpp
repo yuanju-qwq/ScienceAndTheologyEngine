@@ -134,6 +134,13 @@ struct Engine::Impl {
     // InputState. Each frame the state is published as a MouseLockChanged
     // event; CameraSystem subscribes and skips mouse-look when unlocked.
     bool mouse_locked = false;
+
+    // P2 Job System: real work-stealing thread pool. Installed as the
+    // global default via set_default_job_system() in init() so any code
+    // calling default_job_system() (ECS systems, future async asset
+    // loaders) gets the multi-threaded implementation. Must be shut down
+    // BEFORE Impl is destroyed so worker threads exit cleanly.
+    snt::core::JobSystemP2 job_system;
 };
 
 // ---------------------------------------------------------------------------
@@ -155,6 +162,15 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
     // Locate engine root so all relative paths (shaders/, assets/, config/)
     // resolve independent of the process's current working directory.
     snt::core::path_utils::init();
+
+    // --- Job System (P2) ---
+    // Install the real work-stealing thread pool as the global default.
+    // From this point on, default_job_system() returns impl_->job_system.
+    // Worker count defaults to hardware_concurrency - 1 (>= 1).
+    impl_->job_system.init();
+    snt::core::set_default_job_system(&impl_->job_system);
+    SNT_LOG_INFO("Job system started: %d workers",
+                 impl_->job_system.worker_count());
 
     // --- File logger sink ---
     // Mirror all log output to logs/engine.log (relative to engine root).
@@ -504,6 +520,13 @@ void Engine::shutdown() {
 
     // Window.
     impl_->window.destroy();
+
+    // Job System: stop worker threads. Must happen AFTER all subsystems
+    // that might submit jobs (RenderSystem, AssetManager) have shut down,
+    // so no new work arrives during drain. Graceful shutdown waits for
+    // any in-flight jobs to finish before joining worker threads.
+    snt::core::set_default_job_system(nullptr);
+    impl_->job_system.shutdown();
 
     SNT_LOG_INFO("Shutdown complete");
 

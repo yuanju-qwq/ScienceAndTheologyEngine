@@ -68,7 +68,7 @@ void init_stub_cache(AssetCache<StubMesh, MeshAssetTag>& cache) {
 
 int main(int argc, char* argv[]) {
     const std::string output_path =
-        (argc > 1) ? argv[1] : "scenes/default_scene.bin";
+        (argc > 1) ? argv[1] : "game/scenes/default_scene.bin";
 
     World world;
     AssetCache<StubMesh, MeshAssetTag> cache;

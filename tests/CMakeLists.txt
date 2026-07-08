@@ -24,6 +24,7 @@ add_executable(snt_tests
     test_asset_manifest.cpp    # Phase 2: asset manifest + pre-allocated handles
     test_binary_io.cpp         # Phase 3: BinaryWriter/Reader + Serializer<T>
     test_scene_serialize.cpp   # Phase 4: Scene binary save/load round-trip
+    test_job_system.cpp        # P2: work-stealing Job System
 )
 target_link_libraries(snt_tests PRIVATE
     snt_core
@@ -42,7 +43,8 @@ target_link_libraries(snt_tests PRIVATE
 include(GoogleTest)
 gtest_discover_tests(snt_tests DISCOVERY_MODE PRE_TEST)
 
-# Copy config + assets + shaders next to the test executable so tests
-# that read engine.json / cube.obj / mesh.vert.spv can find them via
-# path_utils::resolve(). Mirrors the snt_engine_app copy step.
-add_dependencies(snt_tests snt_copy_shaders snt_copy_config)
+# Copy config + scenes + test_assets + shaders next to the test executable
+# so tests that read engine.json / default_scene.bin / cube.obj /
+# mesh.vert.spv can find them via path_utils::resolve(). Mirrors the
+# snt_engine_app copy steps.
+add_dependencies(snt_tests snt_copy_shaders snt_copy_config snt_copy_scenes snt_copy_test_assets)

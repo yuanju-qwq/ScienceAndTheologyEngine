@@ -59,8 +59,8 @@ TEST(PathUtils, ExistsReturnsFalseForMissingPath) {
 
 TEST(PathUtils, ResolveBeforeInitReturnsInputUnchanged) {
     // Note: this test may run after init() has been called by another test.
-    // We only assert the pre-init contract if engine_root is still empty.
-    if (engine_root().empty()) {
+    // We only assert the pre-init contract if project_root is still empty.
+    if (project_root().empty()) {
         const std::string input = "shaders/mesh.vert.spv";
         const std::string result = resolve(input);
         EXPECT_EQ(result, input);
@@ -72,16 +72,16 @@ TEST(PathUtils, ResolveBeforeInitReturnsInputUnchanged) {
 TEST(PathUtils, InitLocatesEngineRoot) {
     const bool ok = init();
     if (!ok) {
-        GTEST_SKIP() << "init() could not locate engine root (test cwd issue)";
+        GTEST_SKIP() << "init() could not locate project root (test cwd issue)";
     }
-    EXPECT_FALSE(engine_root().empty());
+    EXPECT_FALSE(project_root().empty());
 }
 
 TEST(PathUtils, ResolveAfterInitProducesAbsolutePath) {
     if (!init()) {
         GTEST_SKIP() << "init() failed; cannot test resolve()";
     }
-    const std::string result = resolve("config/engine.json");
+    const std::string result = resolve("game/config/engine.json");
     // After init, resolve returns an absolute path that should exist.
     EXPECT_TRUE(exists(result))
         << "Resolved path does not exist: " << result;

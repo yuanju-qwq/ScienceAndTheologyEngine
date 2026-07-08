@@ -1,7 +1,7 @@
 # Pre-download third-party source archives via PowerShell.
 # This avoids cmake's curl/schannel issues with GitHub redirects.
 # Run this before cmake configure:
-#   powershell -ExecutionPolicy Bypass -File engine/cmake/download_third_party.ps1
+#   powershell -ExecutionPolicy Bypass -File snt_engine/cmake/download_third_party.ps1
 
 param(
     [string]$OutDir = "$PSScriptRoot/../third_party/_downloads"

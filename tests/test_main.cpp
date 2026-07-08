@@ -15,7 +15,7 @@ class SntTestEnvironment : public ::testing::Environment {
 public:
     void SetUp() override {
         // path_utils::init is idempotent; failure is non-fatal for tests
-        // (tests that depend on it will check engine_root() themselves).
+        // (tests that depend on it will check project_root() themselves).
     }
     void TearDown() override {}
 };
