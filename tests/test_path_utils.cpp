@@ -20,7 +20,7 @@
 using snt::core::path_utils::join;
 using snt::core::path_utils::exists;
 using snt::core::path_utils::resolve;
-using snt::core::path_utils::engine_root;
+using snt::core::path_utils::project_root;
 using snt::core::path_utils::init;
 
 TEST(PathUtils, JoinTwoSegments) {

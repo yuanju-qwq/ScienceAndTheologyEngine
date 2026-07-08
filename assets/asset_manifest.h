@@ -15,7 +15,7 @@
 // Format (JSON):
 //   {
 //     "assets": [
-//       { "id": "cube",    "path": "assets/cube.obj" },
+//       { "id": "cube",    "path": "test_assets/cube.obj" },
 //       { "id": "sphere",  "path": "assets/sphere.obj" }
 //     ]
 //   }

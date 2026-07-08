@@ -69,14 +69,15 @@ endforeach()
 
 add_custom_target(snt_shaders ALL DEPENDS ${SHADER_SPV_FILES})
 
-# Copy shaders + assets to the engine_app output directory after build.
+# Copy compiled shaders to the engine_app output directory after build.
+# Destination uses snt_engine/shaders/ to match path_utils routing: in the
+# packaged layout (bin/$<CONFIG>/), engine built-in resources (shaders/,
+# builtin/) live under an snt_engine/ subdirectory, mirroring the source
+# tree layout where they live under snt_engine/shaders/.
 add_custom_target(snt_copy_shaders ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${SHADER_OUTPUT_DIR}
-    ${CMAKE_BINARY_DIR}/bin/$<CONFIG>/shaders
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_CURRENT_SOURCE_DIR}/../assets
-    ${CMAKE_BINARY_DIR}/bin/$<CONFIG>/assets
-    COMMENT "Copying shaders + assets to output directory"
+    ${CMAKE_BINARY_DIR}/bin/$<CONFIG>/snt_engine/shaders
+    COMMENT "Copying compiled shaders to output directory"
     DEPENDS snt_shaders
 )

@@ -3,7 +3,7 @@
 // Design goals:
 //   - Replace every hardcoded constant (window size, shader paths, camera
 //     defaults, asset paths, render limits) with a field in EngineConfig.
-//   - Load from JSON (config/engine.json) at startup; fall back to sensible
+//   - Load from JSON (game/config/engine.json) at startup; fall back to sensible
 //     defaults if the file is missing so the engine always runs.
 //   - Subsystem constructors receive only the slice they need (WindowConfig
 //     / RenderConfig / CameraConfig / AssetConfig), keeping module
@@ -72,8 +72,8 @@ struct CameraConfig {
 // handle<->path mappings; see assets/asset_manifest.h). Empty string
 // disables manifest-based pre-allocation (falls back to runtime load()).
 struct AssetConfig {
-    std::string default_mesh_path = "assets/cube.obj";
-    std::string manifest_path     = "config/default_manifest.json";
+    std::string default_mesh_path = "test_assets/cube.obj";
+    std::string manifest_path     = "game/config/default_manifest.json";
 };
 
 // ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ struct AssetConfig {
 // cubes + a camera) so the engine always runs out-of-the-box. The
 // scene format is documented in scene/scene.h.
 struct SceneConfig {
-    std::string path = "scenes/default_scene.bin";
+    std::string path = "game/scenes/default_scene.bin";
 };
 
 // ---------------------------------------------------------------------------
