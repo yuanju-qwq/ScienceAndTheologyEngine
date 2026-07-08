@@ -542,4 +542,27 @@ void Engine::shutdown() {
     snt::core::MemoryTracker::instance().log_stats();
 }
 
+// ---------------------------------------------------------------------------
+// Time accessors.
+// ---------------------------------------------------------------------------
+// Forwarding methods to Impl::clock_. The Impl already owns a RealClock
+// (real_clock_) + a swappable pointer (clock_); these methods just expose
+// that to external callers without breaking PImpl encapsulation.
+//
+// set_clock(nullptr) restores the default RealClock so callers don't have
+// to remember the original clock when restoring default behavior.
+snt::core::IClock& Engine::get_clock() {
+    return *impl_->clock_;
+}
+
+snt::core::TimePoint Engine::get_time() {
+    return impl_->clock_->now();
+}
+
+void Engine::set_clock(snt::core::IClock* clock) {
+    // Null restores the default RealClock. Non-null installs the caller-
+    // owned clock (caller keeps ownership + lifetime responsibility).
+    impl_->clock_ = (clock != nullptr) ? clock : &impl_->real_clock_;
+}
+
 }  // namespace snt::engine

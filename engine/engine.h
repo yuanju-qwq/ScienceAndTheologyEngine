@@ -18,6 +18,7 @@
 
 #include <memory>
 
+#include "core/clock.h"         // IClock, TimePoint (time accessors)
 #include "core/engine_config.h"  // EngineConfig for init
 #include "core/expected.h"       // Expected<void> for init
 
@@ -60,6 +61,35 @@ public:
 
     // Release all resources. Idempotent.
     void shutdown();
+
+    // -----------------------------------------------------------------------
+    // Time accessors.
+    // -----------------------------------------------------------------------
+    // Expose the engine clock so subsystems (animation, physics, scripting,
+    // interpolation) read time through a single interface instead of
+    // calling std::chrono directly. This lets tests inject a ManualClock
+    // via set_clock() for deterministic frame timing, and leaves room for
+    // future time scaling (pause / slow-mo / fast-forward) without touching
+    // call sites.
+    //
+    // Lifecycle:
+    //   - Default clock is a RealClock backed by steady_clock.
+    //   - set_clock(custom) BEFORE init() makes the engine run on the
+    //     injected clock; the caller owns it and must keep it alive until
+    //     shutdown() or the next set_clock() call.
+    //   - set_clock(nullptr) restores the default RealClock.
+
+    // Access the engine clock. Systems that need time should read from
+    // here, not from std::chrono directly.
+    snt::core::IClock& get_clock();
+
+    // Convenience: current engine time point (== get_clock().now()).
+    snt::core::TimePoint get_time();
+
+    // Test injection: swap in a ManualClock before init() for deterministic
+    // timing. Pass nullptr to restore the default RealClock. Non-owning;
+    // caller is responsible for the lifetime of `clock`.
+    void set_clock(snt::core::IClock* clock);
 
 private:
     // PImpl to keep Vulkan / SDL types out of the header.

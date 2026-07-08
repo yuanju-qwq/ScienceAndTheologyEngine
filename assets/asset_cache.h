@@ -19,6 +19,7 @@
 
 #include "assets/asset_handle.h"
 #include "core/expected.h"
+#include "core/hash.h"  // hash_string (path -> uint64_t key for path_to_handle_)
 
 #include <functional>
 #include <string>
@@ -69,12 +70,19 @@ public:
     }
 
     // Load a path. Dedup: same path -> same handle.
+    //
+    // Path lookup uses hash_string(path) as the unordered_map key (O(1)
+    // uint64_t probe) instead of std::string comparison. The original
+    // path string is preserved in handle_to_path_ for path_of() and for
+    // error messages. See core/hash.h for collision-probability rationale
+    // (vanishingly small for typical asset counts).
     snt::core::Expected<AssetHandle<Tag>> load(const std::string& path) {
         if (!loader_) {
             return snt::core::Error{snt::core::ErrorCode::kInvalidState,
                                     "AssetCache::load: not initialized"};
         }
-        auto it = path_to_handle_.find(path);
+        const uint64_t key = snt::core::hash_string(path);
+        auto it = path_to_handle_.find(key);
         if (it != path_to_handle_.end()) {
             return it->second;
         }
@@ -87,7 +95,7 @@ public:
         uint32_t id = static_cast<uint32_t>(slots_.size());
         slots_.push_back(*r);
         AssetHandle<Tag> h{id};
-        path_to_handle_[path] = h;
+        path_to_handle_[key] = h;
         handle_to_path_[h] = path;  // reverse map for path_of()
         return h;
     }
@@ -105,14 +113,15 @@ public:
     // Returns the pre-allocated handle. If `path` was already registered
     // (via register_preallocated or load), returns the existing handle.
     AssetHandle<Tag> register_preallocated(const std::string& path) {
-        auto it = path_to_handle_.find(path);
+        const uint64_t key = snt::core::hash_string(path);
+        auto it = path_to_handle_.find(key);
         if (it != path_to_handle_.end()) {
             return it->second;
         }
         uint32_t id = static_cast<uint32_t>(slots_.size());
         slots_.push_back(nullptr);  // placeholder; real load deferred
         AssetHandle<Tag> h{id};
-        path_to_handle_[path] = h;
+        path_to_handle_[key] = h;
         handle_to_path_[h] = path;
         return h;
     }
@@ -176,7 +185,16 @@ private:
     LoaderFn  loader_;
     DestroyFn destroyer_;
     std::vector<T*> slots_;
-    std::unordered_map<std::string, AssetHandle<Tag>> path_to_handle_;
+    // Primary lookup: hash_string(path) -> handle. uint64_t key gives O(1)
+    // probes without per-lookup string hashing/comparison. Collisions are
+    // astronomically unlikely (see core/hash.h); if one ever occurs it
+    // would manifest as one path shadowing another (caught by asset load
+    // errors when the wrong mesh appears).
+    std::unordered_map<uint64_t, AssetHandle<Tag>> path_to_handle_;
+    // Reverse lookup: handle -> original path string. Used by path_of()
+    // for scene serialization + by load_preallocated() to re-resolve
+    // paths for deferred loads. Stored as std::string (not hashed) so
+    // the original path is preserved for error messages + disk writes.
     std::unordered_map<AssetHandle<Tag>, std::string> handle_to_path_;
 };
 

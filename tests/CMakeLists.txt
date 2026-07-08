@@ -25,6 +25,8 @@ add_executable(snt_tests
     test_binary_io.cpp         # Phase 3: BinaryWriter/Reader + Serializer<T>
     test_scene_serialize.cpp   # Phase 4: Scene binary save/load round-trip
     test_job_system.cpp        # P2: work-stealing Job System
+    test_hash.cpp              # FNV-1a hash utilities
+    test_uuid.cpp              # general-purpose 128-bit Uuid + generator
 )
 target_link_libraries(snt_tests PRIVATE
     snt_core
