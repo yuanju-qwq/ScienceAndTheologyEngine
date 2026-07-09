@@ -195,6 +195,7 @@ public:
 
 private:
     static void append_rect(UiDrawData& out, Rect rect, Color color);
+    static void append_bitmap_text(UiDrawData& out, const DrawTextCommand& text);
 };
 
 class View {
