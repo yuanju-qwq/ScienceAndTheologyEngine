@@ -30,6 +30,8 @@
 #include "renderer/render_graph.h"
 #include "render_backend/vulkan_descriptor.h"
 
+#include <functional>
+
 namespace snt::render_backend {
 class VulkanDevice;
 class VulkanSwapchain;
@@ -57,6 +59,24 @@ public:
     // Set the entity to use as the active camera.
     void set_active_camera(entt::entity e) { active_camera_ = e; }
 
+    // Optional: register a callback invoked inside the forward pass AFTER
+    // mesh entity draws, within the same render pass scope (command buffer
+    // is recording). Used by ChunkRenderSystem to record chunk draws into
+    // the same command buffer without RenderSystem taking a hard dependency
+    // on the voxel module. The callback receives:
+    //   - cmd: the active command buffer
+    //   - frame_idx: current frame-in-flight slot (for dynamic UBO writes)
+    //   - view: per-frame view matrix (column-major 4x4 float array)
+    //   - proj: per-frame projection matrix (column-major 4x4 float array)
+    // The callback must capture any state it needs (e.g. World&, the
+    // ChunkRenderSystem pointer) at registration time.
+    using ForwardPassCallback =
+        std::function<void(VkCommandBuffer, uint32_t,
+                           const float[16], const float[16])>;
+    void set_forward_pass_callback(ForwardPassCallback cb) {
+        forward_pass_callback_ = std::move(cb);
+    }
+
     // Initialize the RenderGraph (creates its command pool). Must be called
     // after set_device() and before update(). Returns an Error on failure.
     snt::core::Expected<void> init_render_graph();
@@ -83,6 +103,9 @@ private:
     bool graph_initialized_ = false;
 
     bool needs_resize_ = false;
+
+    // Optional extra draw callback (chunk rendering, etc.).
+    ForwardPassCallback forward_pass_callback_;
 };
 
 }  // namespace snt::render

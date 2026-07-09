@@ -6,7 +6,6 @@
 #include "vulkan_pipeline.h"
 #include "vulkan_descriptor.h"
 #include "vulkan_device.h"
-#include "vulkan_mesh.h"
 
 #include <volk.h>
 
@@ -68,7 +67,9 @@ snt::core::Expected<void> VulkanPipeline::init(VulkanDevice& device,
                                                VkFormat color_format,
                                                VkFormat depth_format,
                                                const std::string& vert_spv_path,
-                                               const std::string& frag_spv_path) {
+                                               const std::string& frag_spv_path,
+                                               const VkVertexInputBindingDescription& binding,
+                                               const std::vector<VkVertexInputAttributeDescription>& attributes) {
     device_ = &device;
 
     // --- Step 1: load shader modules ---
@@ -96,34 +97,13 @@ snt::core::Expected<void> VulkanPipeline::init(VulkanDevice& device,
         },
     };
 
-    // --- Step 2: vertex input (MeshVertex: vec3 pos + vec3 color) ---
-    VkVertexInputBindingDescription binding_desc{
-        .binding = 0,
-        .stride = sizeof(MeshVertex),
-        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
-    };
-
-    VkVertexInputAttributeDescription attr_descs[2] = {
-        {  // location 0: position (vec3)
-            .location = 0,
-            .binding = 0,
-            .format = VK_FORMAT_R32G32B32_SFLOAT,
-            .offset = offsetof(MeshVertex, position),
-        },
-        {  // location 1: color (vec3)
-            .location = 1,
-            .binding = 0,
-            .format = VK_FORMAT_R32G32B32_SFLOAT,
-            .offset = offsetof(MeshVertex, color),
-        },
-    };
-
+    // --- Step 2: vertex input (caller-supplied layout) ---
     VkPipelineVertexInputStateCreateInfo vertex_input{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1,
-        .pVertexBindingDescriptions = &binding_desc,
-        .vertexAttributeDescriptionCount = 2,
-        .pVertexAttributeDescriptions = attr_descs,
+        .pVertexBindingDescriptions = &binding,
+        .vertexAttributeDescriptionCount = static_cast<uint32_t>(attributes.size()),
+        .pVertexAttributeDescriptions = attributes.data(),
     };
 
     // --- Step 3: input assembly (triangle list) ---

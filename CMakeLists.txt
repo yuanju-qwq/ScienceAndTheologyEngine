@@ -66,6 +66,7 @@ add_subdirectory(render)
 add_subdirectory(script)        # NEW: AngelScript integration (depends on core)
 add_subdirectory(scene)         # NEW: binary scene serialization (depends on ecs + assets)
 add_subdirectory(ui)
+add_subdirectory(voxel)         # P3: voxel meshing + chunk renderer
 add_subdirectory(data)          # P2: data definitions ported from src/core/
 add_subdirectory(engine)
 add_subdirectory(engine_app)

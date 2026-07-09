@@ -177,7 +177,11 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
         ++entity_index;
     }
 
-    if (draws.empty()) return;
+    // P3: only skip the frame when there's nothing to draw at all — no
+    // mesh entities AND no forward-pass callback (e.g. chunks). When a
+    // callback is registered, the frame must proceed even with zero mesh
+    // entities so the callback can record its own draws.
+    if (draws.empty() && !forward_pass_callback_) return;
 
     // --- Acquire swapchain image ---
     uint32_t image_index = 0;
@@ -260,7 +264,13 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
     // inside execute_record_only, so this is safe. The callback does NOT
     // call vkCmdBeginRenderPass / EndRenderPass; the graph handles dynamic
     // rendering scope based on the declared attachments.
-    pass->execute = [pipeline, descriptor, frame_idx, extent, draws]
+    //
+    // P3: also captures the optional forward_pass_callback_ (chunk render
+    // hook) + the per-frame view/proj matrices so the callback can record
+    // chunk draws into the same pass scope.
+    auto pass_cb = forward_pass_callback_;
+    pass->execute = [pipeline, descriptor, frame_idx, extent, draws,
+                     pass_cb, view, proj]
                     (snt::render_backend::CommandContext& ctx) {
         VkCommandBuffer cmd = ctx.handle();
 
@@ -290,6 +300,14 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
                                     pipeline->layout(), 0, 1, &desc_set,
                                     1, &dyn_offset);
             d.mesh->draw(cmd);
+        }
+
+        // P3: optional extra pass draws (voxel chunks). The callback is
+        // responsible for binding its own pipeline + descriptor sets.
+        if (pass_cb) {
+            const float* view_ptr = glm::value_ptr(view);
+            const float* proj_ptr = glm::value_ptr(proj);
+            pass_cb(cmd, frame_idx, view_ptr, proj_ptr);
         }
     };
 

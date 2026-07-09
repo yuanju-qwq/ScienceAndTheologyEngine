@@ -18,3 +18,16 @@ target_link_libraries(gen_default_scene PRIVATE
     snt_ecs
     snt_assets
 )
+
+# engine_test: standalone benchmark / smoke-test tool.
+# Usage: engine_test ecs_test [entities] [frames]
+#        engine_test data_test
+add_executable(engine_test
+    engine_test.cpp
+)
+target_link_libraries(engine_test PRIVATE
+    snt_engine_settings
+    snt_ecs
+    snt_core
+    snt_data_worldgen
+)

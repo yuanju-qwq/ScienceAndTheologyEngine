@@ -13,6 +13,7 @@ add_library(snt_render_backend STATIC
     vulkan_mesh.cpp
     vulkan_frame.cpp
     command_context.cpp
+    vertex_buffer_pool.cpp
 )
 target_include_directories(snt_render_backend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # VMA include path: FetchContent puts source in _deps/vulkanmemoryallocator-src/.
@@ -46,6 +47,8 @@ set(SHADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/../shaders/triangle.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/../shaders/mesh.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/../shaders/mesh.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/../shaders/voxel.vert
+    ${CMAKE_CURRENT_SOURCE_DIR}/../shaders/voxel.frag
 )
 
 set(SHADER_SPV_FILES "")

@@ -17,6 +17,10 @@
 #include "core/memory_tracker.h"
 #include "core/path_utils.h"      // path_utils::resolve for shader/asset paths
 #include "core/profiling.h"
+#include "data/defs/chunk_data.h"       // P3: ChunkData::kChunkSize
+#include "data/defs/world_seed.h"       // P3: WorldSeed for TerrainGenerator
+#include "data/world/chunk_registry.h"  // P3: ChunkRegistry
+#include "data/world_gen/terrain_generator.h"  // P3: generate test chunk
 #include "ecs/camera_system.h"
 #include "ecs/components.h"
 #include "ecs/entity_guid.h"
@@ -26,6 +30,7 @@
 #include "platform/window.h"
 #include "render/render_system.h"
 #include "scene/scene.h"          // load_scene for binary scene loading
+#include "render_backend/vulkan_buffer.h"        // P3: complete type for MSVC eager unique_ptr deleter instantiation
 #include "render_backend/vulkan_depth.h"
 #include "render_backend/vulkan_descriptor.h"
 #include "render_backend/vulkan_device.h"
@@ -34,8 +39,11 @@
 #include "render_backend/vulkan_mesh.h"
 #include "render_backend/vulkan_pipeline.h"
 #include "render_backend/vulkan_swapchain.h"
+#include "render_backend/vertex_buffer_pool.h"  // P3: complete type (see vulkan_buffer.h note above)
 #include "ui/debug_panel.h"
 #include "ui/mui.h"
+#include "voxel/chunk_renderer.h"       // P3: ChunkRenderer
+#include "voxel/chunk_render_system.h"  // P3: ChunkRenderSystem
 
 #include <volk.h>
 
@@ -125,6 +133,19 @@ struct Engine::Impl {
     // Render system (ECS-driven). Holds raw pointers to the vk_* objects
     // above; set in init() after the vk_* objects are created.
     snt::render::RenderSystem render_system;
+
+    // P3 Voxel rendering: chunk registry + chunk renderer + ECS render
+    // system. The registry holds generated ChunkData; ChunkRenderer owns
+    // the voxel GPU pipeline + buffer pool; ChunkRenderSystem drives
+    // remesh (phase 1, during world.update) and draw recording (phase 2,
+    // inside RenderSystem's forward pass via a registered callback).
+    //
+    // chunk_renderer is held via unique_ptr so its full definition (and
+    // thus VertexBufferPool/VulkanBuffer) is only needed in chunk_renderer.cpp;
+    // MSVC would otherwise eagerly instantiate the pool's deleter here.
+    snt::data::ChunkRegistry                          chunk_registry;
+    std::unique_ptr<snt::voxel::ChunkRenderer>        chunk_renderer;
+    snt::voxel::ChunkRenderSystem                     chunk_render_system;
 
     // Per-frame state.
     FpsTracker fps_tracker;
@@ -284,7 +305,21 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
                                  impl_->vk_swapchain.image_format(),
                                  impl_->vk_depth.format(),
                                  snt::core::path_utils::resolve(config.render.vert_shader_path),
-                                 snt::core::path_utils::resolve(config.render.frag_shader_path)); !r) {
+                                 snt::core::path_utils::resolve(config.render.frag_shader_path),
+                                 // MeshVertex layout: vec3 position + vec3 color.
+                                 VkVertexInputBindingDescription{
+                                     .binding   = 0,
+                                     .stride    = sizeof(snt::render_backend::MeshVertex),
+                                     .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+                                 },
+                                 std::vector<VkVertexInputAttributeDescription>{
+                                     {.location = 0, .binding = 0,
+                                      .format = VK_FORMAT_R32G32B32_SFLOAT,
+                                      .offset = offsetof(snt::render_backend::MeshVertex, position)},
+                                     {.location = 1, .binding = 0,
+                                      .format = VK_FORMAT_R32G32B32_SFLOAT,
+                                      .offset = offsetof(snt::render_backend::MeshVertex, color)},
+                                 }); !r) {
         snt::core::Error e = r.error();
         e.with_context("Engine::init (vk_pipeline)");
         return e;
@@ -362,6 +397,66 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
         snt::core::Error e = r.error();
         e.with_context("Engine::init (init_render_graph)");
         return e;
+    }
+
+    // --- P3: Voxel chunk rendering setup ---
+    // One-shot wiring: init the ChunkRenderer (voxel pipeline + descriptor
+    // + buffer pool), generate a test chunk at the origin via
+    // TerrainGenerator, store it in ChunkRegistry, create a ChunkRenderRef
+    // entity so ChunkRenderSystem remeshes + draws it, and register a
+    // forward-pass callback so chunk draws land inside RenderSystem's pass.
+    {
+        constexpr uint32_t kMaxChunks = 64;
+        impl_->chunk_renderer = std::make_unique<snt::voxel::ChunkRenderer>();
+        if (auto r = impl_->chunk_renderer->init(
+                impl_->vk_device,
+                impl_->vk_swapchain.image_format(),
+                impl_->vk_depth.format(),
+                snt::core::path_utils::resolve("shaders/voxel.vert.spv"),
+                snt::core::path_utils::resolve("shaders/voxel.frag.spv"),
+                kMaxChunks); !r) {
+            snt::core::Error e = r.error();
+            e.with_context("Engine::init (chunk_renderer)");
+            return e;
+        }
+
+        // Generate a test chunk at the origin so there's something to see.
+        // Flat-world TerrainGenerator with a fixed seed; no config snapshot
+        // (uses built-in defaults). The chunk spans world [0,32)^3.
+        snt::data::TerrainGenerator terrain_gen(snt::data::WorldSeed(20240601u));
+        snt::data::ChunkData chunk = terrain_gen.generate_chunk("overworld", 0, 0, 0);
+        impl_->chunk_registry.set_chunk("overworld", 0, 0, 0, std::move(chunk));
+        SNT_LOG_INFO("P3: generated test chunk at (0,0,0), %zu terrain cells",
+                     impl_->chunk_registry.get_chunk("overworld", 0, 0, 0)
+                         ->terrain.cells.size());
+
+        // Create the ChunkRenderRef entity. dirty=true so ChunkRenderSystem
+        // remeshes it on the first update().
+        auto chunk_e = impl_->world.registry().create();
+        impl_->world.registry().emplace<snt::ecs::ChunkRenderRef>(
+            chunk_e, 0, 0, 0,
+            snt::ecs::ChunkRenderRef{}.mesh_handle_id, /*dirty=*/true);
+
+        // Wire ChunkRenderSystem and register it with the World so its
+        // update() runs each frame (phase 1: remesh dirty chunks).
+        // add_system move-constructs a new instance from impl_'s (which has
+        // renderer_/registry_ pointers already wired) and returns a stable
+        // reference to the heap-owned instance.
+        impl_->chunk_render_system.set_chunk_renderer(impl_->chunk_renderer.get());
+        impl_->chunk_render_system.set_chunk_registry(&impl_->chunk_registry);
+        auto& chunk_sys = impl_->world.add_system<snt::voxel::ChunkRenderSystem>(
+            std::move(impl_->chunk_render_system));
+
+        // Register the forward-pass callback (phase 2: record chunk draws
+        // inside RenderSystem's pass). Captures the live system pointer +
+        // the world so it can iterate ChunkRenderRef entities.
+        auto* chunk_sys_ptr = &chunk_sys;
+        snt::ecs::World* world_ptr = &impl_->world;
+        impl_->render_system.set_forward_pass_callback(
+            [chunk_sys_ptr, world_ptr](VkCommandBuffer cmd, uint32_t frame_idx,
+                                        const float view[16], const float proj[16]) {
+                chunk_sys_ptr->render(cmd, frame_idx, view, proj, *world_ptr);
+            });
     }
 
     // --- Debug panel metrics ---
@@ -490,6 +585,14 @@ void Engine::shutdown() {
 
     // Render system (releases its RenderGraph).
     impl_->render_system.destroy_render_graph();
+
+    // P3: ChunkRenderer (voxel pipeline + descriptor + buffer pool). Must
+    // be destroyed before the VulkanDevice since its GPU resources are
+    // backed by VMA allocations tied to the device.
+    if (impl_->chunk_renderer) {
+        impl_->chunk_renderer->destroy();
+        impl_->chunk_renderer.reset();
+    }
 
     // Frame + pipeline + descriptor.
     // (AssetManager-owned meshes are destroyed by AssetManager::shutdown() below.)
