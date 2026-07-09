@@ -23,6 +23,7 @@ target_link_libraries(snt_engine PUBLIC
     snt_scene
     snt_ui
     snt_voxel              # P3: chunk renderer + ChunkRenderSystem
+    snt_player             # P4: first-person controller + voxel collision/raycast
     snt_data_world         # P3: ChunkRegistry
     snt_data_worldgen      # P3: TerrainGenerator (test chunk at origin)
 )

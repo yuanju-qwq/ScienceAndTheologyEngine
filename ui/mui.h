@@ -47,6 +47,13 @@ struct Rect {
     Vec2 size;
 };
 
+struct Color {
+    uint8_t r = 255;
+    uint8_t g = 255;
+    uint8_t b = 255;
+    uint8_t a = 255;
+};
+
 // UI vertex: 2D position (pixels) + texture UV + RGBA color (0..255).
 // Defined here (not in mui_renderer.h) so MuiContext can build draw
 // lists without pulling in Vulkan headers.
@@ -113,6 +120,10 @@ public:
 
     // Formatted text label.
     void text(std::string_view fmt, ...);
+
+    // Draw a solid screen-space rectangle. Used by HUD primitives such as
+    // crosshairs, bars, and simple debug overlays.
+    void filled_rect(Rect rect, Color color = {});
 
     // Button. Returns true if clicked this frame.
     bool button(std::string_view label, Vec2 size = {0, 0});

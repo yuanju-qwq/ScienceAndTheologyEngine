@@ -75,6 +75,7 @@ add_subdirectory(scene)         # NEW: binary scene serialization (depends on ec
 add_subdirectory(ui)
 add_subdirectory(voxel)         # P3: voxel meshing + chunk renderer
 add_subdirectory(data)          # P2: data definitions ported from src/core/
+add_subdirectory(player)        # P4: first-person controller + voxel collision/raycast
 add_subdirectory(engine)
 add_subdirectory(engine_app)
 add_subdirectory(tools)         # NEW: standalone dev tools (gen_default_scene, ...)

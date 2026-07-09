@@ -9,6 +9,7 @@
 #include "vulkan_device.h"
 
 #include "core/log.h"
+#include "core/path_utils.h"
 
 #include <volk.h>
 
@@ -455,8 +456,8 @@ snt::core::Expected<void> MuiRenderer::create_pipeline(VkFormat color_format) {
         return spv;
     };
 
-    auto vert_spv = read_spv("snt_engine/shaders/ui.vert.spv");
-    auto frag_spv = read_spv("snt_engine/shaders/ui.frag.spv");
+    auto vert_spv = read_spv(snt::core::path_utils::resolve("shaders/ui.vert.spv"));
+    auto frag_spv = read_spv(snt::core::path_utils::resolve("shaders/ui.frag.spv"));
     if (vert_spv.empty() || frag_spv.empty()) {
         return snt::core::Error{snt::core::ErrorCode::kUnknown,
                                 "Failed to load UI shaders (ui.vert.spv / ui.frag.spv)"};
@@ -623,15 +624,17 @@ snt::core::Expected<void> MuiRenderer::create_pipeline(VkFormat color_format) {
 // ---------------------------------------------------------------------------
 
 void MuiRenderer::update_ortho(uint32_t fb_width, uint32_t fb_height) {
-    // Orthographic projection: pixel space (top-left origin, Y down) → clip space.
-    // Maps [0,w]×[0,h] to [-1,1]×[-1,1] with Y flipped.
+    // Orthographic projection: pixel space (top-left origin, Y down) -> Vulkan clip space.
+    // With a positive-height Vulkan viewport, NDC y=-1 lands at the top of
+    // the framebuffer and y=+1 lands at the bottom. Keep pixel Y increasing
+    // downward so UI layout and font quads stay upright.
     float w = static_cast<float>(fb_width);
     float h = static_cast<float>(fb_height);
     float ortho[16] = {
         2.0f / w, 0.0f,      0.0f, 0.0f,
-        0.0f,    -2.0f / h,  0.0f, 0.0f,
+        0.0f,     2.0f / h,  0.0f, 0.0f,
         0.0f,     0.0f,     -1.0f, 0.0f,
-       -1.0f,     1.0f,      0.0f, 1.0f,
+       -1.0f,    -1.0f,      0.0f, 1.0f,
     };
 
     void* mapped = nullptr;

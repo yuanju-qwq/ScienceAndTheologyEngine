@@ -125,6 +125,52 @@ void MuiContext::text(std::string_view fmt, ...) {
     cursor_.y += line_h;
 }
 
+void MuiContext::filled_rect(Rect rect, Color color) {
+    if (rect.size.x <= 0.0f || rect.size.y <= 0.0f) {
+        return;
+    }
+    if (draw_data_.vertices.size() + 4 > 0xFFFFu) {
+        return;
+    }
+
+    uint16_t base = static_cast<uint16_t>(draw_data_.vertices.size());
+    UiVertex v;
+    v.uv[0] = -1.0f;
+    v.uv[1] = -1.0f;
+    v.color[0] = color.r;
+    v.color[1] = color.g;
+    v.color[2] = color.b;
+    v.color[3] = color.a;
+
+    const float x0 = rect.pos.x;
+    const float y0 = rect.pos.y;
+    const float x1 = rect.pos.x + rect.size.x;
+    const float y1 = rect.pos.y + rect.size.y;
+
+    v.position[0] = x0;
+    v.position[1] = y0;
+    draw_data_.vertices.push_back(v);
+
+    v.position[0] = x0;
+    v.position[1] = y1;
+    draw_data_.vertices.push_back(v);
+
+    v.position[0] = x1;
+    v.position[1] = y1;
+    draw_data_.vertices.push_back(v);
+
+    v.position[0] = x1;
+    v.position[1] = y0;
+    draw_data_.vertices.push_back(v);
+
+    draw_data_.indices.push_back(base + 0);
+    draw_data_.indices.push_back(base + 1);
+    draw_data_.indices.push_back(base + 2);
+    draw_data_.indices.push_back(base + 0);
+    draw_data_.indices.push_back(base + 2);
+    draw_data_.indices.push_back(base + 3);
+}
+
 bool MuiContext::button(std::string_view label, Vec2 size) {
     (void)label;
     (void)size;

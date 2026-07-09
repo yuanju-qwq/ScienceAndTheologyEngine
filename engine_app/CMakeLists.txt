@@ -14,6 +14,16 @@ target_link_libraries(snt_engine_app PRIVATE
 # Ensure shaders are compiled + copied before the engine runs.
 add_dependencies(snt_engine_app snt_copy_shaders)
 
+# Some generators place the executable under engine_app/$<CONFIG>/ rather
+# than the top-level bin/$<CONFIG>/ directory. Put runtime resources beside
+# the actual executable as well, so path_utils can anchor from the exe dir.
+add_custom_command(TARGET snt_engine_app POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_BINARY_DIR}/render_backend/shaders
+        $<TARGET_FILE_DIR:snt_engine_app>/snt_engine/shaders
+    COMMENT "Copying shaders next to executable"
+)
+
 # Locate game content whether this CMake project is configured from the
 # repository root or directly from the snt_engine/ subdirectory.
 set(SNT_GAME_CONTENT_ROOT "${CMAKE_SOURCE_DIR}")
@@ -38,6 +48,12 @@ add_custom_target(snt_copy_config ALL
     COMMENT "Copying game config to output directory"
 )
 add_dependencies(snt_engine_app snt_copy_config)
+add_custom_command(TARGET snt_engine_app POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${SNT_GAME_CONTENT_ROOT}/game/config
+        $<TARGET_FILE_DIR:snt_engine_app>/game/config
+    COMMENT "Copying game config next to executable"
+)
 
 # Copy the game scenes directory (binary scene files) next to the executable.
 # Engine::init loads config.scene.path (default "game/scenes/default_scene.bin")
@@ -50,6 +66,12 @@ add_custom_target(snt_copy_scenes ALL
     COMMENT "Copying game scenes to output directory"
 )
 add_dependencies(snt_engine_app snt_copy_scenes)
+add_custom_command(TARGET snt_engine_app POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${SNT_GAME_CONTENT_ROOT}/game/scenes
+        $<TARGET_FILE_DIR:snt_engine_app>/game/scenes
+    COMMENT "Copying game scenes next to executable"
+)
 
 # Copy the test_assets/ directory (placeholder meshes for development).
 # Engine::init loads config.assets.default_mesh_path
@@ -63,6 +85,12 @@ add_custom_target(snt_copy_test_assets ALL
     COMMENT "Copying test assets to output directory"
 )
 add_dependencies(snt_engine_app snt_copy_test_assets)
+add_custom_command(TARGET snt_engine_app POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${SNT_GAME_CONTENT_ROOT}/test_assets
+        $<TARGET_FILE_DIR:snt_engine_app>/test_assets
+    COMMENT "Copying test assets next to executable"
+)
 
 # Output name for convenience.
 set_target_properties(snt_engine_app PROPERTIES OUTPUT_NAME snt_engine)

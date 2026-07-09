@@ -13,6 +13,6 @@ layout(set = 0, binding = 1) uniform sampler2D fontAtlas;
 layout(location = 0) out vec4 outColor;
 
 void main() {
-    float coverage = texture(fontAtlas, fragUv).r;
+    float coverage = fragUv.x < 0.0 ? 1.0 : texture(fontAtlas, fragUv).r;
     outColor = vec4(fragColor.rgb, fragColor.a * coverage);
 }

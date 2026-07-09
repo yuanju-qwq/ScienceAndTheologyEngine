@@ -19,13 +19,13 @@
 #include "core/profiling.h"
 #include "data/world/chunk_registry.h"  // P3: ChunkRegistry
 #include "engine/demo_world_bootstrap.h"
-#include "ecs/camera_system.h"
 #include "ecs/components.h"
 #include "ecs/entity_guid.h"
 #include "ecs/event_bus.h"        // EventBus = entt::dispatcher
 #include "ecs/world.h"
 #include "input/input_system.h"
 #include "platform/window.h"
+#include "player/player_controller.h"
 #include "render/render_system.h"
 #include "scene/scene.h"          // load_scene for binary scene loading
 #include "render_backend/command_context.h"
@@ -149,6 +149,39 @@ struct TickStats {
     }
 };
 
+void draw_center_crosshair(snt::ui::MuiContext& mui, uint32_t width, uint32_t height) {
+    const float cx = static_cast<float>(width) * 0.5f;
+    const float cy = static_cast<float>(height) * 0.5f;
+    constexpr float kArmLength = 8.0f;
+    constexpr float kGap = 4.0f;
+    constexpr float kThickness = 2.0f;
+
+    const snt::ui::Color shadow{0, 0, 0, 160};
+    const snt::ui::Color line{255, 255, 255, 220};
+
+    auto draw_cross = [&](float offset_x, float offset_y, snt::ui::Color color) {
+        mui.filled_rect({.pos = {cx - kGap - kArmLength + offset_x,
+                                 cy - kThickness * 0.5f + offset_y},
+                         .size = {kArmLength, kThickness}},
+                        color);
+        mui.filled_rect({.pos = {cx + kGap + offset_x,
+                                 cy - kThickness * 0.5f + offset_y},
+                         .size = {kArmLength, kThickness}},
+                        color);
+        mui.filled_rect({.pos = {cx - kThickness * 0.5f + offset_x,
+                                 cy - kGap - kArmLength + offset_y},
+                         .size = {kThickness, kArmLength}},
+                        color);
+        mui.filled_rect({.pos = {cx - kThickness * 0.5f + offset_x,
+                                 cy + kGap + offset_y},
+                         .size = {kThickness, kArmLength}},
+                        color);
+    };
+
+    draw_cross(1.0f, 1.0f, shadow);
+    draw_cross(0.0f, 0.0f, line);
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -208,6 +241,7 @@ struct Engine::Impl {
     snt::data::ChunkRegistry                          chunk_registry;
     std::unique_ptr<snt::voxel::ChunkRenderer>        chunk_renderer;
     snt::voxel::ChunkRenderSystem                     chunk_render_system;
+    snt::voxel::ChunkRenderSystem*                    runtime_chunk_render_system = nullptr;
 
     // UI renderer (debug overlay text). Held via unique_ptr to keep
     // Vulkan types out of the Impl header; full definition is in
@@ -455,23 +489,6 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
         cam_t.position[2] = 8.0f;
     }
 
-    // --- Camera system ---
-    auto& camera_system = impl_->world.add_system<CameraSystem>();
-    camera_system.set_input(&impl_->input_system);
-    camera_system.set_active_camera(impl_->camera_entity);
-    camera_system.set_move_speed(config.camera.move_speed);
-    camera_system.set_look_speed(config.camera.look_speed);
-    // P3: look down at the ground chunk from an elevated position so the
-    // thin y=0 surface platform is visible (default pitch=0 sees it edge-on).
-    camera_system.set_initial_look(-90.0f, -25.0f);
-
-    // CameraSystem subscribes to MouseLockChanged on the event bus. Engine
-    // publishes the lock state each frame instead of calling
-    // set_mouse_locked() directly — future modules (e.g. UI cursor
-    // visibility) can subscribe to the same event.
-    impl_->event_bus.sink<snt::core::MouseLockChanged>()
-        .connect<&snt::ecs::CameraSystem::on_mouse_lock_changed>(&camera_system);
-
     // --- Render system (P2.D) ---
     // ECS-driven rendering via RenderGraph. RenderSystem owns its own
     // RenderGraph instance; Engine wires up the backend dependencies.
@@ -531,6 +548,31 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
         }
         auto& chunk_sys = impl_->world.add_system<snt::voxel::ChunkRenderSystem>(
             std::move(impl_->chunk_render_system));
+        impl_->runtime_chunk_render_system = &chunk_sys;
+
+        // --- P4: first-person player controller ---
+        // The controller owns movement, gravity, voxel collision, camera
+        // transform sync, and left-click block breaking. This replaces the
+        // old fly-camera movement path while keeping the camera entity as the
+        // render system's active view.
+        auto& player_controller =
+            impl_->world.add_system<snt::player::PlayerControllerSystem>();
+        player_controller.set_input(&impl_->input_system);
+        player_controller.set_chunk_registry(&impl_->chunk_registry);
+        player_controller.set_chunk_render_system(impl_->runtime_chunk_render_system);
+        player_controller.set_camera_entity(impl_->camera_entity);
+        player_controller.set_dimension_id("overworld");
+        player_controller.set_spawn_feet_position({4.0f, 6.0f, 8.0f});
+        player_controller.set_initial_look(-90.0f, -25.0f);
+        snt::player::PlayerControllerTuning player_tuning;
+        player_tuning.move_speed = config.camera.move_speed > 0.0f
+            ? config.camera.move_speed
+            : player_tuning.move_speed;
+        player_tuning.look_speed = config.camera.look_speed;
+        player_controller.set_tuning(player_tuning);
+        impl_->event_bus.sink<snt::core::MouseLockChanged>()
+            .connect<&snt::player::PlayerControllerSystem::on_mouse_lock_changed>(
+                &player_controller);
 
         // Register voxel terrain as its own RenderGraph pass.
         auto* chunk_sys_ptr = &chunk_sys;
@@ -753,6 +795,10 @@ void Engine::run() {
         snt::ui::MuiContext& mui = snt::ui::default_mui_context();
         mui.begin_frame();
         panel.draw();
+        if (impl_->mouse_locked) {
+            const auto& extent = impl_->vk_swapchain.extent();
+            draw_center_crosshair(mui, extent.width, extent.height);
+        }
         mui.end_frame();
 
         // Update the UI orthographic projection for the current swapchain

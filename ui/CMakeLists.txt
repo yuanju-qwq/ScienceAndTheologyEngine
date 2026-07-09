@@ -7,4 +7,9 @@ add_library(snt_ui STATIC
     debug_panel.cpp
 )
 target_include_directories(snt_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(snt_ui PUBLIC snt_engine_settings snt_render_backend stb::stb)
+target_link_libraries(snt_ui PUBLIC
+    snt_engine_settings
+    snt_core
+    snt_render_backend
+    stb::stb
+)

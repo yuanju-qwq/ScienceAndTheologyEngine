@@ -29,6 +29,7 @@ add_executable(snt_tests
     test_uuid.cpp              # general-purpose 128-bit Uuid + generator
     test_data.cpp              # P2: data layer (chunk/registry/save/noise/terrain)
     test_ecs.cpp               # P2: standard components + SystemScheduler
+    test_player_physics.cpp    # P4: voxel collision + DDA ray cast
 )
 target_link_libraries(snt_tests PRIVATE
     snt_core
@@ -41,6 +42,7 @@ target_link_libraries(snt_tests PRIVATE
     snt_data_save              # P2: data save layer (ChunkSerializer/RegionFile)
     snt_data_worldgen          # P2: terrain generator + noise
     snt_data_world             # P2: ChunkRegistry
+    snt_player                 # P4: player collision/raycast/controller
     GTest::gtest
 )
 
