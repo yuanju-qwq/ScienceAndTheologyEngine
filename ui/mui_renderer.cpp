@@ -139,27 +139,6 @@ snt::core::Expected<void> MuiRenderer::bake_font_atlas(const std::string& font_p
     }
 
     const auto& atlas = *atlas_result;
-    std::memset(glyphs_, 0, sizeof(glyphs_));
-    for (const auto& g : atlas.glyphs) {
-        if (g.codepoint < kFirstChar || g.codepoint > kLastChar) {
-            continue;
-        }
-        const size_t i = g.codepoint - kFirstChar;
-        const float x0 = static_cast<float>(g.bearing_x);
-        const float y0 = -static_cast<float>(g.bearing_y);
-        glyphs_[i] = {
-            .uv_x0 = g.u0,
-            .uv_y0 = g.v0,
-            .uv_x1 = g.u1,
-            .uv_y1 = g.v1,
-            .x0 = x0,
-            .y0 = y0,
-            .x1 = x0 + static_cast<float>(g.width),
-            .y1 = y0 + static_cast<float>(g.height),
-            .advance = static_cast<float>(g.advance_x),
-        };
-    }
-    line_height_ = atlas.line_height > 0.0f ? atlas.line_height : font_size_ * 1.25f;
 
     // --- Create Vulkan texture (R8_UNORM, device-local) ---
     VkImageCreateInfo image_ci{
@@ -695,11 +674,6 @@ void MuiRenderer::render(VkCommandBuffer cmd, const UiDrawData& draw_data) {
     vkCmdDrawIndexed(cmd,
                      static_cast<uint32_t>(draw_data.indices.size()),
                      1, 0, 0, 0);
-}
-
-const GlyphInfo* MuiRenderer::glyph(char c) const {
-    if (c < kFirstChar || c > kLastChar) return nullptr;
-    return &glyphs_[c - kFirstChar];
 }
 
 }  // namespace snt::ui

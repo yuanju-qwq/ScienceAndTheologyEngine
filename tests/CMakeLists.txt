@@ -31,11 +31,13 @@ add_executable(snt_tests
     test_data.cpp              # P2: data layer (chunk/registry/save/noise/terrain)
     test_ecs.cpp               # P2: standard components + SystemScheduler
     test_player_physics.cpp    # P4: voxel collision + DDA ray cast
+    test_mui_retained.cpp      # P6: retained MUI + gameplay UI ViewModels
 )
 target_link_libraries(snt_tests PRIVATE
     snt_core
     snt_ecs
     snt_assets
+    snt_ui
     snt_script
     snt_engine_settings
     snt_third_party

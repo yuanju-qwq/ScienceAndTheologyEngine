@@ -1,10 +1,10 @@
-# UI: MUI (immediate-mode GUI) + Debug Panel.
-# P1: stub implementations (no rendering). P1.4: Vulkan-backed rendering.
+# UI: retained MUI + Arc2D + Vulkan UI renderer.
 
 add_library(snt_ui STATIC
-    mui.cpp
     mui_renderer.cpp
-    debug_panel.cpp
+    ui_draw_data.h
+    retained_mui.cpp
+    game_ui.cpp
 )
 target_include_directories(snt_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(snt_ui PUBLIC

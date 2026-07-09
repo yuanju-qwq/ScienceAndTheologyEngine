@@ -39,18 +39,19 @@
 #include "render_backend/vulkan_pipeline.h"
 #include "render_backend/vulkan_swapchain.h"
 #include "render_backend/vertex_buffer_pool.h"  // P3: complete type (see vulkan_buffer.h note above)
-#include "ui/debug_panel.h"
-#include "ui/mui.h"                     // P3.5: MuiContext
+#include "ui/game_ui.h"                 // P6: retained gameplay UI
 #include "ui/mui_renderer.h"            // P3.5: MuiRenderer (Vulkan text)
 #include "voxel/chunk_renderer.h"       // P3: ChunkRenderer
 #include "voxel/chunk_render_system.h"  // P3: ChunkRenderSystem
 
+#include <SDL3/SDL_scancode.h>
 #include <volk.h>
 
 #include <algorithm>
 #include <chrono>
-#include <cstdio>
 #include <filesystem>  // std::filesystem::create_directories for log dir
+#include <memory>
+#include <utility>
 
 namespace snt::engine {
 
@@ -149,7 +150,22 @@ struct TickStats {
     }
 };
 
-void draw_center_crosshair(snt::ui::MuiContext& mui, uint32_t width, uint32_t height) {
+void append_draw_data(snt::ui::UiDrawData& dst, const snt::ui::UiDrawData& src) {
+    if (src.vertices.empty() || src.indices.empty()) return;
+    if (dst.vertices.size() + src.vertices.size() > 0xFFFFu) {
+        SNT_LOG_WARN("UI draw data overflow while appending; dropping appended batch");
+        return;
+    }
+
+    const uint16_t base = static_cast<uint16_t>(dst.vertices.size());
+    dst.vertices.insert(dst.vertices.end(), src.vertices.begin(), src.vertices.end());
+    dst.indices.reserve(dst.indices.size() + src.indices.size());
+    for (uint16_t index : src.indices) {
+        dst.indices.push_back(static_cast<uint16_t>(base + index));
+    }
+}
+
+void draw_center_crosshair(snt::ui::Arc2DCommandBuffer& commands, uint32_t width, uint32_t height) {
     const float cx = static_cast<float>(width) * 0.5f;
     const float cy = static_cast<float>(height) * 0.5f;
     constexpr float kArmLength = 8.0f;
@@ -160,22 +176,22 @@ void draw_center_crosshair(snt::ui::MuiContext& mui, uint32_t width, uint32_t he
     const snt::ui::Color line{255, 255, 255, 220};
 
     auto draw_cross = [&](float offset_x, float offset_y, snt::ui::Color color) {
-        mui.filled_rect({.pos = {cx - kGap - kArmLength + offset_x,
-                                 cy - kThickness * 0.5f + offset_y},
-                         .size = {kArmLength, kThickness}},
-                        color);
-        mui.filled_rect({.pos = {cx + kGap + offset_x,
-                                 cy - kThickness * 0.5f + offset_y},
-                         .size = {kArmLength, kThickness}},
-                        color);
-        mui.filled_rect({.pos = {cx - kThickness * 0.5f + offset_x,
-                                 cy - kGap - kArmLength + offset_y},
-                         .size = {kThickness, kArmLength}},
-                        color);
-        mui.filled_rect({.pos = {cx - kThickness * 0.5f + offset_x,
-                                 cy + kGap + offset_y},
-                         .size = {kThickness, kArmLength}},
-                        color);
+        commands.rect({.pos = {cx - kGap - kArmLength + offset_x,
+                               cy - kThickness * 0.5f + offset_y},
+                       .size = {kArmLength, kThickness}},
+                      color);
+        commands.rect({.pos = {cx + kGap + offset_x,
+                               cy - kThickness * 0.5f + offset_y},
+                       .size = {kArmLength, kThickness}},
+                      color);
+        commands.rect({.pos = {cx - kThickness * 0.5f + offset_x,
+                               cy - kGap - kArmLength + offset_y},
+                       .size = {kThickness, kArmLength}},
+                      color);
+        commands.rect({.pos = {cx - kThickness * 0.5f + offset_x,
+                               cy + kGap + offset_y},
+                       .size = {kThickness, kArmLength}},
+                      color);
     };
 
     draw_cross(1.0f, 1.0f, shadow);
@@ -243,10 +259,19 @@ struct Engine::Impl {
     snt::voxel::ChunkRenderSystem                     chunk_render_system;
     snt::voxel::ChunkRenderSystem*                    runtime_chunk_render_system = nullptr;
 
-    // UI renderer (debug overlay text). Held via unique_ptr to keep
+    // UI renderer. Held via unique_ptr to keep
     // Vulkan types out of the Impl header; full definition is in
     // mui_renderer.cpp.
     std::unique_ptr<snt::ui::MuiRenderer>             mui_renderer;
+
+    // P6 retained gameplay UI. Godot UI is intentionally not part of this
+    // path; the controller owns engine-native hotbar/inventory/crafting
+    // state and builds retained View trees each frame.
+    std::unique_ptr<snt::ui::GameplayUiController>    gameplay_ui;
+    snt::ui::PerformanceViewModel                     performance_ui;
+    snt::ui::UiRuntime                                gameplay_ui_runtime;
+    snt::ui::Arc2DRenderer                            arc2d_renderer;
+    snt::ui::UiDrawData                               ui_draw_data;
 
     // Per-frame state.
     FpsTracker fps_tracker;
@@ -621,7 +646,16 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
             });
     }
 
-    // --- P3.5: MUI renderer (debug overlay text) ---
+    // --- P6: retained gameplay UI controller ---
+    // Engine-native replacement path for gameplay UI. It starts with a
+    // small demo inventory/recipe set so hotbar/crafting can render before
+    // full ECS inventory plumbing lands.
+    impl_->gameplay_ui = std::make_unique<snt::ui::GameplayUiController>(
+        snt::ui::InventoryViewModel{snt::ui::make_p6_demo_inventory()},
+        snt::ui::make_p6_demo_recipes());
+    SNT_LOG_INFO("P6 retained gameplay UI initialized (Godot UI path not used)");
+
+    // --- P6: retained MUI renderer ---
     // Create + init the MuiRenderer from config. Empty font_path disables
     // text rendering so headless/cross-platform runs do not depend on a
     // Windows system font.
@@ -641,15 +675,12 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
                               r.error().format().c_str());
                 impl_->mui_renderer.reset();
             } else {
-                // Connect MuiRenderer to the global MuiContext so text()
-                // calls use its glyph table for layout.
-                snt::ui::default_mui_context().set_renderer(impl_->mui_renderer.get());
-
                 // Register UI as its own RenderGraph pass. It only writes
                 // color and uses LOAD so it composites over the previous pass.
                 auto* mui_renderer_ptr = impl_->mui_renderer.get();
+                auto* ui_draw_data_ptr = &impl_->ui_draw_data;
                 impl_->render_system.add_pass_provider(
-                    [mui_renderer_ptr](snt::render::RenderPassBuildContext& ctx) {
+                    [mui_renderer_ptr, ui_draw_data_ptr](snt::render::RenderPassBuildContext& ctx) {
                         auto* pass = ctx.graph.add_pass("ui_overlay");
                         if (!pass) {
                             SNT_LOG_ERROR("Failed to add ui_overlay render pass");
@@ -665,7 +696,7 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
                         });
 
                         const auto extent = ctx.extent;
-                        pass->execute = [mui_renderer_ptr, extent]
+                        pass->execute = [mui_renderer_ptr, ui_draw_data_ptr, extent]
                                         (snt::render_backend::CommandContext& pass_ctx) {
                             VkCommandBuffer cmd = pass_ctx.handle();
                             VkViewport viewport{
@@ -679,35 +710,13 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
                             vkCmdSetViewport(cmd, 0, 1, &viewport);
                             VkRect2D scissor{.offset = {0, 0}, .extent = extent};
                             vkCmdSetScissor(cmd, 0, 1, &scissor);
-                            const auto& dd = snt::ui::default_mui_context().draw_data();
-                            mui_renderer_ptr->render(cmd, dd);
+                            mui_renderer_ptr->render(cmd, *ui_draw_data_ptr);
                         };
                         ctx.last_color_pass = pass->name;
                     });
             }
         }
     }
-
-    // --- Debug panel metrics ---
-    auto& panel = snt::ui::default_debug_panel();
-    // TPS: logic tick rate (fixed 20 TPS target), shown with MSPT in parens.
-    // This is a TEXT metric because the format combines two values
-    // (ticks/sec + ms/tick) into one line.
-    panel.register_text_metric("TPS", [this]() {
-        // Format: "20.0 (12.3mspt)" — tps then mspt in parens.
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "%.1f (%.1fmspt)",
-                      impl_->tick_stats.tps,
-                      impl_->tick_stats.last_tick_ms);
-        return std::string(buf);
-    });
-    panel.register_metric("FPS",
-                          [this]() { return impl_->fps_tracker.fps(); });
-    panel.register_metric("Frame Time (ms)",
-                          [this]() { return impl_->fps_tracker.last_frame_ms; });
-    panel.register_metric("Job Workers", []() {
-        return static_cast<float>(snt::core::default_job_system().worker_count());
-    });
 
     SNT_LOG_INFO("Controls (MC-style):\n"
                  "  WASD       = move (A/D strafe)\n"
@@ -716,7 +725,11 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
                  "  Double-W   = sprint (2x while W held)\n"
                  "  Mouse      = free-look (auto-locked)\n"
                  "  ESC        = release mouse\n"
-                 "  Click      = re-lock mouse");
+                 "  Click      = re-lock mouse\n"
+                 "  E          = P6 inventory UI\n"
+                 "  C          = P6 crafting UI\n"
+                 "  Enter      = craft first available recipe while crafting UI is open\n"
+                 "  F3         = P6 retained performance panel");
 
     // P2.A2: enter relative mouse mode so the user starts in free-look.
     // ESC releases the mouse; clicking the window re-locks it.
@@ -753,17 +766,58 @@ void Engine::run() {
         impl_->input_system.end_frame();
         const auto& input_state = impl_->input_system.state();
 
+        if (impl_->gameplay_ui) {
+            if (input_state.key_pressed[SDL_SCANCODE_E]) {
+                impl_->gameplay_ui->toggle_inventory();
+                SNT_LOG_INFO("P6 inventory UI %s",
+                             impl_->gameplay_ui->inventory_open() ? "opened" : "closed");
+            }
+            if (input_state.key_pressed[SDL_SCANCODE_C]) {
+                impl_->gameplay_ui->toggle_crafting();
+                SNT_LOG_INFO("P6 crafting UI %s",
+                             impl_->gameplay_ui->crafting_open() ? "opened" : "closed");
+            }
+            if (input_state.key_pressed[SDL_SCANCODE_RETURN] &&
+                impl_->gameplay_ui->crafting_open()) {
+                for (const auto& recipe : impl_->gameplay_ui->crafting().recipes()) {
+                    if (!impl_->gameplay_ui->crafting().can_craft(recipe)) continue;
+                    auto result = impl_->gameplay_ui->crafting().craft(recipe.id);
+                    if (result.ok) {
+                        SNT_LOG_INFO("P6 crafted %s x%d",
+                                     result.output.item_key.c_str(),
+                                     result.output.count);
+                    } else {
+                        SNT_LOG_WARN("P6 craft failed: %s", result.reason.c_str());
+                    }
+                    break;
+                }
+            }
+        }
+        if (input_state.key_pressed[SDL_SCANCODE_F3]) {
+            impl_->performance_ui.toggle_visible();
+            SNT_LOG_INFO("P6 performance UI %s",
+                         impl_->performance_ui.visible() ? "opened" : "closed");
+        }
+
         // --- P2.A2: mouse lock management (MC-style) ---
         // ESC releases the pointer; a left click (when unlocked) re-locks.
         // The lock state is forwarded to CameraSystem so it knows whether
         // to apply mouse-look this frame.
-        if (input_state.esc_pressed && impl_->mouse_locked) {
+        bool gameplay_ui_open =
+            impl_->gameplay_ui &&
+            (impl_->gameplay_ui->inventory_open() || impl_->gameplay_ui->crafting_open());
+        if (input_state.esc_pressed && gameplay_ui_open) {
+            impl_->gameplay_ui->close();
+            gameplay_ui_open = false;
+            SNT_LOG_INFO("P6 gameplay UI closed");
+        }
+        if ((input_state.esc_pressed || gameplay_ui_open) && impl_->mouse_locked) {
             // Lock-state toggle failures are non-fatal; ignore but keep
             // the local `mouse_locked` flag in sync with intent.
             auto _ = impl_->window.set_relative_mouse_mode(false);
             (void)_;
             impl_->mouse_locked = false;
-        } else if (input_state.wants_mouse_lock && !impl_->mouse_locked) {
+        } else if (input_state.wants_mouse_lock && !impl_->mouse_locked && !gameplay_ui_open) {
             auto _ = impl_->window.set_relative_mouse_mode(true);
             (void)_;
             impl_->mouse_locked = true;
@@ -788,18 +842,39 @@ void Engine::run() {
         });
         impl_->input_system.new_frame();
 
-        // Sample metrics + draw debug panel (MuiContext collects text
-        // vertices; MuiRenderer submits them inside the forward pass).
-        auto& panel = snt::ui::default_debug_panel();
-        panel.sample();
-        snt::ui::MuiContext& mui = snt::ui::default_mui_context();
-        mui.begin_frame();
-        panel.draw();
-        if (impl_->mouse_locked) {
-            const auto& extent = impl_->vk_swapchain.extent();
-            draw_center_crosshair(mui, extent.width, extent.height);
+        impl_->performance_ui.publish({
+            .fps = impl_->fps_tracker.fps(),
+            .frame_ms = impl_->fps_tracker.last_frame_ms,
+            .tps = impl_->tick_stats.tps,
+            .mspt = impl_->tick_stats.last_tick_ms,
+            .job_workers = static_cast<int32_t>(
+                snt::core::default_job_system().worker_count()),
+        });
+
+        impl_->ui_draw_data = {};
+        const auto& extent = impl_->vk_swapchain.extent();
+        if (impl_->gameplay_ui) {
+            auto root = snt::ui::build_gameplay_ui_root(
+                *impl_->gameplay_ui,
+                {static_cast<float>(extent.width), static_cast<float>(extent.height)});
+            auto frame = impl_->gameplay_ui_runtime.build_frame(
+                *root,
+                {static_cast<float>(extent.width), static_cast<float>(extent.height)});
+            impl_->ui_draw_data = std::move(frame.draw_data);
         }
-        mui.end_frame();
+        if (impl_->performance_ui.visible()) {
+            auto panel = snt::ui::build_performance_panel_view(impl_->performance_ui);
+            auto frame = impl_->gameplay_ui_runtime.build_frame(
+                *panel,
+                {static_cast<float>(extent.width), static_cast<float>(extent.height)});
+            append_draw_data(impl_->ui_draw_data, frame.draw_data);
+        }
+        if (impl_->mouse_locked) {
+            snt::ui::Arc2DCommandBuffer crosshair_commands;
+            draw_center_crosshair(crosshair_commands, extent.width, extent.height);
+            append_draw_data(impl_->ui_draw_data,
+                             impl_->arc2d_renderer.build_draw_data(crosshair_commands));
+        }
 
         // Update the UI orthographic projection for the current swapchain
         // extent (pixel-space → clip-space). Must happen before

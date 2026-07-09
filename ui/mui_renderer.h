@@ -1,13 +1,12 @@
-// MuiRenderer — Vulkan rendering backend for MUI (immediate-mode UI).
+// MuiRenderer — Vulkan rendering backend for retained MUI draw data.
 //
 // Responsibilities:
 //   - Bake an ASCII font atlas (32..126) via assets/font_atlas FreeType into a single
 //     R8_UNORM texture at init time.
 //   - Create a UI graphics pipeline: pos2D+uv vertex layout, orthographic
 //     projection UBO, alpha blending, no depth test/write (UI draws on top).
-//   - Per frame: receive a DrawData (vertices + indices) from MuiContext,
-//     upload to a staging buffer, and record draw calls into the active
-//     command buffer.
+//   - Per frame: receive UiDrawData from retained MUI / Arc2D, upload to a
+//     staging buffer, and record draw calls into the active command buffer.
 //
 // Integration: RenderSystem records UI draws at the END of its forward
 // pass callback (same render pass scope, same command buffer). The UI
@@ -15,12 +14,12 @@
 // composites over the 3D scene.
 //
 // Layering: sits in ui/, depends on render_backend (VulkanDevice, pipeline,
-// buffer, descriptor) + assets/font_atlas. MuiContext (ui/mui.h) produces
-// DrawData; MuiRenderer consumes it.
+// buffer, descriptor) + assets/font_atlas. Retained MUI produces draw data;
+// MuiRenderer consumes it.
 
 #pragma once
 
-#include "mui.h"  // UiVertex, UiDrawData, GlyphInfo (Vulkan-free types)
+#include "ui_draw_data.h"
 
 #include "core/expected.h"
 
@@ -66,14 +65,6 @@ public:
     // to a CPU-visible buffer and draws them with the UI pipeline.
     void render(VkCommandBuffer cmd, const UiDrawData& draw_data);
 
-    // Glyph lookup for MuiContext text layout (ASCII 32..126).
-    // Returns nullptr for characters outside the baked range.
-    const GlyphInfo* glyph(char c) const;
-
-    // Font metrics for text layout.
-    float font_size() const { return font_size_; }
-    float line_height() const { return line_height_; }
-
 private:
     // Bake the font atlas: load TTF, rasterize ASCII 32..126 into a bitmap,
     // create Vulkan texture + view + sampler.
@@ -92,13 +83,7 @@ private:
     VkImageView    atlas_view_        = VK_NULL_HANDLE;
     VmaAllocation  atlas_allocation_  = VK_NULL_HANDLE;
     VkSampler      atlas_sampler_     = VK_NULL_HANDLE;
-    // Glyph lookup table (indexed by char code 32..126).
-    static constexpr int kFirstChar = 32;
-    static constexpr int kLastChar  = 126;
-    GlyphInfo glyphs_[kLastChar - kFirstChar + 1] = {};
-
     float font_size_   = 16.0f;
-    float line_height_ = 20.0f;
 
     // Pipeline + descriptor.
     VkPipelineLayout      pipeline_layout_ = VK_NULL_HANDLE;
