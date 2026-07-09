@@ -92,5 +92,20 @@ add_custom_command(TARGET snt_engine_app POST_BUILD
     COMMENT "Copying test assets next to executable"
 )
 
+add_custom_command(TARGET snt_engine_app POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${SNT_GAME_CONTENT_ROOT}/resource/terrain
+        $<TARGET_FILE_DIR:snt_engine_app>/resource/terrain
+    COMMENT "Copying terrain textures next to executable"
+)
+
+add_custom_command(TARGET snt_engine_app POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_RUNTIME_DLLS:snt_engine_app>
+        $<TARGET_FILE_DIR:snt_engine_app>
+    COMMAND_EXPAND_LISTS
+    COMMENT "Copying runtime DLLs next to executable"
+)
+
 # Output name for convenience.
 set_target_properties(snt_engine_app PROPERTIES OUTPUT_NAME snt_engine)

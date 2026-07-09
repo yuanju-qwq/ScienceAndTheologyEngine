@@ -21,14 +21,16 @@ namespace snt::voxel {
 //   location 1: normal    (vec3)
 //   location 2: material_id (uint)
 //   location 3: face_type (float)  0=top, 1=bottom, 2=sides
+//   location 4: uv (vec2) tile-local, repeated across greedy-merged faces
 //
 // Kept as plain floats/uint for stable memcpy into the vertex buffer.
-// 3*4 + 3*4 + 4 + 4 = 32 bytes per vertex.
+// 3*4 + 3*4 + 4 + 4 + 2*4 = 40 bytes per vertex.
 struct VoxelVertex {
     float    position[3];
     float    normal[3];
     uint32_t material_id;
     float    face_type;
+    float    uv[2];
 };
 
 // Single-material mesh slice produced by greedy meshing. The chunk

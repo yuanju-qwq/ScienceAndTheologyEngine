@@ -1,10 +1,8 @@
-// MuiRenderer implementation — font atlas baking + Vulkan pipeline + draw.
-
-#define STB_TRUETYPE_IMPLEMENTATION
-#include "stb_truetype.h"
+// MuiRenderer implementation — font atlas texture + Vulkan pipeline + draw.
 
 #include "mui_renderer.h"
 
+#include "assets/font_atlas.h"
 #include "vulkan_buffer.h"
 #include "vulkan_device.h"
 
@@ -27,7 +25,7 @@ static bool one_time_submit(snt::render_backend::VulkanDevice& device,
     VkCommandPoolCreateInfo pool_ci{
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
         .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
-        .queueFamilyIndex = 0,  // graphics family (assumed index 0)
+        .queueFamilyIndex = device.graphics_family(),
     };
     VkCommandPool pool = VK_NULL_HANDLE;
     if (vkCreateCommandPool(device.logical(), &pool_ci, nullptr, &pool) != VK_SUCCESS) {
@@ -127,64 +125,48 @@ void MuiRenderer::destroy() {
 // ---------------------------------------------------------------------------
 
 snt::core::Expected<void> MuiRenderer::bake_font_atlas(const std::string& font_path) {
-    // Load TTF file into memory.
-    std::ifstream file(font_path, std::ios::binary | std::ios::ate);
-    if (!file.is_open()) {
-        return snt::core::Error{snt::core::ErrorCode::kUnknown,
-                                "Failed to open font file: " + font_path};
-    }
-    size_t file_size = static_cast<size_t>(file.tellg());
-    std::vector<unsigned char> ttf_data(file_size);
-    file.seekg(0);
-    file.read(reinterpret_cast<char*>(ttf_data.data()), file_size);
-
-    // Bake ASCII 32..126 into a 512x512 bitmap.
     constexpr int kAtlasW = 512;
     constexpr int kAtlasH = 512;
-    std::vector<unsigned char> bitmap(kAtlasW * kAtlasH, 0);
+    snt::assets::FontAtlasBuildDesc desc;
+    desc.font_path = font_path;
+    desc.pixel_size = font_size_;
+    desc.atlas_width = kAtlasW;
+    desc.atlas_height = kAtlasH;
 
-    stbtt_bakedchar baked[kLastChar - kFirstChar + 1];
-    int result = stbtt_BakeFontBitmap(
-        ttf_data.data(), 0, font_size_,
-        bitmap.data(), kAtlasW, kAtlasH,
-        kFirstChar, kLastChar - kFirstChar + 1,
-        baked);
-
-    if (result <= 0) {
-        return snt::core::Error{snt::core::ErrorCode::kUnknown,
-                                "stbtt_BakeFontBitmap failed (atlas too small?)"};
+    auto atlas_result = snt::assets::build_font_atlas_freetype(desc);
+    if (!atlas_result) {
+        return atlas_result.error().with_context("MuiRenderer::bake_font_atlas");
     }
 
-    // Extract glyph info for MuiContext text layout.
-    for (int i = 0; i <= kLastChar - kFirstChar; ++i) {
-        const auto& b = baked[i];
+    const auto& atlas = *atlas_result;
+    std::memset(glyphs_, 0, sizeof(glyphs_));
+    for (const auto& g : atlas.glyphs) {
+        if (g.codepoint < kFirstChar || g.codepoint > kLastChar) {
+            continue;
+        }
+        const size_t i = g.codepoint - kFirstChar;
+        const float x0 = static_cast<float>(g.bearing_x);
+        const float y0 = -static_cast<float>(g.bearing_y);
         glyphs_[i] = {
-            .uv_x0 = b.x0 / static_cast<float>(kAtlasW),
-            .uv_y0 = b.y0 / static_cast<float>(kAtlasH),
-            .uv_x1 = b.x1 / static_cast<float>(kAtlasW),
-            .uv_y1 = b.y1 / static_cast<float>(kAtlasH),
-            .x0 = b.xoff,
-            .y0 = b.yoff,
-            .x1 = b.xoff + b.x1 - b.x0,
-            .y1 = b.yoff + b.y1 - b.y0,
-            .advance = b.xadvance,
+            .uv_x0 = g.u0,
+            .uv_y0 = g.v0,
+            .uv_x1 = g.u1,
+            .uv_y1 = g.v1,
+            .x0 = x0,
+            .y0 = y0,
+            .x1 = x0 + static_cast<float>(g.width),
+            .y1 = y0 + static_cast<float>(g.height),
+            .advance = static_cast<float>(g.advance_x),
         };
     }
-
-    // Query font vertical metrics for line height.
-    stbtt_fontinfo info;
-    stbtt_InitFont(&info, ttf_data.data(), 0);
-    int ascent, descent, line_gap;
-    stbtt_GetFontVMetrics(&info, &ascent, &descent, &line_gap);
-    float scale = stbtt_ScaleForPixelHeight(&info, font_size_);
-    line_height_ = (ascent - descent + line_gap) * scale;
+    line_height_ = atlas.line_height > 0.0f ? atlas.line_height : font_size_ * 1.25f;
 
     // --- Create Vulkan texture (R8_UNORM, device-local) ---
     VkImageCreateInfo image_ci{
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
         .format = VK_FORMAT_R8_UNORM,
-        .extent = {kAtlasW, kAtlasH, 1},
+        .extent = {atlas.image.width, atlas.image.height, 1},
         .mipLevels = 1,
         .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -227,7 +209,7 @@ snt::core::Expected<void> MuiRenderer::bake_font_atlas(const std::string& font_p
     VmaAllocation staging_alloc = VK_NULL_HANDLE;
     VkBufferCreateInfo sb_ci{
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = bitmap.size(),
+        .size = atlas.image.alpha.size(),
         .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
@@ -239,8 +221,12 @@ snt::core::Expected<void> MuiRenderer::bake_font_atlas(const std::string& font_p
                                 "vmaCreateBuffer (staging) failed"};
     }
     void* mapped = nullptr;
-    vmaMapMemory(device_->vma_allocator(), staging_alloc, &mapped);
-    std::memcpy(mapped, bitmap.data(), bitmap.size());
+    if (vmaMapMemory(device_->vma_allocator(), staging_alloc, &mapped) != VK_SUCCESS) {
+        vmaDestroyBuffer(device_->vma_allocator(), staging, staging_alloc);
+        return snt::core::Error{snt::core::ErrorCode::kVulkanBufferInitFailed,
+                                "vmaMapMemory (ui font staging) failed"};
+    }
+    std::memcpy(mapped, atlas.image.alpha.data(), atlas.image.alpha.size());
     vmaUnmapMemory(device_->vma_allocator(), staging_alloc);
 
     one_time_submit(*device_, [&](VkCommandBuffer cmd) {
@@ -279,7 +265,7 @@ snt::core::Expected<void> MuiRenderer::bake_font_atlas(const std::string& font_p
                 .layerCount = 1,
             },
             .imageOffset = {0, 0, 0},
-            .imageExtent = {kAtlasW, kAtlasH, 1},
+            .imageExtent = {atlas.image.width, atlas.image.height, 1},
         };
         vkCmdCopyBufferToImage(cmd, staging, atlas_image_,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);

@@ -121,6 +121,86 @@ if(NOT TARGET tinyobjloader::tinyobjloader)
 endif()
 
 # ============================================================
+# FreeType (font rasterization)
+# ============================================================
+set(_FREETYPE_ARCHIVE ${_SNT_DOWNLOADS_DIR}/freetype-VER-2-14-3.zip)
+if(NOT EXISTS ${_FREETYPE_ARCHIVE})
+    message(FATAL_ERROR "FreeType archive missing: ${_FREETYPE_ARCHIVE}. Run download_third_party.ps1.")
+endif()
+set(FT_DISABLE_BZIP2 ON CACHE BOOL "Disable FreeType bzip2 support" FORCE)
+set(FT_DISABLE_BROTLI ON CACHE BOOL "Disable FreeType brotli support" FORCE)
+set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "Disable FreeType harfbuzz support" FORCE)
+set(FT_DISABLE_PNG ON CACHE BOOL "Disable FreeType png support" FORCE)
+set(FT_DISABLE_ZLIB ON CACHE BOOL "Disable FreeType zlib support" FORCE)
+FetchContent_Declare(
+    FreeType
+    URL ${_FREETYPE_ARCHIVE}
+)
+FetchContent_MakeAvailable(FreeType)
+if(TARGET freetype AND NOT TARGET Freetype::Freetype)
+    add_library(Freetype::Freetype ALIAS freetype)
+endif()
+if(NOT TARGET Freetype::Freetype)
+    message(FATAL_ERROR "FreeType target missing after FetchContent_MakeAvailable(FreeType).")
+endif()
+
+# ============================================================
+# shaderc (runtime/build-time GLSL -> SPIR-V compilation)
+# ============================================================
+# Use Vulkan SDK's shaderc package. The standalone shaderc source archive
+# requires glslang/SPIRV-Tools sources beside it; the SDK ships a complete
+# combined library and headers.
+find_path(SHADERC_INCLUDE_DIR
+    NAMES shaderc/shaderc.h
+    HINTS
+        "$ENV{VULKAN_SDK}/Include"
+        "D:/vulkansdk/Include"
+)
+find_library(SHADERC_SHARED_IMPLIB_RELEASE
+    NAMES shaderc_shared
+    HINTS
+        "$ENV{VULKAN_SDK}/Lib"
+        "D:/vulkansdk/Lib"
+)
+find_library(SHADERC_SHARED_IMPLIB_DEBUG
+    NAMES shaderc_shared
+    HINTS
+        "$ENV{VULKAN_SDK}/Lib"
+        "D:/vulkansdk/Lib"
+)
+find_file(SHADERC_SHARED_DLL_RELEASE
+    NAMES shaderc_shared.dll
+    HINTS
+        "$ENV{VULKAN_SDK}/Bin"
+        "D:/vulkansdk/Bin"
+)
+find_file(SHADERC_SHARED_DLL_DEBUG
+    NAMES shaderc_shared.dll
+    HINTS
+        "$ENV{VULKAN_SDK}/Bin"
+        "D:/vulkansdk/Bin"
+)
+set(SHADERC_SHARED_IMPLIB_DEBUG "${SHADERC_SHARED_IMPLIB_RELEASE}")
+set(SHADERC_SHARED_DLL_DEBUG "${SHADERC_SHARED_DLL_RELEASE}")
+if(NOT SHADERC_INCLUDE_DIR OR NOT SHADERC_SHARED_IMPLIB_RELEASE OR NOT SHADERC_SHARED_DLL_RELEASE)
+    message(FATAL_ERROR "shaderc shared library not found in Vulkan SDK. Set VULKAN_SDK to a SDK with Include/shaderc, Lib/shaderc_shared.lib, and Bin/shaderc_shared.dll.")
+endif()
+if(NOT TARGET shaderc::shaderc_shared)
+    add_library(shaderc::shaderc_shared SHARED IMPORTED)
+    set_target_properties(shaderc::shaderc_shared PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${SHADERC_INCLUDE_DIR}"
+        IMPORTED_IMPLIB_RELEASE "${SHADERC_SHARED_IMPLIB_RELEASE}"
+        IMPORTED_IMPLIB_RELWITHDEBINFO "${SHADERC_SHARED_IMPLIB_RELEASE}"
+        IMPORTED_IMPLIB_MINSIZEREL "${SHADERC_SHARED_IMPLIB_RELEASE}"
+        IMPORTED_IMPLIB_DEBUG "${SHADERC_SHARED_IMPLIB_DEBUG}"
+        IMPORTED_LOCATION_RELEASE "${SHADERC_SHARED_DLL_RELEASE}"
+        IMPORTED_LOCATION_RELWITHDEBINFO "${SHADERC_SHARED_DLL_RELEASE}"
+        IMPORTED_LOCATION_MINSIZEREL "${SHADERC_SHARED_DLL_RELEASE}"
+        IMPORTED_LOCATION_DEBUG "${SHADERC_SHARED_DLL_DEBUG}"
+    )
+endif()
+
+# ============================================================
 # SDL3 (extracted source under third_party/)
 # ============================================================
 # SDL3 is built from source for full control and debug symbols.
@@ -266,6 +346,7 @@ target_link_libraries(snt_third_party INTERFACE
     snt_as_scriptbuilder
     snt_as_debugger
 )
+target_link_libraries(snt_third_party INTERFACE Freetype::Freetype shaderc::shaderc_shared)
 if(TARGET SDL3-shared)
     target_link_libraries(snt_third_party INTERFACE SDL3-shared)
 endif()

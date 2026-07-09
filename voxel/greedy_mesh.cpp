@@ -171,6 +171,10 @@ void emit_face_quad(VoxelMeshData& mesh, int dir, int32_t d,
     v1.material_id = static_cast<uint32_t>(material_id);
     v2.material_id = static_cast<uint32_t>(material_id);
     v3.material_id = static_cast<uint32_t>(material_id);
+    v0.uv[0] = fu0; v0.uv[1] = fv0;
+    v1.uv[0] = fu1; v1.uv[1] = fv0;
+    v2.uv[0] = fu1; v2.uv[1] = fv1;
+    v3.uv[0] = fu0; v3.uv[1] = fv1;
 
     switch (dir) {
         case FaceDir::kTop:  // +Y, plane: X-Z at y=d+1

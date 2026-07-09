@@ -11,7 +11,12 @@
 add_library(snt_assets STATIC
     asset_manager.cpp
     asset_manifest.cpp
+    font_atlas.cpp
+    loader.cpp
+    material_atlas.cpp
     mesh_asset_loader.cpp
+    shader_cache.cpp
+    texture_cache.cpp
 )
 target_include_directories(snt_assets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(snt_assets PUBLIC
@@ -22,4 +27,4 @@ target_link_libraries(snt_assets PUBLIC
 # asset_manifest.cpp uses nlohmann_json for JSON parsing. Linked PRIVATE
 # so the dependency doesn't leak to consumers of snt_assets (the header
 # itself is dependency-free).
-target_link_libraries(snt_assets PRIVATE snt_third_party)
+target_link_libraries(snt_assets PRIVATE snt_third_party stb::stb)

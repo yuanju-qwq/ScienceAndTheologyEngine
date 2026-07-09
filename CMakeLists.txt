@@ -42,6 +42,7 @@ if(MSVC)
         /permissive-
         /Zc:__cplusplus
         /EHsc
+        /FS
     )
 endif()
 

@@ -1,7 +1,7 @@
 // MuiRenderer — Vulkan rendering backend for MUI (immediate-mode UI).
 //
 // Responsibilities:
-//   - Bake an ASCII font atlas (32..126) via stb_truetype into a single
+//   - Bake an ASCII font atlas (32..126) via assets/font_atlas FreeType into a single
 //     R8_UNORM texture at init time.
 //   - Create a UI graphics pipeline: pos2D+uv vertex layout, orthographic
 //     projection UBO, alpha blending, no depth test/write (UI draws on top).
@@ -15,7 +15,7 @@
 // composites over the 3D scene.
 //
 // Layering: sits in ui/, depends on render_backend (VulkanDevice, pipeline,
-// buffer, descriptor) + stb_truetype. MuiContext (ui/mui.h) produces
+// buffer, descriptor) + assets/font_atlas. MuiContext (ui/mui.h) produces
 // DrawData; MuiRenderer consumes it.
 
 #pragma once
@@ -92,8 +92,6 @@ private:
     VkImageView    atlas_view_        = VK_NULL_HANDLE;
     VmaAllocation  atlas_allocation_  = VK_NULL_HANDLE;
     VkSampler      atlas_sampler_     = VK_NULL_HANDLE;
-    VkDeviceMemory atlas_staging_     = VK_NULL_HANDLE;  // staging buffer for upload
-
     // Glyph lookup table (indexed by char code 32..126).
     static constexpr int kFirstChar = 32;
     static constexpr int kLastChar  = 126;

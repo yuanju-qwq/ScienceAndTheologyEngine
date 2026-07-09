@@ -59,6 +59,16 @@ $downloads = @(
         File = "tinyobjloader-release.zip"
     },
     @{
+        Name = "FreeType"
+        Url  = "https://codeload.github.com/freetype/freetype/zip/refs/tags/VER-2-14-3"
+        File = "freetype-VER-2-14-3.zip"
+    },
+    @{
+        Name = "shaderc"
+        Url  = "https://codeload.github.com/google/shaderc/zip/refs/tags/v2026.2"
+        File = "shaderc-v2026.2.zip"
+    },
+    @{
         Name = "googletest"
         Url  = "https://codeload.github.com/google/googletest/zip/refs/tags/v1.14.0"
         File = "googletest-v1.14.0.zip"

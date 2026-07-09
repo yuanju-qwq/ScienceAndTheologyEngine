@@ -18,6 +18,7 @@ add_executable(snt_tests
     test_clock.cpp
     test_path_utils.cpp
     test_asset_cache.cpp
+    test_asset_pipeline.cpp
     test_script_engine.cpp
     test_script_loader.cpp
     test_entity_guid.cpp       # Phase 1: EntityGuid + World mapping
@@ -57,3 +58,11 @@ gtest_discover_tests(snt_tests DISCOVERY_MODE PRE_TEST)
 # mesh.vert.spv can find them via path_utils::resolve(). Mirrors the
 # snt_engine_app copy steps.
 add_dependencies(snt_tests snt_copy_shaders snt_copy_config snt_copy_scenes snt_copy_test_assets)
+
+add_custom_command(TARGET snt_tests POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_RUNTIME_DLLS:snt_tests>
+        $<TARGET_FILE_DIR:snt_tests>
+    COMMAND_EXPAND_LISTS
+    COMMENT "Copying runtime DLLs next to tests"
+)

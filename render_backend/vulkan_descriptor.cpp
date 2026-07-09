@@ -24,6 +24,23 @@ VulkanDescriptor::~VulkanDescriptor() {
 }
 
 snt::core::Expected<void> VulkanDescriptor::init(VulkanDevice& device, uint32_t max_entities) {
+    return init_internal(device, max_entities, VK_NULL_HANDLE, VK_NULL_HANDLE, false);
+}
+
+snt::core::Expected<void> VulkanDescriptor::init_with_texture(
+        VulkanDevice& device,
+        uint32_t max_entities,
+        VkImageView image_view,
+        VkSampler sampler) {
+    return init_internal(device, max_entities, image_view, sampler, true);
+}
+
+snt::core::Expected<void> VulkanDescriptor::init_internal(
+        VulkanDevice& device,
+        uint32_t max_entities,
+        VkImageView image_view,
+        VkSampler sampler,
+        bool with_texture) {
     device_ = &device;
     max_entities_ = max_entities;
 
@@ -41,18 +58,26 @@ snt::core::Expected<void> VulkanDescriptor::init(VulkanDevice& device, uint32_t 
     }
 
     // --- Step 1: descriptor set layout (DYNAMIC UBO) ---
-    VkDescriptorSetLayoutBinding ubo_binding{
+    VkDescriptorSetLayoutBinding bindings[2] = {};
+    bindings[0] = VkDescriptorSetLayoutBinding{
         .binding = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
         .descriptorCount = 1,
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
         .pImmutableSamplers = nullptr,
     };
+    bindings[1] = VkDescriptorSetLayoutBinding{
+        .binding = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .pImmutableSamplers = nullptr,
+    };
 
     VkDescriptorSetLayoutCreateInfo layout_info{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 1,
-        .pBindings = &ubo_binding,
+        .bindingCount = with_texture ? 2u : 1u,
+        .pBindings = bindings,
     };
 
     if (vkCreateDescriptorSetLayout(device_->logical(), &layout_info, nullptr,
@@ -62,16 +87,22 @@ snt::core::Expected<void> VulkanDescriptor::init(VulkanDevice& device, uint32_t 
     }
 
     // --- Step 2: descriptor pool ---
-    VkDescriptorPoolSize pool_size{
-        .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-        .descriptorCount = kMaxFramesInFlight,
+    VkDescriptorPoolSize pool_sizes[2] = {
+        {
+            .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+            .descriptorCount = kMaxFramesInFlight,
+        },
+        {
+            .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = kMaxFramesInFlight,
+        },
     };
 
     VkDescriptorPoolCreateInfo pool_info{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .maxSets = kMaxFramesInFlight,
-        .poolSizeCount = 1,
-        .pPoolSizes = &pool_size,
+        .poolSizeCount = with_texture ? 2u : 1u,
+        .pPoolSizes = pool_sizes,
     };
 
     if (vkCreateDescriptorPool(device_->logical(), &pool_info, nullptr,
@@ -117,7 +148,14 @@ snt::core::Expected<void> VulkanDescriptor::init(VulkanDevice& device, uint32_t 
             .range = sizeof(UniformBufferObject),
         };
 
-        VkWriteDescriptorSet write{
+        VkDescriptorImageInfo image_info{
+            .sampler = sampler,
+            .imageView = image_view,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+
+        VkWriteDescriptorSet writes[2] = {
+        {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .dstSet = descriptor_sets_[i],
             .dstBinding = 0,
@@ -125,13 +163,23 @@ snt::core::Expected<void> VulkanDescriptor::init(VulkanDevice& device, uint32_t 
             .descriptorCount = 1,
             .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
             .pBufferInfo = &buf_info,
+        },
+        {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = descriptor_sets_[i],
+            .dstBinding = 1,
+            .dstArrayElement = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &image_info,
+        },
         };
 
-        vkUpdateDescriptorSets(device_->logical(), 1, &write, 0, nullptr);
+        vkUpdateDescriptorSets(device_->logical(), with_texture ? 2u : 1u, writes, 0, nullptr);
     }
 
-    SNT_LOG_INFO("Dynamic UBO descriptor created (stride=%u, max_entities=%u)",
-                 ubo_stride_, max_entities_);
+    SNT_LOG_INFO("Dynamic UBO descriptor created (stride=%u, max_entities=%u, texture=%d)",
+                 ubo_stride_, max_entities_, with_texture ? 1 : 0);
     return {};
 }
 

@@ -48,6 +48,10 @@ public:
     // entity); sourced from EngineConfig::RenderConfig::max_entities.
     // Returns void on success, or an Error describing the failure.
     snt::core::Expected<void> init(VulkanDevice& device, uint32_t max_entities);
+    snt::core::Expected<void> init_with_texture(VulkanDevice& device,
+                                                uint32_t max_entities,
+                                                VkImageView image_view,
+                                                VkSampler sampler);
 
     void destroy();
 
@@ -69,6 +73,12 @@ public:
     }
 
 private:
+    snt::core::Expected<void> init_internal(VulkanDevice& device,
+                                            uint32_t max_entities,
+                                            VkImageView image_view,
+                                            VkSampler sampler,
+                                            bool with_texture);
+
     VulkanDevice* device_ = nullptr;
     VkDescriptorSetLayout descriptor_set_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;

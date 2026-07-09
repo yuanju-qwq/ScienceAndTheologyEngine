@@ -97,6 +97,10 @@ public:
 private:
     snt::render_backend::VulkanDevice* device_ = nullptr;
     VkCommandPool upload_command_pool_ = VK_NULL_HANDLE;
+    VkImage atlas_image_ = VK_NULL_HANDLE;
+    VkImageView atlas_view_ = VK_NULL_HANDLE;
+    VkSampler atlas_sampler_ = VK_NULL_HANDLE;
+    void* atlas_allocation_ = nullptr;  // VmaAllocation, kept opaque in header.
 
     // Owned GPU resources. Forward-declared types to keep glm/Vulkan out
     // of this header; full definitions live in the .cpp.

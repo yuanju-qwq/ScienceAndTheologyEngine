@@ -38,9 +38,11 @@ namespace snt::core {
 // doesn't overflow integer ranges and stays friendly with gameplay math.
 using DurationMs = std::chrono::duration<float, std::milli>;
 
-// Time point type paired with DurationMs. anchored to steady_clock's epoch
-// for RealClock; ManualClock maintains its own synthetic epoch.
-using TimePoint = std::chrono::time_point<std::chrono::steady_clock, DurationMs>;
+// Time points keep double precision so long-running machines do not lose
+// sub-frame deltas when steady_clock's epoch value grows large. Public deltas
+// stay as float milliseconds via DurationMs.
+using TimePointDurationMs = std::chrono::duration<double, std::milli>;
+using TimePoint = std::chrono::time_point<std::chrono::steady_clock, TimePointDurationMs>;
 
 // ---------------------------------------------------------------------------
 // IClock: interface used by all time-reading systems.
@@ -57,7 +59,8 @@ public:
     // for a monotonic clock), returns zero.
     DurationMs delta_since(TimePoint earlier) const {
         const auto n = now();
-        return n > earlier ? n - earlier : DurationMs::zero();
+        return n > earlier ? std::chrono::duration_cast<DurationMs>(n - earlier)
+                           : DurationMs::zero();
     }
 };
 
@@ -69,7 +72,7 @@ public:
 class RealClock : public IClock {
 public:
     TimePoint now() const override {
-        return std::chrono::time_point_cast<DurationMs>(
+        return std::chrono::time_point_cast<TimePointDurationMs>(
             std::chrono::steady_clock::now());
     }
 };

@@ -13,22 +13,23 @@
 layout(location = 0) in vec3 fragNormal;
 layout(location = 1) flat in uint fragMaterialId;
 layout(location = 2) in float fragFaceType;
+layout(location = 3) in vec2 fragUv;
+
+layout(set = 0, binding = 1) uniform sampler2D materialAtlas;
 
 layout(location = 0) out vec4 outColor;
 
-// Hash material_id -> stable RGB in [0,1]. Cheap integer hash so each
-// material gets a visually distinct color without a lookup table.
-vec3 material_color(uint id) {
-    uint h = id * 2654435761u;
-    float r = float((h >>  0) & 0xFF) / 255.0;
-    float g = float((h >>  8) & 0xFF) / 255.0;
-    float b = float((h >> 16) & 0xFF) / 255.0;
-    // Bias toward mid-bright so geometry reads well on a dark clear color.
-    return 0.3 + 0.7 * vec3(r, g, b);
+vec3 material_color(uint id, vec2 uv) {
+    const float tile_count = 4.0;
+    float tile = clamp(float(id == 0u ? 0u : id - 1u), 0.0, tile_count - 1.0);
+    vec2 tile_uv = fract(uv);
+    vec2 atlas_uv = vec2((tile + tile_uv.x) / tile_count, tile_uv.y);
+    vec4 sampled = texture(materialAtlas, atlas_uv);
+    return sampled.rgb;
 }
 
 void main() {
-    vec3 base = material_color(fragMaterialId);
+    vec3 base = material_color(fragMaterialId, fragUv);
 
     // Face-type tint: 0=top (brightest), 1=bottom (darkest), 2=sides.
     float tint = 1.0;

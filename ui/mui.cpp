@@ -2,7 +2,7 @@
 //
 // MuiContext collects UiVertex/UiDrawData each frame. MuiRenderer consumes
 // the draw data to submit Vulkan draw calls. Text layout uses the glyph
-// table from MuiRenderer (baked via stb_truetype at init time).
+// table from MuiRenderer (baked via assets/font_atlas at init time).
 //
 // Widget stubs (button, checkbox, slider, plot) remain no-ops; they will
 // be implemented when interactive UI is needed. Text rendering is the
