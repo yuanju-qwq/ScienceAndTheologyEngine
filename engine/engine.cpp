@@ -17,11 +17,8 @@
 #include "core/memory_tracker.h"
 #include "core/path_utils.h"      // path_utils::resolve for shader/asset paths
 #include "core/profiling.h"
-#include "data/defs/chunk_data.h"       // P3: ChunkData::kChunkSize
-#include "data/defs/world_seed.h"       // P3: WorldSeed for TerrainGenerator
 #include "data/world/chunk_registry.h"  // P3: ChunkRegistry
-#include "data/world_gen/terrain_generator.h"  // P3: generate test chunk
-#include "data/world_gen/world_gen_config.h"   // P3 demo world-gen snapshot
+#include "engine/demo_world_bootstrap.h"
 #include "ecs/camera_system.h"
 #include "ecs/components.h"
 #include "ecs/entity_guid.h"
@@ -31,6 +28,7 @@
 #include "platform/window.h"
 #include "render/render_system.h"
 #include "scene/scene.h"          // load_scene for binary scene loading
+#include "render_backend/command_context.h"
 #include "render_backend/vulkan_buffer.h"        // P3: complete type for MSVC eager unique_ptr deleter instantiation
 #include "render_backend/vulkan_depth.h"
 #include "render_backend/vulkan_descriptor.h"
@@ -150,52 +148,6 @@ struct TickStats {
         }
     }
 };
-
-std::shared_ptr<const snt::data::WorldGenConfigSnapshot> make_p3_demo_world_gen_config() {
-    using namespace snt::data;
-
-    auto config = std::make_shared<WorldGenConfigSnapshot>();
-
-    TerrainMaterialDef air;
-    air.id = 0;
-    air.key = "air";
-    config->materials.push_back(air);
-    config->material_ids_by_key[air.key] = air.id;
-    config->material_keys_by_id[air.id] = air.key;
-
-    TerrainMaterialDef stone;
-    stone.id = 1;
-    stone.key = "stone";
-    stone.flags = TF_SOLID | TF_MINEABLE | TF_WALKABLE;
-    config->materials.push_back(stone);
-    config->material_ids_by_key[stone.key] = stone.id;
-    config->material_keys_by_id[stone.id] = stone.key;
-
-    config->roles.air = air.id;
-    config->roles.stone = stone.id;
-    config->roles.dirt = stone.id;
-
-    BaseTerrainRule rule;
-    rule.dimension_id = "overworld";
-    rule.default_material = stone.id;
-    rule.high_elevation_material = stone.id;
-    rule.cave_threshold = 10.0f;  // P3 demo chunk: keep terrain solid/readable.
-    config->base_terrain_rules.push_back(rule);
-
-    config->content_hash = hash_world_gen_config(*config);
-    return config;
-}
-
-size_t count_non_air_cells(const snt::data::ChunkData& chunk,
-                           snt::data::TerrainMaterialId air_material) {
-    size_t non_air = 0;
-    for (const auto& cell : chunk.terrain.cells) {
-        if (static_cast<snt::data::TerrainMaterialId>(cell.material) != air_material) {
-            ++non_air;
-        }
-    }
-    return non_air;
-}
 
 }  // namespace
 
@@ -537,13 +489,11 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
     }
 
     // --- P3: Voxel chunk rendering setup ---
-    // One-shot wiring: init the ChunkRenderer (voxel pipeline + descriptor
-    // + buffer pool), generate a test chunk at the origin via
-    // TerrainGenerator, store it in ChunkRegistry, create a ChunkRenderRef
-    // entity so ChunkRenderSystem remeshes + draws it, and register a
-    // forward-pass callback so chunk draws land inside RenderSystem's pass.
+    // One-shot wiring: init the ChunkRenderer, wire the pure-data
+    // ChunkRenderSystem, run the optional demo bootstrap, then register a
+    // real RenderGraph pass provider for chunk draws.
     {
-        constexpr uint32_t kMaxChunks = 64;
+        const uint32_t max_chunks = config.voxel.max_chunks;
         impl_->chunk_renderer = std::make_unique<snt::voxel::ChunkRenderer>();
         if (auto r = impl_->chunk_renderer->init(
                 impl_->vk_device,
@@ -551,93 +501,148 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
                 impl_->vk_depth.format(),
                 snt::core::path_utils::resolve("shaders/voxel.vert.spv"),
                 snt::core::path_utils::resolve("shaders/voxel.frag.spv"),
-                kMaxChunks); !r) {
+                max_chunks); !r) {
             snt::core::Error e = r.error();
             e.with_context("Engine::init (chunk_renderer)");
             return e;
         }
 
-        // Generate test chunks so there's something to see. Two chunks:
-        //   (0, 0, 0) — surface layer at y=0 (spawn area 5x5 platform)
-        //   (0,-1, 0) — solid ground below y=0 (gives the surface depth
-        //               so side faces are visible from the elevated camera)
-        // Without the chunk below, the y=0 platform is a single-layer
-        // wafer and only its top face renders.
-        auto demo_world_gen = make_p3_demo_world_gen_config();
-        snt::data::TerrainGenerator terrain_gen(
-            snt::data::WorldSeed(20240601u),
-            demo_world_gen);
-
-        constexpr int32_t kDemoChunks[][3] = {
-            {0,  0, 0},
-            {0, -1, 0},
-        };
-        for (auto [cx, cy, cz] : kDemoChunks) {
-            snt::data::ChunkData c = terrain_gen.generate_chunk("overworld", cx, cy, cz);
-            const size_t non_air = count_non_air_cells(c, demo_world_gen->roles.air);
-            const size_t total = c.terrain.cells.size();
-            impl_->chunk_registry.set_chunk("overworld", cx, cy, cz, std::move(c));
-            SNT_LOG_INFO("P3: generated test chunk at (%d,%d,%d), non_air=%zu/%zu",
-                         cx, cy, cz, non_air, total);
-        }
-
         // Wire ChunkRenderSystem and register it with the World so its
-        // update() runs each frame (phase 1: remesh dirty chunks).
+        // update() runs each frame (phase 1: schedule/upload dirty chunks).
         // add_system move-constructs a new instance from impl_'s (which has
         // renderer_/registry_ pointers already wired) and returns a stable
         // reference to the heap-owned instance.
         impl_->chunk_render_system.set_chunk_renderer(impl_->chunk_renderer.get());
         impl_->chunk_render_system.set_chunk_registry(&impl_->chunk_registry);
-        // Mark the demo chunks dirty so they remesh on the first update().
-        // Pure-data tracking: no ECS entities are created per chunk.
-        for (auto [cx, cy, cz] : kDemoChunks) {
-            impl_->chunk_render_system.mark_dirty(
-                snt::data::ChunkKey("overworld", cx, cy, cz));
+        impl_->chunk_render_system.set_remesh_jobs_per_frame(
+            config.voxel.remesh_jobs_per_frame);
+        impl_->chunk_render_system.set_uploads_per_frame(
+            config.voxel.uploads_per_frame);
+        if (auto r = bootstrap_demo_world(
+                DemoWorldBootstrapDesc{
+                    .enabled = config.demo.bootstrap_chunks,
+                    .seed = config.demo.seed,
+                },
+                impl_->chunk_registry,
+                impl_->chunk_render_system); !r) {
+            snt::core::Error e = r.error();
+            e.with_context("Engine::init (bootstrap_demo_world)");
+            return e;
         }
         auto& chunk_sys = impl_->world.add_system<snt::voxel::ChunkRenderSystem>(
             std::move(impl_->chunk_render_system));
 
-        // Register the forward-pass callback (phase 2: record chunk draws
-        // inside RenderSystem's pass). Captures only the live system
-        // pointer — render() no longer needs the World (pure-data path).
+        // Register voxel terrain as its own RenderGraph pass.
         auto* chunk_sys_ptr = &chunk_sys;
-        impl_->render_system.set_forward_pass_callback(
-            [chunk_sys_ptr](VkCommandBuffer cmd, uint32_t frame_idx,
-                            const float view[16], const float proj[16]) {
-                chunk_sys_ptr->render(cmd, frame_idx, view, proj);
+        impl_->render_system.add_pass_provider(
+            [chunk_sys_ptr](snt::render::RenderPassBuildContext& ctx) {
+                auto* pass = ctx.graph.add_pass("voxel_chunks");
+                if (!pass) {
+                    SNT_LOG_ERROR("Failed to add voxel_chunks render pass");
+                    return;
+                }
+                if (!ctx.last_color_pass.empty()) {
+                    pass->depends_on.push_back(ctx.last_color_pass);
+                }
+                pass->color_attachments.push_back(snt::renderer::ColorAttachmentDecl{
+                    .resource = ctx.color_resource,
+                    .load_op = VK_ATTACHMENT_LOAD_OP_LOAD,
+                    .store_op = VK_ATTACHMENT_STORE_OP_STORE,
+                });
+                pass->depth_attachment = snt::renderer::DepthAttachmentDecl{
+                    .resource = ctx.depth_resource,
+                    .load_op = VK_ATTACHMENT_LOAD_OP_LOAD,
+                    .store_op = VK_ATTACHMENT_STORE_OP_STORE,
+                };
+
+                const auto view = ctx.view;
+                const auto proj = ctx.proj;
+                const auto extent = ctx.extent;
+                const uint32_t frame_idx = ctx.frame_idx;
+                pass->execute = [chunk_sys_ptr, view, proj, extent, frame_idx]
+                                (snt::render_backend::CommandContext& pass_ctx) {
+                    VkCommandBuffer cmd = pass_ctx.handle();
+                    VkViewport viewport{
+                        .x = 0.0f,
+                        .y = 0.0f,
+                        .width = static_cast<float>(extent.width),
+                        .height = static_cast<float>(extent.height),
+                        .minDepth = 0.0f,
+                        .maxDepth = 1.0f,
+                    };
+                    vkCmdSetViewport(cmd, 0, 1, &viewport);
+                    VkRect2D scissor{.offset = {0, 0}, .extent = extent};
+                    vkCmdSetScissor(cmd, 0, 1, &scissor);
+                    chunk_sys_ptr->render(cmd, frame_idx, view.data(), proj.data());
+                };
+                ctx.last_color_pass = pass->name;
             });
     }
 
     // --- P3.5: MUI renderer (debug overlay text) ---
-    // Create + init the MuiRenderer: bakes a font atlas, creates the UI
-    // pipeline (alpha blend, no depth), and connects to MuiContext for
-    // glyph lookup during text() calls. The font path uses a Windows
-    // system font; this will be made configurable later.
+    // Create + init the MuiRenderer from config. Empty font_path disables
+    // text rendering so headless/cross-platform runs do not depend on a
+    // Windows system font.
     {
-        impl_->mui_renderer = std::make_unique<snt::ui::MuiRenderer>();
-        VkFormat color_format = impl_->vk_swapchain.image_format();
-        auto r = impl_->mui_renderer->init(impl_->vk_device, color_format,
-                                           "C:\\Windows\\Fonts\\arial.ttf",
-                                           16.0f);
-        if (!r) {
-            SNT_LOG_ERROR("MuiRenderer init failed: %s",
-                          r.error().format().c_str());
-            impl_->mui_renderer.reset();
+        if (config.ui.font_path.empty()) {
+            SNT_LOG_WARN("MUI font_path is empty; text overlay disabled");
         } else {
-            // Connect MuiRenderer to the global MuiContext so text() calls
-            // use its glyph table for layout.
-            snt::ui::default_mui_context().set_renderer(impl_->mui_renderer.get());
+            impl_->mui_renderer = std::make_unique<snt::ui::MuiRenderer>();
+            VkFormat color_format = impl_->vk_swapchain.image_format();
+            auto r = impl_->mui_renderer->init(
+                impl_->vk_device,
+                color_format,
+                snt::core::path_utils::resolve(config.ui.font_path),
+                config.ui.font_size_px);
+            if (!r) {
+                SNT_LOG_ERROR("MuiRenderer init failed: %s",
+                              r.error().format().c_str());
+                impl_->mui_renderer.reset();
+            } else {
+                // Connect MuiRenderer to the global MuiContext so text()
+                // calls use its glyph table for layout.
+                snt::ui::default_mui_context().set_renderer(impl_->mui_renderer.get());
 
-            // Register the UI pass callback: invoked at the END of the
-            // forward pass to draw the debug overlay on top of the 3D
-            // scene. The callback captures the MuiContext to read its
-            // draw_data() and the MuiRenderer to issue draw calls.
-            auto* mui_renderer_ptr = impl_->mui_renderer.get();
-            impl_->render_system.set_ui_pass_callback(
-                [mui_renderer_ptr](VkCommandBuffer cmd, uint32_t /*frame_idx*/) {
-                    const auto& dd = snt::ui::default_mui_context().draw_data();
-                    mui_renderer_ptr->render(cmd, dd);
-                });
+                // Register UI as its own RenderGraph pass. It only writes
+                // color and uses LOAD so it composites over the previous pass.
+                auto* mui_renderer_ptr = impl_->mui_renderer.get();
+                impl_->render_system.add_pass_provider(
+                    [mui_renderer_ptr](snt::render::RenderPassBuildContext& ctx) {
+                        auto* pass = ctx.graph.add_pass("ui_overlay");
+                        if (!pass) {
+                            SNT_LOG_ERROR("Failed to add ui_overlay render pass");
+                            return;
+                        }
+                        if (!ctx.last_color_pass.empty()) {
+                            pass->depends_on.push_back(ctx.last_color_pass);
+                        }
+                        pass->color_attachments.push_back(snt::renderer::ColorAttachmentDecl{
+                            .resource = ctx.color_resource,
+                            .load_op = VK_ATTACHMENT_LOAD_OP_LOAD,
+                            .store_op = VK_ATTACHMENT_STORE_OP_STORE,
+                        });
+
+                        const auto extent = ctx.extent;
+                        pass->execute = [mui_renderer_ptr, extent]
+                                        (snt::render_backend::CommandContext& pass_ctx) {
+                            VkCommandBuffer cmd = pass_ctx.handle();
+                            VkViewport viewport{
+                                .x = 0.0f,
+                                .y = 0.0f,
+                                .width = static_cast<float>(extent.width),
+                                .height = static_cast<float>(extent.height),
+                                .minDepth = 0.0f,
+                                .maxDepth = 1.0f,
+                            };
+                            vkCmdSetViewport(cmd, 0, 1, &viewport);
+                            VkRect2D scissor{.offset = {0, 0}, .extent = extent};
+                            vkCmdSetScissor(cmd, 0, 1, &scissor);
+                            const auto& dd = snt::ui::default_mui_context().draw_data();
+                            mui_renderer_ptr->render(cmd, dd);
+                        };
+                        ctx.last_color_pass = pass->name;
+                    });
+            }
         }
     }
 

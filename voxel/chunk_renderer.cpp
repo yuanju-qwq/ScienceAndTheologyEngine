@@ -64,6 +64,69 @@ std::vector<VkVertexInputAttributeDescription> voxel_attributes() {
     };
 }
 
+snt::core::Expected<void> copy_buffer_now(
+        snt::render_backend::VulkanDevice& device,
+        VkCommandPool command_pool,
+        VkBuffer src,
+        VkBuffer dst,
+        VkDeviceSize size) {
+    VkCommandBufferAllocateInfo alloc_info{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = command_pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(device.logical(), &alloc_info, &cmd) != VK_SUCCESS) {
+        return snt::core::Error{snt::core::ErrorCode::kVulkanCommandBufferFailed,
+                                "ChunkRenderer: upload command buffer allocation failed"};
+    }
+
+    VkCommandBufferBeginInfo begin_info{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    if (vkBeginCommandBuffer(cmd, &begin_info) != VK_SUCCESS) {
+        vkFreeCommandBuffers(device.logical(), command_pool, 1, &cmd);
+        return snt::core::Error{snt::core::ErrorCode::kVulkanCommandBufferFailed,
+                                "ChunkRenderer: upload command buffer begin failed"};
+    }
+
+    VkBufferCopy copy_region{.srcOffset = 0, .dstOffset = 0, .size = size};
+    vkCmdCopyBuffer(cmd, src, dst, 1, &copy_region);
+
+    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+        vkFreeCommandBuffers(device.logical(), command_pool, 1, &cmd);
+        return snt::core::Error{snt::core::ErrorCode::kVulkanCommandBufferFailed,
+                                "ChunkRenderer: upload command buffer end failed"};
+    }
+
+    VkFenceCreateInfo fence_info{.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFence fence = VK_NULL_HANDLE;
+    if (vkCreateFence(device.logical(), &fence_info, nullptr, &fence) != VK_SUCCESS) {
+        vkFreeCommandBuffers(device.logical(), command_pool, 1, &cmd);
+        return snt::core::Error{snt::core::ErrorCode::kVulkanCommandBufferFailed,
+                                "ChunkRenderer: upload fence creation failed"};
+    }
+
+    VkSubmitInfo submit_info{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &cmd,
+    };
+    if (vkQueueSubmit(device.graphics_queue(), 1, &submit_info, fence) != VK_SUCCESS) {
+        vkDestroyFence(device.logical(), fence, nullptr);
+        vkFreeCommandBuffers(device.logical(), command_pool, 1, &cmd);
+        return snt::core::Error{snt::core::ErrorCode::kVulkanCommandBufferFailed,
+                                "ChunkRenderer: upload queue submit failed"};
+    }
+
+    vkWaitForFences(device.logical(), 1, &fence, VK_TRUE, UINT64_MAX);
+    vkDestroyFence(device.logical(), fence, nullptr);
+    vkFreeCommandBuffers(device.logical(), command_pool, 1, &cmd);
+    return {};
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -112,6 +175,17 @@ snt::core::Expected<void> ChunkRenderer::init(
         return e;
     }
 
+    VkCommandPoolCreateInfo upload_pool_info{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+        .queueFamilyIndex = device.graphics_family(),
+    };
+    if (vkCreateCommandPool(device.logical(), &upload_pool_info, nullptr,
+                            &upload_command_pool_) != VK_SUCCESS) {
+        return snt::core::Error{snt::core::ErrorCode::kVulkanCommandPoolFailed,
+                                "ChunkRenderer::init: upload command pool failed"};
+    }
+
     SNT_LOG_INFO("ChunkRenderer initialized (max_chunks=%u)", max_chunks);
     return {};
 }
@@ -129,6 +203,10 @@ void ChunkRenderer::destroy() {
     free_mesh_slots_.clear();
 
     if (pool_)        { pool_->destroy();       pool_.reset(); }
+    if (device_ && upload_command_pool_ != VK_NULL_HANDLE) {
+        vkDestroyCommandPool(device_->logical(), upload_command_pool_, nullptr);
+        upload_command_pool_ = VK_NULL_HANDLE;
+    }
     if (pipeline_)    { pipeline_->destroy();   pipeline_.reset(); }
     if (descriptor_)  { descriptor_->destroy(); descriptor_.reset(); }
     device_ = nullptr;
@@ -165,8 +243,9 @@ snt::core::Expected<ChunkMeshHandle> ChunkRenderer::upload_mesh(
     const VkDeviceSize ibo_size = sizeof(uint32_t)    * mesh.indices.size();
 
     auto vbo_r = pool_->acquire(vbo_size,
-                               VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                               /*cpu_visible=*/true);
+                               VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               /*cpu_visible=*/false);
     if (!vbo_r) {
         free_mesh_slots_.push_back(slot_id);
         snt::core::Error e = vbo_r.error();
@@ -174,8 +253,9 @@ snt::core::Expected<ChunkMeshHandle> ChunkRenderer::upload_mesh(
         return e;
     }
     auto ibo_r = pool_->acquire(ibo_size,
-                               VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                               /*cpu_visible=*/true);
+                               VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               /*cpu_visible=*/false);
     if (!ibo_r) {
         pool_->release(*vbo_r);
         free_mesh_slots_.push_back(slot_id);
@@ -186,8 +266,51 @@ snt::core::Expected<ChunkMeshHandle> ChunkRenderer::upload_mesh(
 
     auto* vbo = pool_->get(*vbo_r);
     auto* ibo = pool_->get(*ibo_r);
-    vbo->write(mesh.vertices.data(), vbo_size);
-    ibo->write(mesh.indices.data(),  ibo_size);
+
+    snt::render_backend::VulkanBuffer staging_vbo;
+    if (auto r = staging_vbo.init(*device_, vbo_size,
+                                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                  /*cpu_visible=*/true); !r) {
+        pool_->release(*vbo_r);
+        pool_->release(*ibo_r);
+        free_mesh_slots_.push_back(slot_id);
+        snt::core::Error e = r.error();
+        e.with_context("ChunkRenderer::upload_mesh (staging vbo)");
+        return e;
+    }
+    staging_vbo.write(mesh.vertices.data(), vbo_size);
+
+    snt::render_backend::VulkanBuffer staging_ibo;
+    if (auto r = staging_ibo.init(*device_, ibo_size,
+                                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                  /*cpu_visible=*/true); !r) {
+        pool_->release(*vbo_r);
+        pool_->release(*ibo_r);
+        free_mesh_slots_.push_back(slot_id);
+        snt::core::Error e = r.error();
+        e.with_context("ChunkRenderer::upload_mesh (staging ibo)");
+        return e;
+    }
+    staging_ibo.write(mesh.indices.data(), ibo_size);
+
+    if (auto r = copy_buffer_now(*device_, upload_command_pool_,
+                                 staging_vbo.handle(), vbo->handle(), vbo_size); !r) {
+        pool_->release(*vbo_r);
+        pool_->release(*ibo_r);
+        free_mesh_slots_.push_back(slot_id);
+        snt::core::Error e = r.error();
+        e.with_context("ChunkRenderer::upload_mesh (copy vbo)");
+        return e;
+    }
+    if (auto r = copy_buffer_now(*device_, upload_command_pool_,
+                                 staging_ibo.handle(), ibo->handle(), ibo_size); !r) {
+        pool_->release(*vbo_r);
+        pool_->release(*ibo_r);
+        free_mesh_slots_.push_back(slot_id);
+        snt::core::Error e = r.error();
+        e.with_context("ChunkRenderer::upload_mesh (copy ibo)");
+        return e;
+    }
 
     auto& slot = meshes_[slot_id];
     slot.vbo_id       = vbo_r->id;

@@ -15,6 +15,13 @@ cmake_minimum_required(VERSION 3.20)
 project(snt_engine CXX)
 cmake_policy(SET CMP0079 NEW)
 
+if(MSVC)
+    # Treat all C/C++ sources as UTF-8. This removes MSVC C4819 warnings on
+    # Chinese comments/UTF-8 third-party headers while avoiding ASM/MASM files
+    # such as AngelScript's x64 callfunc source.
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/utf-8>)
+endif()
+
 # ============================================================
 # Engine-wide interface target for shared settings
 # ============================================================

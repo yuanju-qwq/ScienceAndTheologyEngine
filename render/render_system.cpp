@@ -177,11 +177,10 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
         ++entity_index;
     }
 
-    // P3: only skip the frame when there's nothing to draw at all — no
-    // mesh entities AND no forward-pass callback (e.g. chunks). When a
-    // callback is registered, the frame must proceed even with zero mesh
-    // entities so the callback can record its own draws.
-    if (draws.empty() && !forward_pass_callback_) return;
+    // Only skip the frame when no built-in mesh draw and no external pass
+    // providers exist. Providers (voxel/UI/etc.) may still need the frame
+    // even when the ECS mesh view is empty.
+    if (draws.empty() && pass_providers_.empty()) return;
 
     // --- Acquire swapchain image ---
     uint32_t image_index = 0;
@@ -231,11 +230,11 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
         VK_IMAGE_LAYOUT_UNDEFINED,
         extent.width, extent.height);
 
-    // --- Register the forward pass (P2.4: per-entity bind+draw inside) ---
+    // --- Register the built-in mesh forward pass ---
     auto* pipeline  = pipeline_;
     auto* descriptor = descriptor_;
 
-    auto* pass = graph_.add_pass("forward");
+    auto* pass = graph_.add_pass("mesh_forward");
     if (!pass) {
         SNT_LOG_ERROR("add_pass failed");
         return;
@@ -264,14 +263,7 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
     // inside execute_record_only, so this is safe. The callback does NOT
     // call vkCmdBeginRenderPass / EndRenderPass; the graph handles dynamic
     // rendering scope based on the declared attachments.
-    //
-    // P3: also captures the optional forward_pass_callback_ (chunk render
-    // hook) + the per-frame view/proj matrices so the callback can record
-    // chunk draws into the same pass scope.
-    auto pass_cb = forward_pass_callback_;
-    auto ui_cb   = ui_pass_callback_;
-    pass->execute = [pipeline, descriptor, frame_idx, extent, draws,
-                     pass_cb, ui_cb, view, proj]
+    pass->execute = [pipeline, descriptor, frame_idx, extent, draws]
                     (snt::render_backend::CommandContext& ctx) {
         VkCommandBuffer cmd = ctx.handle();
 
@@ -302,22 +294,22 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
                                     1, &dyn_offset);
             d.mesh->draw(cmd);
         }
-
-        // P3: optional extra pass draws (voxel chunks). The callback is
-        // responsible for binding its own pipeline + descriptor sets.
-        if (pass_cb) {
-            const float* view_ptr = glm::value_ptr(view);
-            const float* proj_ptr = glm::value_ptr(proj);
-            pass_cb(cmd, frame_idx, view_ptr, proj_ptr);
-        }
-
-        // UI overlay draws (debug panel text). Recorded at the END of the
-        // forward pass so UI composites on top of the 3D scene. The
-        // callback binds its own pipeline (alpha blend, no depth write).
-        if (ui_cb) {
-            ui_cb(cmd, frame_idx);
-        }
     };
+
+    // Let feature modules append their own graph passes. Ordering over the
+    // main color/depth target is explicit: providers depend on the current
+    // `last_color_pass` and update it when they add a pass.
+    RenderPassBuildContext build_ctx{
+        graph_, color_res, depth_res, extent, frame_idx
+    };
+    build_ctx.last_color_pass = "mesh_forward";
+    std::memcpy(build_ctx.view.data(), glm::value_ptr(view), sizeof(float) * 16);
+    std::memcpy(build_ctx.proj.data(), glm::value_ptr(proj), sizeof(float) * 16);
+    for (auto& provider : pass_providers_) {
+        if (provider) {
+            provider(build_ctx);
+        }
+    }
 
     // --- Record (no submit) ---
     // Use the same frame_index as VulkanFrame's current_frame() so the

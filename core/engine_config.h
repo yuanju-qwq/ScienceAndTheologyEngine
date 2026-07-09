@@ -50,6 +50,28 @@ struct RenderConfig {
 };
 
 // ---------------------------------------------------------------------------
+// Voxel rendering configuration
+// ---------------------------------------------------------------------------
+// `max_chunks` controls the dynamic UBO slot count for chunk draw calls.
+// The per-frame budgets keep remesh/upload work bounded so terrain changes
+// do not stall a logic tick.
+struct VoxelConfig {
+    uint32_t max_chunks = 1024;
+    uint32_t remesh_jobs_per_frame = 4;
+    uint32_t uploads_per_frame = 2;
+};
+
+// ---------------------------------------------------------------------------
+// UI configuration
+// ---------------------------------------------------------------------------
+// Empty `font_path` disables MUI text rendering. Projects should point this
+// at a packaged font asset; the sample config uses a local development font.
+struct UiConfig {
+    std::string font_path;
+    float font_size_px = 16.0f;
+};
+
+// ---------------------------------------------------------------------------
 // Camera configuration
 // ---------------------------------------------------------------------------
 // `initial_position` is the spawn pose of the active camera entity.
@@ -88,14 +110,27 @@ struct SceneConfig {
 };
 
 // ---------------------------------------------------------------------------
+// Development/demo configuration
+// ---------------------------------------------------------------------------
+// Keeps verification content out of the core engine path. Production builds
+// can disable this and load terrain through the real world/session pipeline.
+struct DemoConfig {
+    bool bootstrap_chunks = true;
+    uint32_t seed = 20240601u;
+};
+
+// ---------------------------------------------------------------------------
 // Top-level config aggregate
 // ---------------------------------------------------------------------------
 struct EngineConfig {
     WindowConfig  window;
     RenderConfig  render;
+    VoxelConfig   voxel;
+    UiConfig      ui;
     CameraConfig  camera;
     AssetConfig   assets;
     SceneConfig   scene;
+    DemoConfig    demo;
 };
 
 // Load EngineConfig from a JSON file.
@@ -111,6 +146,8 @@ struct EngineConfig {
 //   {
 //     "window":  { "width": 1920, "height": 1080, "title": "SNT" },
 //     "render":  { "vert_shader_path": "shaders/mesh.vert.spv" },
+//     "voxel":   { "max_chunks": 1024 },
+//     "ui":      { "font_path": "resource/fonts/NotoSans-Regular.ttf" },
 //     "camera":  { "fov": 75.0, "move_speed": 5.0 },
 //     "assets":  { "default_mesh_path": "test_assets/cube.obj" }
 //   }

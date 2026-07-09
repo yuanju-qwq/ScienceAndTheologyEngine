@@ -30,7 +30,10 @@
 #include "renderer/render_graph.h"
 #include "render_backend/vulkan_descriptor.h"
 
+#include <array>
 #include <functional>
+#include <string>
+#include <vector>
 
 namespace snt::render_backend {
 class VulkanDevice;
@@ -42,6 +45,24 @@ class VulkanFrame;
 }
 
 namespace snt::render {
+
+// Context passed to render feature modules while they register their
+// per-frame RenderGraph passes. Providers may append passes to `graph` and
+// set `last_color_pass` to the name of the final pass that writes the main
+// color/depth targets. This keeps overlay ordering explicit without making
+// RenderSystem know about voxel/UI/debug modules.
+struct RenderPassBuildContext {
+    snt::renderer::RenderGraph& graph;
+    snt::renderer::RenderResource color_resource;
+    snt::renderer::RenderResource depth_resource;
+    VkExtent2D extent{};
+    uint32_t frame_idx = 0;
+    std::array<float, 16> view{};
+    std::array<float, 16> proj{};
+    std::string last_color_pass;
+};
+
+using RenderPassProvider = std::function<void(RenderPassBuildContext&)>;
 
 class RenderSystem : public snt::ecs::System {
 public:
@@ -59,33 +80,11 @@ public:
     // Set the entity to use as the active camera.
     void set_active_camera(entt::entity e) { active_camera_ = e; }
 
-    // Optional: register a callback invoked inside the forward pass AFTER
-    // mesh entity draws, within the same render pass scope (command buffer
-    // is recording). Used by ChunkRenderSystem to record chunk draws into
-    // the same command buffer without RenderSystem taking a hard dependency
-    // on the voxel module. The callback receives:
-    //   - cmd: the active command buffer
-    //   - frame_idx: current frame-in-flight slot (for dynamic UBO writes)
-    //   - view: per-frame view matrix (column-major 4x4 float array)
-    //   - proj: per-frame projection matrix (column-major 4x4 float array)
-    // The callback must capture any state it needs (e.g. World&, the
-    // ChunkRenderSystem pointer) at registration time.
-    using ForwardPassCallback =
-        std::function<void(VkCommandBuffer, uint32_t,
-                           const float[16], const float[16])>;
-    void set_forward_pass_callback(ForwardPassCallback cb) {
-        forward_pass_callback_ = std::move(cb);
-    }
-
-    // Optional: register a callback invoked at the END of the forward
-    // pass, after mesh + chunk draws, within the same render pass scope.
-    // Used by MuiRenderer to record UI draws (debug overlay text) on top
-    // of the 3D scene. The callback receives the active command buffer +
-    // the current frame-in-flight slot.
-    using UiPassCallback =
-        std::function<void(VkCommandBuffer, uint32_t)>;
-    void set_ui_pass_callback(UiPassCallback cb) {
-        ui_pass_callback_ = std::move(cb);
+    // Register an external renderer feature (voxel terrain, UI overlay,
+    // future post-processing/shadows) that appends RenderGraph passes each
+    // frame. Providers are invoked after the built-in mesh pass is declared.
+    void add_pass_provider(RenderPassProvider provider) {
+        pass_providers_.push_back(std::move(provider));
     }
 
     // Initialize the RenderGraph (creates its command pool). Must be called
@@ -115,9 +114,7 @@ private:
 
     bool needs_resize_ = false;
 
-    // Optional extra draw callbacks (chunk rendering + UI overlay).
-    ForwardPassCallback forward_pass_callback_;
-    UiPassCallback      ui_pass_callback_;
+    std::vector<RenderPassProvider> pass_providers_;
 };
 
 }  // namespace snt::render

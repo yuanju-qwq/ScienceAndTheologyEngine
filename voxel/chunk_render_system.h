@@ -32,6 +32,7 @@
 #pragma once
 
 #include "core/expected.h"        // Expected<void>
+#include "core/job_system.h"      // Future for async remesh jobs
 #include "data/defs/chunk_data.h" // ChunkKey
 #include "ecs/system.h"           // System base
 #include "voxel/chunk_renderer.h" // ChunkRenderer, ChunkDrawCall, ChunkMeshHandle
@@ -67,6 +68,8 @@ public:
     void set_air_material(int32_t m)       { air_material_ = m; }
     void set_ladder_material(int32_t m)    { ladder_material_ = m; }
     void set_transparent_mask(const std::vector<uint8_t>& m) { transparent_mask_ = m; }
+    void set_remesh_jobs_per_frame(uint32_t n) { remesh_jobs_per_frame_ = n > 0 ? n : 1; }
+    void set_uploads_per_frame(uint32_t n) { uploads_per_frame_ = n > 0 ? n : 1; }
 
     // --- External dirty-marking API ---
     // Schedule a chunk for remesh on the next update(). Safe to call for
@@ -87,9 +90,23 @@ public:
                 const float view[16], const float proj[16]);
 
 private:
-    // Remesh one chunk: fetch materials from ChunkRegistry, run greedy
-    // mesh, upload via ChunkRenderer, update uploaded_meshes_.
-    void remesh_chunk(const snt::data::ChunkKey& key);
+    struct RemeshResult {
+        snt::data::ChunkKey key;
+        VoxelMeshData mesh;
+        bool ok = false;
+    };
+
+    struct PendingRemesh {
+        snt::data::ChunkKey key;
+        snt::core::Future<RemeshResult> future;
+    };
+
+    // Main-thread phase: copy chunk material data and schedule worker jobs.
+    void schedule_dirty_remeshes();
+
+    // Main-thread phase: poll completed worker jobs and upload results.
+    void upload_ready_remeshes();
+    void upload_remesh_result(RemeshResult&& result);
 
     ChunkRenderer*              renderer_      = nullptr;
     snt::data::ChunkRegistry*   registry_      = nullptr;
@@ -101,7 +118,12 @@ private:
 
     // Pure-data chunk tracking (no ECS entities).
     std::unordered_set<snt::data::ChunkKey>   dirty_chunks_;
+    std::unordered_set<snt::data::ChunkKey>   pending_chunks_;
+    std::vector<PendingRemesh>                pending_remeshes_;
     std::unordered_map<snt::data::ChunkKey, ChunkMeshHandle> uploaded_meshes_;
+
+    uint32_t remesh_jobs_per_frame_ = 4;
+    uint32_t uploads_per_frame_ = 2;
 
     // Scratch buffer for the per-frame draw list (reused across frames to
     // avoid per-frame allocation).

@@ -25,6 +25,7 @@
 #include <vk_mem_alloc.h>
 
 #include <deque>
+#include <cstddef>
 #include <format>
 #include <unordered_map>
 #include <vector>
@@ -50,6 +51,7 @@ struct ResourceEntry {
 
     // Current layout (tracked for barrier insertion, P2.3.5).
     VkImageLayout current_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    ResourceUsage current_usage = ResourceUsage::kNone;
 
     // Desired terminal layout (P2.3.6). Imported resources like swapchain
     // images must end the frame in PRESENT_SRC_KHR; transient resources
@@ -73,6 +75,7 @@ struct RenderGraph::Impl {
 
     // CommandContext pool, indexed by [frame_index][pass_index].
     std::vector<std::vector<snt::render_backend::CommandContext>> contexts;
+    std::vector<size_t> recorded_counts;
 
     // Resource pool: id -> ResourceEntry. ids are assigned sequentially.
     std::vector<ResourceEntry> resources;
@@ -122,6 +125,7 @@ snt::core::Expected<void> RenderGraph::init(snt::render_backend::VulkanDevice& d
     // Pre-size the per-frame CommandContext slots. Each slot will hold
     // `max_passes` contexts, grown lazily on execute_record_only().
     impl_->contexts.resize(frames_in_flight);
+    impl_->recorded_counts.assign(frames_in_flight, 0);
 
     // Initialize the transient resource pool with VMA.
     if (auto r = impl_->transient_pool.init(device.vma_allocator()); !r) {
@@ -329,6 +333,55 @@ static VkPipelineStageFlags usage_to_stage_mask(ResourceUsage u) {
     }
 }
 
+static VkImageUsageFlags usage_to_image_usage_flags(ResourceUsage u) {
+    switch (u) {
+        case ResourceUsage::kShaderRead:  return VK_IMAGE_USAGE_SAMPLED_BIT;
+        case ResourceUsage::kColorOutput: return VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        case ResourceUsage::kDepthOutput: return VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        case ResourceUsage::kTransferSrc: return VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        case ResourceUsage::kTransferDst: return VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        case ResourceUsage::kNone:
+        default:                          return 0;
+    }
+}
+
+static bool is_depth_format(VkFormat fmt) {
+    switch (fmt) {
+        case VK_FORMAT_D16_UNORM:
+        case VK_FORMAT_X8_D24_UNORM_PACK32:
+        case VK_FORMAT_D32_SFLOAT:
+        case VK_FORMAT_S8_UINT:
+        case VK_FORMAT_D16_UNORM_S8_UINT:
+        case VK_FORMAT_D24_UNORM_S8_UINT:
+        case VK_FORMAT_D32_SFLOAT_S8_UINT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static snt::core::Expected<void> ensure_resource_allocated(
+        TransientPool& pool,
+        ResourceEntry& entry,
+        ResourceUsage usage) {
+    if (entry.is_external) return {};
+
+    if (entry.type == ResourceType::kTexture) {
+        entry.tex_desc.usage_flags |= usage_to_image_usage_flags(usage);
+        if (entry.image != VK_NULL_HANDLE) return {};
+        return pool.create_texture(entry.tex_desc, &entry.image, &entry.view,
+                                   &entry.allocation);
+    }
+
+    if (entry.type == ResourceType::kBuffer) {
+        if (entry.buffer != VK_NULL_HANDLE) return {};
+        return pool.create_buffer(entry.buf_desc, &entry.buffer,
+                                  &entry.allocation);
+    }
+
+    return {};
+}
+
 // ---------------------------------------------------------------------------
 // Insert a single image memory barrier on `cmd` for `entry`.
 // Transitions `entry.current_layout` -> `target_layout`, then updates
@@ -343,8 +396,17 @@ static void transition_image_layout(VkCommandBuffer cmd,
                                     VkAccessFlags dst_access,
                                     VkPipelineStageFlags src_stage,
                                     VkPipelineStageFlags dst_stage) {
-    if (entry.image == VK_NULL_HANDLE) return;  // lazy alloc not wired yet
+    if (entry.image == VK_NULL_HANDLE) return;
     if (entry.current_layout == target_layout) return;
+
+    if (entry.current_layout != VK_IMAGE_LAYOUT_UNDEFINED) {
+        if (src_access == 0) {
+            src_access = usage_to_access_mask(entry.current_usage);
+        }
+        if (src_stage == VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT) {
+            src_stage = usage_to_stage_mask(entry.current_usage);
+        }
+    }
 
     VkImageMemoryBarrier barrier{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -366,7 +428,7 @@ static void transition_image_layout(VkCommandBuffer cmd,
 
     // Depth/stencil formats need the depth aspect mask.
     VkFormat fmt = static_cast<VkFormat>(entry.tex_desc.format);
-    if (fmt >= VK_FORMAT_D16_UNORM && fmt <= VK_FORMAT_D32_SFLOAT_S8_UINT) {
+    if (is_depth_format(fmt)) {
         barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     }
 
@@ -381,57 +443,60 @@ static void transition_image_layout(VkCommandBuffer cmd,
 // ---------------------------------------------------------------------------
 // Implicit dependency derivation (P2.3.4)
 // ---------------------------------------------------------------------------
-// Derives pass-to-pass dependencies from attachment read/write overlap.
-// Rule: if pass B reads a resource that pass A writes, B depends on A.
-// Writes are merged into `depends_on` before topological sort.
+// Derives pass-to-pass dependencies from resource read/write overlap.
+// Rules, evaluated in registration order:
+//   - read after write: reader depends on previous writer
+//   - write after write: writer depends on previous writer
+//   - write after read: writer depends on previous readers
+// This prevents independent graph providers that target the same swapchain
+// image/depth image from being reordered incorrectly.
 // ---------------------------------------------------------------------------
 static void derive_implicit_dependencies(std::vector<RenderGraphPass>* passes) {
-    const size_t n = passes->size();
+    struct ResourceState {
+        size_t last_writer = SIZE_MAX;
+        std::vector<size_t> readers_since_write;
+    };
+    std::unordered_map<uint32_t, ResourceState> states;
 
-    // Map: resource id -> list of (pass_index, is_write).
-    std::unordered_map<uint32_t, std::vector<std::pair<size_t, bool>>> readers_writers;
-    for (size_t i = 0; i < n; ++i) {
+    auto add_dep = [&](size_t pass_idx, size_t dep_idx) {
+        if (pass_idx == dep_idx || dep_idx == SIZE_MAX) return;
+        RenderGraphPass& pass = (*passes)[pass_idx];
+        const std::string& dep_name = (*passes)[dep_idx].name;
+        for (const auto& existing : pass.depends_on) {
+            if (existing == dep_name) return;
+        }
+        pass.depends_on.push_back(dep_name);
+    };
+
+    auto read_resource = [&](size_t pass_idx, uint32_t resource_id) {
+        ResourceState& state = states[resource_id];
+        add_dep(pass_idx, state.last_writer);
+        state.readers_since_write.push_back(pass_idx);
+    };
+
+    auto write_resource = [&](size_t pass_idx, uint32_t resource_id) {
+        ResourceState& state = states[resource_id];
+        add_dep(pass_idx, state.last_writer);
+        for (size_t reader_idx : state.readers_since_write) {
+            add_dep(pass_idx, reader_idx);
+        }
+        state.last_writer = pass_idx;
+        state.readers_since_write.clear();
+    };
+
+    for (size_t i = 0; i < passes->size(); ++i) {
         RenderGraphPass& p = (*passes)[i];
         for (const auto& a : p.inputs) {
-            readers_writers[a.resource.id].emplace_back(i, /*is_write=*/false);
+            if (a.resource.valid()) read_resource(i, a.resource.id);
         }
         for (const auto& a : p.outputs) {
-            readers_writers[a.resource.id].emplace_back(i, /*is_write=*/true);
+            if (a.resource.valid()) write_resource(i, a.resource.id);
         }
-        // Color/depth attachment writes count as writes for dependency
-        // derivation. Reads of color/depth from a previous pass
-        // (e.g. shadow map sampled in forward) must go through `inputs`
-        // with kShaderRead.
         for (const auto& c : p.color_attachments) {
-            readers_writers[c.resource.id].emplace_back(i, /*is_write=*/true);
+            if (c.resource.valid()) write_resource(i, c.resource.id);
         }
         if (p.depth_attachment.resource.valid()) {
-            readers_writers[p.depth_attachment.resource.id].emplace_back(i, /*is_write=*/true);
-        }
-    }
-
-    // For each resource: every reader depends on every writer that came
-    // before it (by registration order). This is the RAW / WAW / WAR
-    // dependency; for simplicity we add writer→reader edges only (RAW).
-    for (auto& kv : readers_writers) {
-        const auto& accesses = kv.second;
-        for (const auto& [reader_idx, is_read_write] : accesses) {
-            if (is_read_write) continue;  // skip writers
-            for (const auto& [writer_idx, w_is_write] : accesses) {
-                if (!w_is_write) continue;
-                if (writer_idx == reader_idx) continue;
-                // reader depends on writer
-                RenderGraphPass& reader = (*passes)[reader_idx];
-                const std::string& writer_name = (*passes)[writer_idx].name;
-                // Avoid duplicate entries.
-                bool exists = false;
-                for (const auto& d : reader.depends_on) {
-                    if (d == writer_name) { exists = true; break; }
-                }
-                if (!exists) {
-                    reader.depends_on.push_back(writer_name);
-                }
-            }
+            write_resource(i, p.depth_attachment.resource.id);
         }
     }
 }
@@ -527,6 +592,7 @@ snt::core::Expected<void> RenderGraph::execute_record_only(uint32_t frame_index)
                                             frame_index, impl_->frames_in_flight)};
     }
     if (impl_->passes.empty()) {
+        impl_->recorded_counts[frame_index] = 0;
         return {};  // nothing to do — not an error
     }
 
@@ -546,6 +612,7 @@ snt::core::Expected<void> RenderGraph::execute_record_only(uint32_t frame_index)
     if (slot.size() < impl_->passes.size()) {
         slot.resize(impl_->passes.size());
     }
+    impl_->recorded_counts[frame_index] = order.size();
 
     // Helper: look up a ResourceEntry by id. Returns nullptr if out of range.
     auto lookup_entry = [&](uint32_t id) -> ResourceEntry* {
@@ -580,22 +647,34 @@ snt::core::Expected<void> RenderGraph::execute_record_only(uint32_t frame_index)
         for (const auto& in : pass.inputs) {
             ResourceEntry* e = lookup_entry(in.resource.id);
             if (!e) continue;
+            if (auto r = ensure_resource_allocated(impl_->transient_pool, *e, in.usage); !r) {
+                snt::core::Error err = r.error();
+                err.with_context(std::format("Pass '{}': allocate input resource", pass.name));
+                return err;
+            }
             VkImageLayout target = usage_to_image_layout(in.usage);
             transition_image_layout(cmd, *e, target,
                                     /*src_access=*/0,
                                     usage_to_access_mask(in.usage),
                                     /*src_stage=*/VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                                     usage_to_stage_mask(in.usage));
+            e->current_usage = in.usage;
         }
         for (const auto& out : pass.outputs) {
             ResourceEntry* e = lookup_entry(out.resource.id);
             if (!e) continue;
+            if (auto r = ensure_resource_allocated(impl_->transient_pool, *e, out.usage); !r) {
+                snt::core::Error err = r.error();
+                err.with_context(std::format("Pass '{}': allocate output resource", pass.name));
+                return err;
+            }
             VkImageLayout target = usage_to_image_layout(out.usage);
             transition_image_layout(cmd, *e, target,
                                     /*src_access=*/0,
                                     usage_to_access_mask(out.usage),
                                     /*src_stage=*/VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                                     usage_to_stage_mask(out.usage));
+            e->current_usage = out.usage;
         }
 
         // --- P2.3.5: insert pre-pass barriers for color/depth attachments ---
@@ -604,6 +683,12 @@ snt::core::Expected<void> RenderGraph::execute_record_only(uint32_t frame_index)
         for (const auto& c : pass.color_attachments) {
             ResourceEntry* e = lookup_entry(c.resource.id);
             if (!e) continue;
+            if (auto r = ensure_resource_allocated(impl_->transient_pool, *e,
+                                                   ResourceUsage::kColorOutput); !r) {
+                snt::core::Error err = r.error();
+                err.with_context(std::format("Pass '{}': allocate color attachment", pass.name));
+                return err;
+            }
             transition_image_layout(cmd, *e,
                                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                     /*src_access=*/0,
@@ -611,10 +696,17 @@ snt::core::Expected<void> RenderGraph::execute_record_only(uint32_t frame_index)
                                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                                     /*src_stage=*/VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+            e->current_usage = ResourceUsage::kColorOutput;
         }
         if (pass.depth_attachment.resource.valid()) {
             ResourceEntry* e = lookup_entry(pass.depth_attachment.resource.id);
             if (e) {
+                if (auto r = ensure_resource_allocated(impl_->transient_pool, *e,
+                                                       ResourceUsage::kDepthOutput); !r) {
+                    snt::core::Error err = r.error();
+                    err.with_context(std::format("Pass '{}': allocate depth attachment", pass.name));
+                    return err;
+                }
                 transition_image_layout(cmd, *e,
                                         VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                                         /*src_access=*/0,
@@ -623,6 +715,7 @@ snt::core::Expected<void> RenderGraph::execute_record_only(uint32_t frame_index)
                                         /*src_stage=*/VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                                         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
                                             VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT);
+                e->current_usage = ResourceUsage::kDepthOutput;
             }
         }
 
@@ -725,6 +818,7 @@ snt::core::Expected<void> RenderGraph::execute_record_only(uint32_t frame_index)
                                         /*dst_access=*/0,
                                         src_stage,
                                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+                e.current_usage = ResourceUsage::kNone;
             }
         }
 
@@ -756,6 +850,8 @@ VkCommandBuffer RenderGraph::recorded_command_buffer(uint32_t frame_index,
     if (frame_index >= impl_->contexts.size()) return VK_NULL_HANDLE;
     const auto& slot = impl_->contexts[frame_index];
     if (pass_index >= slot.size()) return VK_NULL_HANDLE;
+    if (frame_index < impl_->recorded_counts.size() &&
+        pass_index >= impl_->recorded_counts[frame_index]) return VK_NULL_HANDLE;
     return slot[pass_index].handle();
 }
 
@@ -764,8 +860,13 @@ uint32_t RenderGraph::recorded_command_buffers(uint32_t frame_index,
     out_buffers->clear();
     if (frame_index >= impl_->contexts.size()) return 0;
     const auto& slot = impl_->contexts[frame_index];
-    out_buffers->reserve(slot.size());
-    for (const auto& ctx : slot) {
+    const size_t recorded_count =
+        frame_index < impl_->recorded_counts.size()
+            ? impl_->recorded_counts[frame_index]
+            : slot.size();
+    out_buffers->reserve(recorded_count);
+    for (size_t i = 0; i < recorded_count && i < slot.size(); ++i) {
+        const auto& ctx = slot[i];
         VkCommandBuffer cb = ctx.handle();
         if (cb != VK_NULL_HANDLE) {
             out_buffers->push_back(cb);

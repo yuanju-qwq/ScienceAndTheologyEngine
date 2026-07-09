@@ -96,6 +96,7 @@ public:
 
 private:
     snt::render_backend::VulkanDevice* device_ = nullptr;
+    VkCommandPool upload_command_pool_ = VK_NULL_HANDLE;
 
     // Owned GPU resources. Forward-declared types to keep glm/Vulkan out
     // of this header; full definitions live in the .cpp.
@@ -121,4 +122,3 @@ private:
 };
 
 }  // namespace snt::voxel
-

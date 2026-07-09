@@ -52,6 +52,21 @@ void from_json(const json& j, RenderConfig& r) {
     read_optional(j, "max_frames_in_flight", r.max_frames_in_flight);
 }
 
+void from_json(const json& j, VoxelConfig& v) {
+    VoxelConfig def;
+    v = def;
+    read_optional(j, "max_chunks",            v.max_chunks);
+    read_optional(j, "remesh_jobs_per_frame", v.remesh_jobs_per_frame);
+    read_optional(j, "uploads_per_frame",     v.uploads_per_frame);
+}
+
+void from_json(const json& j, UiConfig& u) {
+    UiConfig def;
+    u = def;
+    read_optional(j, "font_path",    u.font_path);
+    read_optional(j, "font_size_px", u.font_size_px);
+}
+
 void from_json(const json& j, CameraConfig& c) {
     CameraConfig def;
     c = def;
@@ -81,13 +96,23 @@ void from_json(const json& j, SceneConfig& s) {
     read_optional(j, "path", s.path);
 }
 
+void from_json(const json& j, DemoConfig& d) {
+    DemoConfig def;
+    d = def;
+    read_optional(j, "bootstrap_chunks", d.bootstrap_chunks);
+    read_optional(j, "seed",             d.seed);
+}
+
 void from_json(const json& j, EngineConfig& cfg) {
     cfg = EngineConfig{};
     if (j.contains("window")) cfg.window  = j["window"].get<WindowConfig>();
     if (j.contains("render")) cfg.render  = j["render"].get<RenderConfig>();
+    if (j.contains("voxel"))  cfg.voxel   = j["voxel"].get<VoxelConfig>();
+    if (j.contains("ui"))     cfg.ui      = j["ui"].get<UiConfig>();
     if (j.contains("camera")) cfg.camera  = j["camera"].get<CameraConfig>();
     if (j.contains("assets")) cfg.assets  = j["assets"].get<AssetConfig>();
     if (j.contains("scene"))  cfg.scene   = j["scene"].get<SceneConfig>();
+    if (j.contains("demo"))   cfg.demo    = j["demo"].get<DemoConfig>();
 }
 
 // ---------------------------------------------------------------------------

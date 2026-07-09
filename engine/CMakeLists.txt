@@ -6,6 +6,7 @@
 # a separate static lib so engine_app stays a trivial executable wrapper.
 
 add_library(snt_engine STATIC
+    demo_world_bootstrap.cpp
     engine.cpp
 )
 target_include_directories(snt_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

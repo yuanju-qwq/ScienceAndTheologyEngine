@@ -14,6 +14,15 @@ target_link_libraries(snt_engine_app PRIVATE
 # Ensure shaders are compiled + copied before the engine runs.
 add_dependencies(snt_engine_app snt_copy_shaders)
 
+# Locate game content whether this CMake project is configured from the
+# repository root or directly from the snt_engine/ subdirectory.
+set(SNT_GAME_CONTENT_ROOT "${CMAKE_SOURCE_DIR}")
+if(NOT EXISTS "${SNT_GAME_CONTENT_ROOT}/game/config"
+   AND EXISTS "${CMAKE_SOURCE_DIR}/../game/config")
+    get_filename_component(SNT_GAME_CONTENT_ROOT
+        "${CMAKE_SOURCE_DIR}/.." ABSOLUTE)
+endif()
+
 # Copy the game config directory next to the executable. Missing file is
 # non-fatal at runtime (EngineConfig falls back to defaults), but having
 # the JSON present lets users tweak settings without rebuilding.
@@ -24,7 +33,7 @@ add_dependencies(snt_engine_app snt_copy_shaders)
 # assets), separate from engine built-in resources (shaders/, builtin/).
 add_custom_target(snt_copy_config ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/game/config
+    ${SNT_GAME_CONTENT_ROOT}/game/config
     ${CMAKE_BINARY_DIR}/bin/$<CONFIG>/game/config
     COMMENT "Copying game config to output directory"
 )
@@ -36,7 +45,7 @@ add_dependencies(snt_engine_app snt_copy_config)
 # returns an Error), so the scenes must be present at runtime.
 add_custom_target(snt_copy_scenes ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/game/scenes
+    ${SNT_GAME_CONTENT_ROOT}/game/scenes
     ${CMAKE_BINARY_DIR}/bin/$<CONFIG>/game/scenes
     COMMENT "Copying game scenes to output directory"
 )
@@ -49,7 +58,7 @@ add_dependencies(snt_engine_app snt_copy_scenes)
 # real games will use their own assets/ directory under game/.
 add_custom_target(snt_copy_test_assets ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/test_assets
+    ${SNT_GAME_CONTENT_ROOT}/test_assets
     ${CMAKE_BINARY_DIR}/bin/$<CONFIG>/test_assets
     COMMENT "Copying test assets to output directory"
 )

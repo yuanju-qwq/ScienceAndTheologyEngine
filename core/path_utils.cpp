@@ -182,6 +182,9 @@ std::string resolve(std::string_view relative_path) {
     for (char& c : p) {
         if (c == '/') c = std::filesystem::path::preferred_separator;
     }
+    if (std::filesystem::path(p).is_absolute()) {
+        return p;
+    }
 
     // Route by prefix: engine built-in resources vs game content.
     const std::string& engine = g_engine_subdir;

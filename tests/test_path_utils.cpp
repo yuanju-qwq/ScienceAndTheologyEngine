@@ -86,3 +86,11 @@ TEST(PathUtils, ResolveAfterInitProducesAbsolutePath) {
     EXPECT_TRUE(exists(result))
         << "Resolved path does not exist: " << result;
 }
+
+TEST(PathUtils, ResolveAbsolutePathReturnsInputUnchanged) {
+    if (!init()) {
+        GTEST_SKIP() << "init() failed; cannot test resolve()";
+    }
+    const std::string absolute = std::filesystem::current_path().string();
+    EXPECT_EQ(resolve(absolute), absolute);
+}
