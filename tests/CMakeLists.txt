@@ -27,6 +27,8 @@ add_executable(snt_tests
     test_job_system.cpp        # P2: work-stealing Job System
     test_hash.cpp              # FNV-1a hash utilities
     test_uuid.cpp              # general-purpose 128-bit Uuid + generator
+    test_data.cpp              # P2: data layer (chunk/registry/save/noise/terrain)
+    test_ecs.cpp               # P2: standard components + SystemScheduler
 )
 target_link_libraries(snt_tests PRIVATE
     snt_core
@@ -36,6 +38,9 @@ target_link_libraries(snt_tests PRIVATE
     snt_engine_settings
     snt_third_party
     snt_scene                  # Phase 4: scene module under test
+    snt_data_save              # P2: data save layer (ChunkSerializer/RegionFile)
+    snt_data_worldgen          # P2: terrain generator + noise
+    snt_data_world             # P2: ChunkRegistry
     GTest::gtest
 )
 
