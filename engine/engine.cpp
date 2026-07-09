@@ -21,6 +21,7 @@
 #include "data/defs/world_seed.h"       // P3: WorldSeed for TerrainGenerator
 #include "data/world/chunk_registry.h"  // P3: ChunkRegistry
 #include "data/world_gen/terrain_generator.h"  // P3: generate test chunk
+#include "data/world_gen/world_gen_config.h"   // P3 demo world-gen snapshot
 #include "ecs/camera_system.h"
 #include "ecs/components.h"
 #include "ecs/entity_guid.h"
@@ -41,12 +42,16 @@
 #include "render_backend/vulkan_swapchain.h"
 #include "render_backend/vertex_buffer_pool.h"  // P3: complete type (see vulkan_buffer.h note above)
 #include "ui/debug_panel.h"
-#include "ui/mui.h"
+#include "ui/mui.h"                     // P3.5: MuiContext
+#include "ui/mui_renderer.h"            // P3.5: MuiRenderer (Vulkan text)
 #include "voxel/chunk_renderer.h"       // P3: ChunkRenderer
 #include "voxel/chunk_render_system.h"  // P3: ChunkRenderSystem
 
 #include <volk.h>
 
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
 #include <filesystem>  // std::filesystem::create_directories for log dir
 
 namespace snt::engine {
@@ -86,6 +91,111 @@ struct FpsTracker {
         return avg_ms > 0.0f ? 1000.0f / avg_ms : 0.0f;
     }
 };
+
+// ---------------------------------------------------------------------------
+// TickStats: fixed-timestep logic tick tracker.
+//
+// Separates LOGIC (fixed-rate ticks, e.g. 20 TPS) from RENDERING (free
+// frame rate). The main loop accumulates real elapsed time into an
+// accumulator; each time it exceeds the fixed tick interval, one logic
+// update runs. This keeps simulation deterministic regardless of render
+// FPS, and lets TPS (logic) and FPS (render) be reported independently.
+//
+//   MSPT = milliseconds per tick (cost of the last logic update)
+//   TPS  = ticks executed in the last second (clamped to tick_rate)
+//
+// A spiral-of-death guard caps the number of catch-up ticks per frame so
+// that if the logic itself is slow, we don't pile up an unbounded debt.
+// ---------------------------------------------------------------------------
+struct TickStats {
+    static constexpr float kTickRate    = 20.0f;             // ticks per second (target)
+    static constexpr float kTickMs      = 1000.0f / kTickRate;  // 50ms per tick
+    static constexpr int   kMaxCatchup  = 5;                 // max ticks per frame to avoid spiral-of-death
+
+    float accumulator     = 0.0f;   // pending real time (ms) not yet consumed by ticks
+    float last_tick_ms    = 0.0f;   // cost of the most recent logic update (MSPT)
+    int   ticks_this_sec  = 0;      // ticks executed since the last TPS settle
+    float second_timer    = 0.0f;   // accumulates real time; settles TPS every 1.0s
+    float tps             = 0.0f;   // TPS reported for display (updated per second)
+
+    // Consume pending time by running fixed-rate logic ticks. `tick_fn`
+    // is invoked once per tick; its wall-clock cost is measured for MSPT.
+    template <typename TickFn>
+    void consume(float frame_ms, TickFn tick_fn) {
+        accumulator += frame_ms;
+        second_timer += frame_ms;
+
+        int ticks_run = 0;
+        while (accumulator >= kTickMs && ticks_run < kMaxCatchup) {
+            auto t0 = std::chrono::high_resolution_clock::now();
+            tick_fn();  // run one fixed-dt logic update
+            auto t1 = std::chrono::high_resolution_clock::now();
+            last_tick_ms = static_cast<float>(
+                std::chrono::duration<double, std::milli>(t1 - t0).count());
+            accumulator -= kTickMs;
+            ++ticks_this_sec;
+            ++ticks_run;
+        }
+        // If we hit the catchup cap, drop the remaining debt so a slow
+        // simulation doesn't spiral — better to fall behind than to freeze.
+        if (ticks_run >= kMaxCatchup) {
+            accumulator = 0.0f;
+        }
+
+        // Settle TPS once per real second.
+        if (second_timer >= 1000.0f) {
+            tps = static_cast<float>(ticks_this_sec);
+            ticks_this_sec = 0;
+            second_timer -= 1000.0f;
+        }
+    }
+};
+
+std::shared_ptr<const snt::data::WorldGenConfigSnapshot> make_p3_demo_world_gen_config() {
+    using namespace snt::data;
+
+    auto config = std::make_shared<WorldGenConfigSnapshot>();
+
+    TerrainMaterialDef air;
+    air.id = 0;
+    air.key = "air";
+    config->materials.push_back(air);
+    config->material_ids_by_key[air.key] = air.id;
+    config->material_keys_by_id[air.id] = air.key;
+
+    TerrainMaterialDef stone;
+    stone.id = 1;
+    stone.key = "stone";
+    stone.flags = TF_SOLID | TF_MINEABLE | TF_WALKABLE;
+    config->materials.push_back(stone);
+    config->material_ids_by_key[stone.key] = stone.id;
+    config->material_keys_by_id[stone.id] = stone.key;
+
+    config->roles.air = air.id;
+    config->roles.stone = stone.id;
+    config->roles.dirt = stone.id;
+
+    BaseTerrainRule rule;
+    rule.dimension_id = "overworld";
+    rule.default_material = stone.id;
+    rule.high_elevation_material = stone.id;
+    rule.cave_threshold = 10.0f;  // P3 demo chunk: keep terrain solid/readable.
+    config->base_terrain_rules.push_back(rule);
+
+    config->content_hash = hash_world_gen_config(*config);
+    return config;
+}
+
+size_t count_non_air_cells(const snt::data::ChunkData& chunk,
+                           snt::data::TerrainMaterialId air_material) {
+    size_t non_air = 0;
+    for (const auto& cell : chunk.terrain.cells) {
+        if (static_cast<snt::data::TerrainMaterialId>(cell.material) != air_material) {
+            ++non_air;
+        }
+    }
+    return non_air;
+}
 
 }  // namespace
 
@@ -147,8 +257,14 @@ struct Engine::Impl {
     std::unique_ptr<snt::voxel::ChunkRenderer>        chunk_renderer;
     snt::voxel::ChunkRenderSystem                     chunk_render_system;
 
+    // UI renderer (debug overlay text). Held via unique_ptr to keep
+    // Vulkan types out of the Impl header; full definition is in
+    // mui_renderer.cpp.
+    std::unique_ptr<snt::ui::MuiRenderer>             mui_renderer;
+
     // Per-frame state.
     FpsTracker fps_tracker;
+    TickStats  tick_stats;   // fixed-timestep logic tick tracker (20 TPS)
 
     // P2.A2: mouse lock state (mirror of Window's relative-mouse-mode).
     // Engine toggles this based on esc_pressed / wants_mouse_lock from
@@ -362,11 +478,29 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
                                 "Engine::init: scene has no camera entity (Guid=1)"};
     }
 
+    // P3: remove the two demo cube entities (Guid=2, Guid=3) from the scene.
+    // They intersect with the voxel ground and are no longer needed for
+    // P3 verification — the chunk renderer is the new visual output.
+    for (uint64_t g : {2ull, 3ull}) {
+        entt::entity e = impl_->world.find_entity_by_guid(snt::ecs::EntityGuid{g});
+        if (e != entt::null) {
+            impl_->world.destroy_entity(e);
+        }
+    }
+
     // Update camera aspect to match the actual window size (the scene file
     // stores a default aspect that may differ from the runtime window).
     if (impl_->world.registry().all_of<snt::ecs::Camera>(impl_->camera_entity)) {
         auto& cam = impl_->world.registry().get<snt::ecs::Camera>(impl_->camera_entity);
         cam.aspect = static_cast<float>(sz.width) / static_cast<float>(sz.height);
+    }
+    // P3: raise the camera above the ground so the y=0 surface is visible
+    // when looking down. Scene default is [0,0,3] (same height as ground).
+    if (impl_->world.registry().all_of<snt::ecs::Transform>(impl_->camera_entity)) {
+        auto& cam_t = impl_->world.registry().get<snt::ecs::Transform>(impl_->camera_entity);
+        cam_t.position[0] = 4.0f;
+        cam_t.position[1] = 4.0f;
+        cam_t.position[2] = 8.0f;
     }
 
     // --- Camera system ---
@@ -375,6 +509,9 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
     camera_system.set_active_camera(impl_->camera_entity);
     camera_system.set_move_speed(config.camera.move_speed);
     camera_system.set_look_speed(config.camera.look_speed);
+    // P3: look down at the ground chunk from an elevated position so the
+    // thin y=0 surface platform is visible (default pitch=0 sees it edge-on).
+    camera_system.set_initial_look(-90.0f, -25.0f);
 
     // CameraSystem subscribes to MouseLockChanged on the event bus. Engine
     // publishes the lock state each frame instead of calling
@@ -420,22 +557,29 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
             return e;
         }
 
-        // Generate a test chunk at the origin so there's something to see.
-        // Flat-world TerrainGenerator with a fixed seed; no config snapshot
-        // (uses built-in defaults). The chunk spans world [0,32)^3.
-        snt::data::TerrainGenerator terrain_gen(snt::data::WorldSeed(20240601u));
-        snt::data::ChunkData chunk = terrain_gen.generate_chunk("overworld", 0, 0, 0);
-        impl_->chunk_registry.set_chunk("overworld", 0, 0, 0, std::move(chunk));
-        SNT_LOG_INFO("P3: generated test chunk at (0,0,0), %zu terrain cells",
-                     impl_->chunk_registry.get_chunk("overworld", 0, 0, 0)
-                         ->terrain.cells.size());
+        // Generate test chunks so there's something to see. Two chunks:
+        //   (0, 0, 0) — surface layer at y=0 (spawn area 5x5 platform)
+        //   (0,-1, 0) — solid ground below y=0 (gives the surface depth
+        //               so side faces are visible from the elevated camera)
+        // Without the chunk below, the y=0 platform is a single-layer
+        // wafer and only its top face renders.
+        auto demo_world_gen = make_p3_demo_world_gen_config();
+        snt::data::TerrainGenerator terrain_gen(
+            snt::data::WorldSeed(20240601u),
+            demo_world_gen);
 
-        // Create the ChunkRenderRef entity. dirty=true so ChunkRenderSystem
-        // remeshes it on the first update().
-        auto chunk_e = impl_->world.registry().create();
-        impl_->world.registry().emplace<snt::ecs::ChunkRenderRef>(
-            chunk_e, 0, 0, 0,
-            snt::ecs::ChunkRenderRef{}.mesh_handle_id, /*dirty=*/true);
+        constexpr int32_t kDemoChunks[][3] = {
+            {0,  0, 0},
+            {0, -1, 0},
+        };
+        for (auto [cx, cy, cz] : kDemoChunks) {
+            snt::data::ChunkData c = terrain_gen.generate_chunk("overworld", cx, cy, cz);
+            const size_t non_air = count_non_air_cells(c, demo_world_gen->roles.air);
+            const size_t total = c.terrain.cells.size();
+            impl_->chunk_registry.set_chunk("overworld", cx, cy, cz, std::move(c));
+            SNT_LOG_INFO("P3: generated test chunk at (%d,%d,%d), non_air=%zu/%zu",
+                         cx, cy, cz, non_air, total);
+        }
 
         // Wire ChunkRenderSystem and register it with the World so its
         // update() runs each frame (phase 1: remesh dirty chunks).
@@ -444,23 +588,72 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
         // reference to the heap-owned instance.
         impl_->chunk_render_system.set_chunk_renderer(impl_->chunk_renderer.get());
         impl_->chunk_render_system.set_chunk_registry(&impl_->chunk_registry);
+        // Mark the demo chunks dirty so they remesh on the first update().
+        // Pure-data tracking: no ECS entities are created per chunk.
+        for (auto [cx, cy, cz] : kDemoChunks) {
+            impl_->chunk_render_system.mark_dirty(
+                snt::data::ChunkKey("overworld", cx, cy, cz));
+        }
         auto& chunk_sys = impl_->world.add_system<snt::voxel::ChunkRenderSystem>(
             std::move(impl_->chunk_render_system));
 
         // Register the forward-pass callback (phase 2: record chunk draws
-        // inside RenderSystem's pass). Captures the live system pointer +
-        // the world so it can iterate ChunkRenderRef entities.
+        // inside RenderSystem's pass). Captures only the live system
+        // pointer — render() no longer needs the World (pure-data path).
         auto* chunk_sys_ptr = &chunk_sys;
-        snt::ecs::World* world_ptr = &impl_->world;
         impl_->render_system.set_forward_pass_callback(
-            [chunk_sys_ptr, world_ptr](VkCommandBuffer cmd, uint32_t frame_idx,
-                                        const float view[16], const float proj[16]) {
-                chunk_sys_ptr->render(cmd, frame_idx, view, proj, *world_ptr);
+            [chunk_sys_ptr](VkCommandBuffer cmd, uint32_t frame_idx,
+                            const float view[16], const float proj[16]) {
+                chunk_sys_ptr->render(cmd, frame_idx, view, proj);
             });
+    }
+
+    // --- P3.5: MUI renderer (debug overlay text) ---
+    // Create + init the MuiRenderer: bakes a font atlas, creates the UI
+    // pipeline (alpha blend, no depth), and connects to MuiContext for
+    // glyph lookup during text() calls. The font path uses a Windows
+    // system font; this will be made configurable later.
+    {
+        impl_->mui_renderer = std::make_unique<snt::ui::MuiRenderer>();
+        VkFormat color_format = impl_->vk_swapchain.image_format();
+        auto r = impl_->mui_renderer->init(impl_->vk_device, color_format,
+                                           "C:\\Windows\\Fonts\\arial.ttf",
+                                           16.0f);
+        if (!r) {
+            SNT_LOG_ERROR("MuiRenderer init failed: %s",
+                          r.error().format().c_str());
+            impl_->mui_renderer.reset();
+        } else {
+            // Connect MuiRenderer to the global MuiContext so text() calls
+            // use its glyph table for layout.
+            snt::ui::default_mui_context().set_renderer(impl_->mui_renderer.get());
+
+            // Register the UI pass callback: invoked at the END of the
+            // forward pass to draw the debug overlay on top of the 3D
+            // scene. The callback captures the MuiContext to read its
+            // draw_data() and the MuiRenderer to issue draw calls.
+            auto* mui_renderer_ptr = impl_->mui_renderer.get();
+            impl_->render_system.set_ui_pass_callback(
+                [mui_renderer_ptr](VkCommandBuffer cmd, uint32_t /*frame_idx*/) {
+                    const auto& dd = snt::ui::default_mui_context().draw_data();
+                    mui_renderer_ptr->render(cmd, dd);
+                });
+        }
     }
 
     // --- Debug panel metrics ---
     auto& panel = snt::ui::default_debug_panel();
+    // TPS: logic tick rate (fixed 20 TPS target), shown with MSPT in parens.
+    // This is a TEXT metric because the format combines two values
+    // (ticks/sec + ms/tick) into one line.
+    panel.register_text_metric("TPS", [this]() {
+        // Format: "20.0 (12.3mspt)" — tps then mspt in parens.
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%.1f (%.1fmspt)",
+                      impl_->tick_stats.tps,
+                      impl_->tick_stats.last_tick_ms);
+        return std::string(buf);
+    });
     panel.register_metric("FPS",
                           [this]() { return impl_->fps_tracker.fps(); });
     panel.register_metric("Frame Time (ms)",
@@ -536,17 +729,34 @@ void Engine::run() {
         impl_->event_bus.enqueue<snt::core::MouseLockChanged>({impl_->mouse_locked});
         impl_->event_bus.update();
 
-        // Let ECS read input + run systems.
-        impl_->world.update(dt);
+        // Fixed-timestep logic ticks (20 TPS), decoupled from render FPS.
+        // The accumulator consumes real elapsed time in kTickMs chunks;
+        // each chunk triggers one world.update with a FIXED dt so the
+        // simulation is deterministic regardless of render rate. A
+        // spiral-of-death guard (kMaxCatchup) prevents unbounded catch-up
+        // if the logic itself runs slower than real time.
+        constexpr float kFixedDt = TickStats::kTickMs / 1000.0f;  // 0.05s
+        impl_->tick_stats.consume(frame_ms, [&]() {
+            impl_->world.update(kFixedDt);
+        });
         impl_->input_system.new_frame();
 
-        // Sample metrics + draw debug panel (P1 stub: no visible output).
+        // Sample metrics + draw debug panel (MuiContext collects text
+        // vertices; MuiRenderer submits them inside the forward pass).
         auto& panel = snt::ui::default_debug_panel();
         panel.sample();
         snt::ui::MuiContext& mui = snt::ui::default_mui_context();
         mui.begin_frame();
         panel.draw();
         mui.end_frame();
+
+        // Update the UI orthographic projection for the current swapchain
+        // extent (pixel-space → clip-space). Must happen before
+        // render_system.update() so the UBO is current when UI draws.
+        if (impl_->mui_renderer) {
+            const auto& extent = impl_->vk_swapchain.extent();
+            impl_->mui_renderer->update_ortho(extent.width, extent.height);
+        }
 
         // Render: RenderSystem reads ECS state and draws via VulkanFrame.
         impl_->render_system.update(impl_->world, dt);
@@ -592,6 +802,13 @@ void Engine::shutdown() {
     if (impl_->chunk_renderer) {
         impl_->chunk_renderer->destroy();
         impl_->chunk_renderer.reset();
+    }
+
+    // P3.5: MuiRenderer (font atlas texture + UI pipeline + descriptor).
+    // Same ordering constraint as ChunkRenderer.
+    if (impl_->mui_renderer) {
+        impl_->mui_renderer->destroy();
+        impl_->mui_renderer.reset();
     }
 
     // Frame + pipeline + descriptor.

@@ -20,6 +20,12 @@ namespace snt::ui {
 // as a float (e.g. FPS, memory in MB, entity count).
 using MetricGetter = std::function<float()>;
 
+// A text metric is a named string source. Used for metrics whose display
+// format combines multiple values (e.g. "TPS: 20.0 (12.3mspt)" where the
+// number and the parenthetical both come from engine state). Text metrics
+// are drawn verbatim and do not participate in plotting.
+using TextMetricGetter = std::function<std::string()>;
+
 struct Metric {
     std::string name;
     MetricGetter getter;
@@ -28,6 +34,12 @@ struct Metric {
     static constexpr int32_t kHistorySize = 120;
     float history[kHistorySize] = {};
     int32_t history_offset = 0;
+};
+
+struct TextMetric {
+    std::string name;
+    TextMetricGetter getter;
+    std::string current_value;
 };
 
 // Debug panel: collects metrics and draws them via MUIContext.
@@ -43,6 +55,10 @@ public:
     // Register a metric. `name` must be unique.
     void register_metric(std::string_view name, MetricGetter getter);
 
+    // Register a text metric (string-valued, drawn verbatim). `name` must
+    // be unique across BOTH metric types.
+    void register_text_metric(std::string_view name, TextMetricGetter getter);
+
     // Sample all registered metrics (call once per frame, before draw).
     void sample();
 
@@ -55,7 +71,8 @@ public:
     bool is_visible() const { return visible_; }
 
 private:
-    std::vector<Metric> metrics_;
+    std::vector<Metric>     metrics_;
+    std::vector<TextMetric> text_metrics_;
     bool visible_ = true;
 };
 

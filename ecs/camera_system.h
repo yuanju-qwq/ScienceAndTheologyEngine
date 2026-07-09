@@ -48,6 +48,14 @@ public:
     void set_move_speed(float s) { move_speed_ = s; }
     void set_look_speed(float s) { look_speed_ = s; }
 
+    // Set initial look direction (degrees). yaw=-90 looks down -Z (default);
+    // pitch<0 looks down. Call before the first update() to override the
+    // defaults without having mouse-look fight the initial orientation.
+    void set_initial_look(float yaw, float pitch) {
+        yaw_ = yaw;
+        pitch_ = pitch;
+    }
+
     // Tell CameraSystem whether the mouse is currently locked (relative
     // mode). When false, mouse-look is skipped. Engine calls this each
     // frame after toggling relative mouse mode.

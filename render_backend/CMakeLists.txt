@@ -49,6 +49,8 @@ set(SHADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/../shaders/mesh.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/../shaders/voxel.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/../shaders/voxel.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/../shaders/ui.vert
+    ${CMAKE_CURRENT_SOURCE_DIR}/../shaders/ui.frag
 )
 
 set(SHADER_SPV_FILES "")

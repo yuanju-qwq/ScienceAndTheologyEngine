@@ -208,6 +208,29 @@ snt::core::Expected<void> VulkanDevice::init(VkInstance instance, VkSurfaceKHR s
 
     VkPhysicalDeviceFeatures features{};
 
+    // --- Vulkan 1.3 features: dynamic rendering ---
+    // Both the mesh pipeline and the voxel chunk pipeline use
+    // VkPipelineRenderingCreateInfo (dynamic rendering) instead of a
+    // traditional VkRenderPass. The `dynamicRendering` feature must be
+    // enabled on the logical device, otherwise vkCmdBeginRendering emits
+    // a validation error and rendering is undefined.
+    VkPhysicalDeviceVulkan13Features vk13_features{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        .pNext = nullptr,
+    };
+    VkPhysicalDeviceFeatures2 features2{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = &vk13_features,
+    };
+    vkGetPhysicalDeviceFeatures2(physical_, &features2);
+    if (!vk13_features.dynamicRendering) {
+        SNT_LOG_WARN("GPU does not support dynamicRendering (Vulkan 1.3); "
+                     "pipelines using VkPipelineRenderingCreateInfo will fail");
+    }
+    // Enable dynamicRendering (other 1.3 features stay VK_FALSE as queried,
+    // i.e. disabled unless explicitly turned on below).
+    vk13_features.dynamicRendering = VK_TRUE;
+
     // Device extensions: swapchain + swapchain_maintenance1 (for present fence).
     // swapchain_maintenance1 allows present() to signal a VkFence, which
     // survives swapchain recreation (unlike semaphores).
@@ -242,6 +265,7 @@ snt::core::Expected<void> VulkanDevice::init(VkInstance instance, VkSurfaceKHR s
 
     VkDeviceCreateInfo create_info{
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pNext = &vk13_features,  // chain Vulkan 1.3 features (dynamicRendering)
         .queueCreateInfoCount = static_cast<uint32_t>(queue_infos.size()),
         .pQueueCreateInfos = queue_infos.data(),
         .enabledLayerCount = 0,  // device layers deprecated; instance handles it

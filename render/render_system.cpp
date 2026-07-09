@@ -269,8 +269,9 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
     // hook) + the per-frame view/proj matrices so the callback can record
     // chunk draws into the same pass scope.
     auto pass_cb = forward_pass_callback_;
+    auto ui_cb   = ui_pass_callback_;
     pass->execute = [pipeline, descriptor, frame_idx, extent, draws,
-                     pass_cb, view, proj]
+                     pass_cb, ui_cb, view, proj]
                     (snt::render_backend::CommandContext& ctx) {
         VkCommandBuffer cmd = ctx.handle();
 
@@ -308,6 +309,13 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
             const float* view_ptr = glm::value_ptr(view);
             const float* proj_ptr = glm::value_ptr(proj);
             pass_cb(cmd, frame_idx, view_ptr, proj_ptr);
+        }
+
+        // UI overlay draws (debug panel text). Recorded at the END of the
+        // forward pass so UI composites on top of the 3D scene. The
+        // callback binds its own pipeline (alpha blend, no depth write).
+        if (ui_cb) {
+            ui_cb(cmd, frame_idx);
         }
     };
 

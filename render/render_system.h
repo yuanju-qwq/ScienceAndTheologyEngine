@@ -77,6 +77,17 @@ public:
         forward_pass_callback_ = std::move(cb);
     }
 
+    // Optional: register a callback invoked at the END of the forward
+    // pass, after mesh + chunk draws, within the same render pass scope.
+    // Used by MuiRenderer to record UI draws (debug overlay text) on top
+    // of the 3D scene. The callback receives the active command buffer +
+    // the current frame-in-flight slot.
+    using UiPassCallback =
+        std::function<void(VkCommandBuffer, uint32_t)>;
+    void set_ui_pass_callback(UiPassCallback cb) {
+        ui_pass_callback_ = std::move(cb);
+    }
+
     // Initialize the RenderGraph (creates its command pool). Must be called
     // after set_device() and before update(). Returns an Error on failure.
     snt::core::Expected<void> init_render_graph();
@@ -104,8 +115,9 @@ private:
 
     bool needs_resize_ = false;
 
-    // Optional extra draw callback (chunk rendering, etc.).
+    // Optional extra draw callbacks (chunk rendering + UI overlay).
     ForwardPassCallback forward_pass_callback_;
+    UiPassCallback      ui_pass_callback_;
 };
 
 }  // namespace snt::render

@@ -25,9 +25,16 @@
 
 #include <cstdint>
 #include <span>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace snt::ui {
+
+// Forward declaration: MuiRenderer provides glyph lookup for text layout.
+// The full definition lives in mui_renderer.h (which includes Vulkan
+// headers); mui.cpp includes it, but mui.h itself stays Vulkan-free.
+class MuiRenderer;
 
 // 2D position and size (float for sub-pixel layout / DPI scaling).
 struct Vec2 {
@@ -38,6 +45,29 @@ struct Vec2 {
 struct Rect {
     Vec2 pos;
     Vec2 size;
+};
+
+// UI vertex: 2D position (pixels) + texture UV + RGBA color (0..255).
+// Defined here (not in mui_renderer.h) so MuiContext can build draw
+// lists without pulling in Vulkan headers.
+struct UiVertex {
+    float    position[2];  // x, y in pixels (top-left origin)
+    float    uv[2];        // font atlas UV
+    uint8_t  color[4];     // RGBA (0..255)
+};
+
+// Draw data produced by MuiContext::end_frame(). Consumed by MuiRenderer.
+struct UiDrawData {
+    std::vector<UiVertex>  vertices;
+    std::vector<uint16_t>  indices;  // triangle list
+};
+
+// Font atlas glyph info (one per baked character).
+struct GlyphInfo {
+    float uv_x0, uv_y0;  // top-left UV in atlas
+    float uv_x1, uv_y1;  // bottom-right UV in atlas
+    float x0, y0, x1, y1; // vertex offsets relative to pen position
+    float advance;        // pen advance (pixels)
 };
 
 // MUI context: holds the current UI state for one frame.
@@ -52,14 +82,23 @@ public:
     MuiContext(const MuiContext&) = delete;
     MuiContext& operator=(const MuiContext&) = delete;
 
+    // Connect a MuiRenderer for glyph lookup. Must be called before
+    // begin_frame() if text rendering is desired. Pass nullptr to
+    // disable text output (reverts to stub behavior).
+    void set_renderer(MuiRenderer* renderer) { renderer_ = renderer; }
+
     // ---- Frame lifecycle ----
 
-    // Begin a new UI frame. Captures input state, clears draw list.
+    // Begin a new UI frame. Resets draw list and layout cursor.
     void begin_frame();
 
-    // End the current frame. Submits recorded draw calls to the render
-    // backend (P1 stub: no-op).
+    // End the current frame. Finalizes the draw list (no-op for now;
+    // data is already collected during widget calls).
     void end_frame();
+
+    // Access the collected draw data for this frame. The RenderSystem
+    // reads this after end_frame() to submit UI draws.
+    const UiDrawData& draw_data() const { return draw_data_; }
 
     // ---- Windows ----
 
@@ -104,9 +143,13 @@ public:
     void end_group();
 
 private:
-    // P1 stub: no internal state needed (all draws are no-ops).
-    // P1.4 will add: draw list (vertices/indices), input state,
-    // layout cursor, focus stack, etc.
+    MuiRenderer*  renderer_ = nullptr;   // glyph lookup (may be null)
+    UiDrawData    draw_data_;            // per-frame vertex/index lists
+    Vec2          cursor_   = {0, 0};    // current text pen position
+    float         win_x_    = 0.0f;      // current window left edge
+    float         win_y_    = 0.0f;      // current window top edge
+    float         win_w_    = 0.0f;      // current window width
+    float         padding_  = 8.0f;      // interior padding
 };
 
 // Global default MUI context (used by debug panels and gameplay code).

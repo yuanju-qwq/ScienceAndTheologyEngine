@@ -108,20 +108,6 @@ struct CreatureMarker {};
 // StaticMarker: marks the entity as non-moving (e.g., a placed machine).
 struct StaticMarker {};
 
-// ChunkRenderRef: marks an entity as a renderable voxel chunk. The chunk
-// lives in ChunkRegistry at (chunk_x, chunk_y, chunk_z). `mesh_handle_id`
-// is the id field of a snt::voxel::ChunkMeshHandle (stored as a raw uint32
-// here so ecs/ stays free of voxel/ deps — the ChunkRenderSystem wraps it
-// back into a ChunkMeshHandle when calling ChunkRenderer). `dirty` flags
-// the chunk for remesh on the next ChunkRenderSystem::update.
-struct ChunkRenderRef {
-    int32_t  chunk_x       = 0;
-    int32_t  chunk_y       = 0;
-    int32_t  chunk_z       = 0;
-    uint32_t mesh_handle_id = 0xFFFFFFFFu;  // 0xFFFFFFFF = no mesh uploaded yet
-    bool     dirty          = true;
-};
-
 }  // namespace snt::ecs
 
 // ===========================================================================

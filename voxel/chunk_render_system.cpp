@@ -8,8 +8,6 @@
 #include "data/defs/chunk_data.h"      // ChunkData
 #include "data/defs/terrain_data.h"    // TerrainData
 #include "data/world/chunk_registry.h" // ChunkRegistry
-#include "ecs/components.h"            // ChunkRenderRef
-#include "ecs/world.h"                 // World
 #include "voxel/chunk_renderer.h"
 #include "voxel/greedy_mesh.h"
 
@@ -18,6 +16,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <cstring>
+#include <utility>
 
 namespace snt::voxel {
 
@@ -53,31 +52,46 @@ void build_chunk_model(int32_t cx, int32_t cy, int32_t cz, float out[16]) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
+// External dirty-marking API
+// ---------------------------------------------------------------------------
+
+void ChunkRenderSystem::untrack(const snt::data::ChunkKey& key) {
+    auto it = uploaded_meshes_.find(key);
+    if (it != uploaded_meshes_.end()) {
+        if (renderer_) {
+            renderer_->unload_mesh(it->second);
+        }
+        uploaded_meshes_.erase(it);
+    }
+    dirty_chunks_.erase(key);
+}
+
+// ---------------------------------------------------------------------------
 // Phase 1: remesh dirty chunks
 // ---------------------------------------------------------------------------
 
-void ChunkRenderSystem::update(snt::ecs::World& world, float /*dt*/) {
-    if (!renderer_ || !registry_) return;
+void ChunkRenderSystem::update(snt::ecs::World& /*world*/, float /*dt*/) {
+    if (!renderer_ || !registry_ || dirty_chunks_.empty()) return;
 
-    auto& reg = world.registry();
-    auto view = reg.view<snt::ecs::ChunkRenderRef>();
-    for (auto e : view) {
-        auto& ref = view.get<snt::ecs::ChunkRenderRef>(e);
-        if (!ref.dirty) continue;
-        remesh_chunk(world, e, ref);
+    // Snapshot the dirty set so mark_dirty() can be safely called from
+    // within remesh_chunk (e.g. neighbor invalidation) without invalidating
+    // the iterator.
+    std::vector<snt::data::ChunkKey> snapshot;
+    snapshot.reserve(dirty_chunks_.size());
+    for (const auto& k : dirty_chunks_) snapshot.push_back(k);
+
+    for (const auto& key : snapshot) {
+        remesh_chunk(key);
+        dirty_chunks_.erase(key);
     }
 }
 
-void ChunkRenderSystem::remesh_chunk(snt::ecs::World& /*world*/,
-                                     entt::entity /*e*/,
-                                     snt::ecs::ChunkRenderRef& ref) {
-    const std::string dimension = "overworld";
+void ChunkRenderSystem::remesh_chunk(const snt::data::ChunkKey& key) {
     const snt::data::ChunkData* chunk =
-        registry_->get_chunk(dimension, ref.chunk_x, ref.chunk_y, ref.chunk_z);
+        registry_->get_chunk(key.dimension_id, key.chunk_x, key.chunk_y, key.chunk_z);
     if (!chunk) {
-        SNT_LOG_WARN("ChunkRenderSystem: chunk (%d,%d,%d) missing from registry",
-                     ref.chunk_x, ref.chunk_y, ref.chunk_z);
-        ref.dirty = false;
+        SNT_LOG_WARN("ChunkRenderSystem: chunk (%d,%d,%d) '%s' missing from registry",
+                     key.chunk_x, key.chunk_y, key.chunk_z, key.dimension_id.c_str());
         return;
     }
 
@@ -97,24 +111,30 @@ void ChunkRenderSystem::remesh_chunk(snt::ecs::World& /*world*/,
         transparent_mask_, neighbors);
 
     // Release any previously uploaded mesh before uploading the new one.
-    if (ref.mesh_handle_id != snt::ecs::ChunkRenderRef{}.mesh_handle_id) {
-        renderer_->unload_mesh(ChunkMeshHandle{ref.mesh_handle_id});
-        ref.mesh_handle_id = snt::ecs::ChunkRenderRef{}.mesh_handle_id;
+    auto it = uploaded_meshes_.find(key);
+    if (it != uploaded_meshes_.end()) {
+        renderer_->unload_mesh(it->second);
+        uploaded_meshes_.erase(it);
+    }
+
+    // Skip empty meshes (fully air chunks) — no draw needed.
+    if (mesh.vertices.empty() || mesh.indices.empty()) {
+        SNT_LOG_DEBUG("ChunkRenderSystem: chunk (%d,%d,%d) empty, skip upload",
+                      key.chunk_x, key.chunk_y, key.chunk_z);
+        return;
     }
 
     auto upload_r = renderer_->upload_mesh(mesh);
     if (!upload_r) {
         SNT_LOG_ERROR("ChunkRenderSystem: upload_mesh failed for chunk (%d,%d,%d): %s",
-                      ref.chunk_x, ref.chunk_y, ref.chunk_z,
+                      key.chunk_x, key.chunk_y, key.chunk_z,
                       upload_r.error().format().c_str());
-        ref.dirty = false;
         return;
     }
-    ref.mesh_handle_id = upload_r->id;
-    ref.dirty = false;
+    uploaded_meshes_[key] = *upload_r;
 
     SNT_LOG_DEBUG("ChunkRenderSystem: remeshed chunk (%d,%d,%d) -> %zu verts, %zu idx",
-                  ref.chunk_x, ref.chunk_y, ref.chunk_z,
+                  key.chunk_x, key.chunk_y, key.chunk_z,
                   mesh.vertices.size(), mesh.indices.size());
 }
 
@@ -123,30 +143,21 @@ void ChunkRenderSystem::remesh_chunk(snt::ecs::World& /*world*/,
 // ---------------------------------------------------------------------------
 
 void ChunkRenderSystem::render(VkCommandBuffer cmd, uint32_t frame_idx,
-                               const float view[16], const float proj[16],
-                               snt::ecs::World& world) {
-    if (!renderer_) return;
+                               const float view[16], const float proj[16]) {
+    if (!renderer_ || uploaded_meshes_.empty()) return;
 
     draw_scratch_.clear();
     const uint32_t max_chunks = renderer_->max_chunks();
 
-    auto& reg = world.registry();
-    auto view_group = reg.view<snt::ecs::ChunkRenderRef>();
-    for (auto e : view_group) {
+    for (const auto& [key, handle] : uploaded_meshes_) {
         if (draw_scratch_.size() >= max_chunks) {
             SNT_LOG_ERROR("ChunkRenderSystem: too many chunks to draw (>=%u), truncating",
                           max_chunks);
             break;
         }
-        const auto& ref = view_group.get<snt::ecs::ChunkRenderRef>(e);
-        // Skip chunks with no uploaded mesh (empty chunks or not yet remeshed).
-        if (ref.mesh_handle_id == snt::ecs::ChunkRenderRef{}.mesh_handle_id) {
-            continue;
-        }
-
         ChunkDrawCall dc;
-        dc.mesh_handle = ChunkMeshHandle{ref.mesh_handle_id};
-        build_chunk_model(ref.chunk_x, ref.chunk_y, ref.chunk_z, dc.model);
+        dc.mesh_handle = handle;
+        build_chunk_model(key.chunk_x, key.chunk_y, key.chunk_z, dc.model);
         draw_scratch_.push_back(dc);
     }
 

@@ -1,34 +1,51 @@
-// ChunkRenderSystem — ECS system that drives chunk meshing + draw recording.
+// ChunkRenderSystem — drives chunk meshing + draw recording for STATIC
+// terrain (non-entity blocks). Entity blocks (machines, trees, etc.) are
+// handled separately and do not flow through this system.
 //
-// Two-phase design (keeps the single frame loop in RenderSystem):
-//   1. update(world, dt)  — runs during world.update(dt). For every dirty
-//      ChunkRenderRef entity: fetch ChunkData from ChunkRegistry, run the
-//      greedy mesher, upload the mesh via ChunkRenderer, store the handle
-//      in the component, clear dirty. NO draws, NO frame acquisition.
-//   2. render(cmd, frame_idx, view, proj, world) — called by RenderSystem
-//      inside its forward pass callback (command buffer is recording).
-//      Builds a ChunkDrawCall list from all ChunkRenderRef entities and
-//      hands it to ChunkRenderer::render.
+// Design (pure-data, no ECS entities per chunk):
+//   Chunks are bulk objects (thousands at scale). Modeling each as an ECS
+//   entity with a ChunkRenderRef component adds per-chunk overhead (EntityGuid
+//   allocation, reverse map, component pool, view iteration) that is
+//   avoidable for static terrain. Instead this system owns its own state:
+//     - dirty_chunks_   : set of ChunkKeys awaiting remesh
+//     - uploaded_meshes_: ChunkKey -> uploaded ChunkMeshHandle
+//   The system reads chunk data directly from ChunkRegistry.
 //
-// Layering: sits in voxel/, depends on ecs + data (ChunkRegistry +
-// ChunkData) + voxel_mesh (greedy_mesher) + chunk_renderer. No Vulkan
-// types leak into the header except VkCommandBuffer (opaque handle).
+// Two-phase (keeps the single frame loop in RenderSystem):
+//   1. update(world, dt)  — remesh every dirty chunk: fetch ChunkData from
+//      ChunkRegistry, run greedy mesher, upload via ChunkRenderer, store
+//      the handle in uploaded_meshes_, clear dirty. NO draws, NO frame
+//      acquisition.
+//   2. render(cmd, frame_idx, view, proj) — called by RenderSystem inside
+//      its forward pass callback. Builds a ChunkDrawCall list from
+//      uploaded_meshes_ and forwards to ChunkRenderer::render.
+//
+// Public API for external dirty-marking (e.g. after terrain edit):
+//   mark_dirty(ChunkKey)  — schedule a chunk for remesh on next update()
+//   untrack(ChunkKey)     — unload mesh + drop from tracking (chunk removed)
+//
+// Layering: sits in voxel/, depends on data (ChunkRegistry + ChunkData) +
+// voxel_mesh (greedy_mesher) + chunk_renderer. Still subclasses ecs::System
+// so it plugs into World::update() scheduling, but holds no per-chunk
+// entities. No Vulkan types leak into the header except VkCommandBuffer.
 
 #pragma once
 
 #include "core/expected.h"        // Expected<void>
+#include "data/defs/chunk_data.h" // ChunkKey
 #include "ecs/system.h"           // System base
-#include "ecs/entt_config.h"      // entt::entity
 #include "voxel/chunk_renderer.h" // ChunkRenderer, ChunkDrawCall, ChunkMeshHandle
 #include "voxel/voxel_vertex.h"   // VoxelMeshData (used internally)
 
 #include <vulkan/vulkan.h>        // VkCommandBuffer
 
 #include <cstdint>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
-namespace snt::data  { class ChunkRegistry; }
-namespace snt::ecs   { struct ChunkRenderRef; }
+namespace snt::data { class ChunkRegistry; }
 
 namespace snt::voxel {
 
@@ -51,21 +68,28 @@ public:
     void set_ladder_material(int32_t m)    { ladder_material_ = m; }
     void set_transparent_mask(const std::vector<uint8_t>& m) { transparent_mask_ = m; }
 
+    // --- External dirty-marking API ---
+    // Schedule a chunk for remesh on the next update(). Safe to call for
+    // chunks not yet tracked (they will be added). Idempotent.
+    void mark_dirty(const snt::data::ChunkKey& key) { dirty_chunks_.insert(key); }
+
+    // Untrack a chunk: unload its mesh (if uploaded) and remove from all
+    // internal maps. Call when a chunk is unloaded from ChunkRegistry.
+    void untrack(const snt::data::ChunkKey& key);
+
     // ECS update: remesh dirty chunks (phase 1).
     void update(snt::ecs::World& world, float dt) override;
 
     // Render phase (phase 2). Called by RenderSystem inside the forward
-    // pass. Builds ChunkDrawCalls for every ChunkRenderRef entity with a
-    // valid mesh handle and forwards them to ChunkRenderer::render.
+    // pass. Builds ChunkDrawCalls for every uploaded mesh and forwards
+    // them to ChunkRenderer::render.
     void render(VkCommandBuffer cmd, uint32_t frame_idx,
-                const float view[16], const float proj[16],
-                snt::ecs::World& world);
+                const float view[16], const float proj[16]);
 
 private:
     // Remesh one chunk: fetch materials from ChunkRegistry, run greedy
-    // mesh, upload via ChunkRenderer, update the component.
-    void remesh_chunk(snt::ecs::World& world, entt::entity e,
-                      snt::ecs::ChunkRenderRef& ref);
+    // mesh, upload via ChunkRenderer, update uploaded_meshes_.
+    void remesh_chunk(const snt::data::ChunkKey& key);
 
     ChunkRenderer*              renderer_      = nullptr;
     snt::data::ChunkRegistry*   registry_      = nullptr;
@@ -74,6 +98,10 @@ private:
     int32_t             air_material_    = 0;
     int32_t             ladder_material_ = 255;
     std::vector<uint8_t> transparent_mask_;
+
+    // Pure-data chunk tracking (no ECS entities).
+    std::unordered_set<snt::data::ChunkKey>   dirty_chunks_;
+    std::unordered_map<snt::data::ChunkKey, ChunkMeshHandle> uploaded_meshes_;
 
     // Scratch buffer for the per-frame draw list (reused across frames to
     // avoid per-frame allocation).

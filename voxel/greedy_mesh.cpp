@@ -216,13 +216,13 @@ void emit_face_quad(VoxelMeshData& mesh, int dir, int32_t d,
     mesh.vertices.push_back(v1);
     mesh.vertices.push_back(v2);
     mesh.vertices.push_back(v3);
-    // Two triangles: 0-1-2, 0-2-3.
+    // Two triangles with outward CCW winding for Vulkan back-face culling.
     mesh.indices.push_back(base);
+    mesh.indices.push_back(base + 2);
     mesh.indices.push_back(base + 1);
-    mesh.indices.push_back(base + 2);
     mesh.indices.push_back(base);
-    mesh.indices.push_back(base + 2);
     mesh.indices.push_back(base + 3);
+    mesh.indices.push_back(base + 2);
 }
 
 }  // namespace
