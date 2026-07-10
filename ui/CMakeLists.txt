@@ -12,4 +12,6 @@ target_link_libraries(snt_ui PUBLIC
     snt_core
     snt_assets
     snt_render_backend
+    snt_icu
+    snt_harfbuzz
 )

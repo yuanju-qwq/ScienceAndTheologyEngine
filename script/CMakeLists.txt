@@ -13,6 +13,7 @@ add_library(snt_script STATIC
     script_module.cpp
     script_loader.cpp
     script_manager.cpp
+    registry_hub.cpp
 )
 
 target_include_directories(snt_script PUBLIC

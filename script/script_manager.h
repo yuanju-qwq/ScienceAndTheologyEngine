@@ -19,6 +19,7 @@
 #include "script/script_engine.h"
 #include "script/script_context.h"
 #include "script/script_loader.h"
+#include "script/registry_hub.h"
 
 namespace snt::script {
 
@@ -65,6 +66,8 @@ public:
     ScriptEngine&       engine()  { return engine_; }
     ScriptContextPool&  contexts() { return contexts_; }
     ScriptLoader&       loader()  { return loader_; }
+    RegistryHub&        registries() { return registry_hub_; }
+    const RegistryHub&  registries() const { return registry_hub_; }
 
 private:
     ScriptManager() = default;
@@ -76,6 +79,7 @@ private:
     ScriptEngine      engine_;
     ScriptContextPool contexts_;
     ScriptLoader      loader_;
+    RegistryHub       registry_hub_;
 };
 
 }  // namespace snt::script

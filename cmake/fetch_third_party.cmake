@@ -144,6 +144,9 @@ if(NOT TARGET Freetype::Freetype)
     message(FATAL_ERROR "FreeType target missing after FetchContent_MakeAvailable(FreeType).")
 endif()
 
+# Full retained-MUI text stack: ICU4C + HarfBuzz + FreeType.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/text_dependencies.cmake)
+
 # ============================================================
 # shaderc (runtime/build-time GLSL -> SPIR-V compilation)
 # ============================================================
@@ -346,7 +349,12 @@ target_link_libraries(snt_third_party INTERFACE
     snt_as_scriptbuilder
     snt_as_debugger
 )
-target_link_libraries(snt_third_party INTERFACE Freetype::Freetype shaderc::shaderc_shared)
+target_link_libraries(snt_third_party INTERFACE
+    Freetype::Freetype
+    snt_icu
+    snt_harfbuzz
+    shaderc::shaderc_shared
+)
 if(TARGET SDL3-shared)
     target_link_libraries(snt_third_party INTERFACE SDL3-shared)
 endif()

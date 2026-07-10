@@ -17,6 +17,11 @@ ScriptManager& ScriptManager::instance() {
 snt::core::Expected<void> ScriptManager::init() {
     SNT_LOG_INFO("Initializing ScriptManager...");
 
+    // A ScriptManager instance can be initialized again after shutdown in
+    // tests or when restarting an engine session. Content/state from an old
+    // session must never leak into the next one.
+    registry_hub_.reset();
+
     auto r = engine_.init();
     if (!r) {
         return r.error().with_context("ScriptManager: engine_.init");
@@ -55,6 +60,7 @@ void ScriptManager::update(float /*dt*/) {
 void ScriptManager::shutdown() {
     SNT_LOG_INFO("Shutting down ScriptManager...");
     loader_.unload_all();
+    registry_hub_.reset();
     contexts_.shutdown();
     engine_.shutdown();
     SNT_LOG_INFO("ScriptManager shut down");

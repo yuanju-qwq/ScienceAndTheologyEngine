@@ -16,7 +16,6 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <cstring>
-#include <algorithm>
 #include <utility>
 
 namespace snt::voxel {
@@ -65,7 +64,6 @@ void ChunkRenderSystem::untrack(const snt::data::ChunkKey& key) {
         uploaded_meshes_.erase(it);
     }
     dirty_chunks_.erase(key);
-    pending_chunks_.erase(key);
 }
 
 // ---------------------------------------------------------------------------
@@ -73,93 +71,44 @@ void ChunkRenderSystem::untrack(const snt::data::ChunkKey& key) {
 // ---------------------------------------------------------------------------
 
 void ChunkRenderSystem::update(snt::ecs::World& /*world*/, float /*dt*/) {
-    if (!renderer_ || !registry_) return;
-    upload_ready_remeshes();
-    schedule_dirty_remeshes();
-}
+    if (!renderer_ || !registry_ || dirty_chunks_.empty()) return;
 
-void ChunkRenderSystem::schedule_dirty_remeshes() {
-    if (dirty_chunks_.empty()) return;
+    // Snapshot the dirty set so mark_dirty() can be safely called from
+    // within remesh_chunk (e.g. neighbor invalidation) without invalidating
+    // the iterator.
+    std::vector<snt::data::ChunkKey> snapshot;
+    snapshot.reserve(dirty_chunks_.size());
+    for (const auto& k : dirty_chunks_) snapshot.push_back(k);
 
-    uint32_t scheduled = 0;
-    for (auto it = dirty_chunks_.begin();
-         it != dirty_chunks_.end() && scheduled < remesh_jobs_per_frame_; ) {
-        const snt::data::ChunkKey key = *it;
-
-        // If this chunk is already being meshed, keep the dirty marker. It
-        // will schedule one more remesh after the current result uploads.
-        if (pending_chunks_.contains(key)) {
-            ++it;
-            continue;
-        }
-
-        const snt::data::ChunkData* chunk =
-            registry_->get_chunk(key.dimension_id, key.chunk_x, key.chunk_y, key.chunk_z);
-        if (!chunk) {
-            SNT_LOG_WARN("ChunkRenderSystem: chunk (%d,%d,%d) '%s' missing from registry",
-                         key.chunk_x, key.chunk_y, key.chunk_z, key.dimension_id.c_str());
-            it = dirty_chunks_.erase(it);
-            continue;
-        }
-
-        // Copy the compact material volume on the main thread. The worker
-        // then runs pure greedy meshing without touching ChunkRegistry.
-        auto materials = extract_materials(chunk->terrain);
-        const int sx = chunk->terrain.size_x;
-        const int sy = chunk->terrain.size_y;
-        const int sz = chunk->terrain.size_z;
-        const int32_t air_material = air_material_;
-        const int32_t ladder_material = ladder_material_;
-        auto transparent_mask = transparent_mask_;
-
-        auto future = snt::core::default_job_system().submit_future<RemeshResult>(
-            [key, materials = std::move(materials), sx, sy, sz,
-             air_material, ladder_material,
-             transparent_mask = std::move(transparent_mask)]() mutable {
-                NeighborMaterials neighbors;
-                RemeshResult result;
-                result.key = key;
-                result.mesh = build_greedy_mesh(
-                    materials, sx, sy, sz,
-                    air_material, ladder_material,
-                    transparent_mask, neighbors);
-                result.ok = true;
-                return result;
-            });
-
-        pending_chunks_.insert(key);
-        pending_remeshes_.push_back(PendingRemesh{key, std::move(future)});
-        it = dirty_chunks_.erase(it);
-        ++scheduled;
+    for (const auto& key : snapshot) {
+        remesh_chunk(key);
+        dirty_chunks_.erase(key);
     }
 }
 
-void ChunkRenderSystem::upload_ready_remeshes() {
-    if (pending_remeshes_.empty()) return;
-
-    uint32_t uploaded = 0;
-    for (size_t i = 0; i < pending_remeshes_.size() && uploaded < uploads_per_frame_; ) {
-        auto& pending = pending_remeshes_[i];
-        if (!pending.future.is_ready()) {
-            ++i;
-            continue;
-        }
-
-        RemeshResult result = pending.future.get();
-        const bool still_tracked = pending_chunks_.erase(result.key) > 0;
-        pending_remeshes_[i] = std::move(pending_remeshes_.back());
-        pending_remeshes_.pop_back();
-
-        if (still_tracked) {
-            upload_remesh_result(std::move(result));
-            ++uploaded;
-        }
+void ChunkRenderSystem::remesh_chunk(const snt::data::ChunkKey& key) {
+    const snt::data::ChunkData* chunk =
+        registry_->get_chunk(key.dimension_id, key.chunk_x, key.chunk_y, key.chunk_z);
+    if (!chunk) {
+        SNT_LOG_WARN("ChunkRenderSystem: chunk (%d,%d,%d) '%s' missing from registry",
+                     key.chunk_x, key.chunk_y, key.chunk_z, key.dimension_id.c_str());
+        return;
     }
-}
 
-void ChunkRenderSystem::upload_remesh_result(RemeshResult&& result) {
-    if (!result.ok) return;
-    const auto& key = result.key;
+    // Extract materials from the chunk's terrain volume.
+    const auto materials = extract_materials(chunk->terrain);
+    const int sx = chunk->terrain.size_x;
+    const int sy = chunk->terrain.size_y;
+    const int sz = chunk->terrain.size_z;
+
+    // No neighbors loaded yet: empty NeighborMaterials. Boundary faces
+    // will emit (correct for a lone chunk).
+    NeighborMaterials neighbors;
+
+    VoxelMeshData mesh = build_greedy_mesh(
+        materials, sx, sy, sz,
+        air_material_, ladder_material_,
+        transparent_mask_, neighbors);
 
     // Release any previously uploaded mesh before uploading the new one.
     auto it = uploaded_meshes_.find(key);
@@ -169,13 +118,13 @@ void ChunkRenderSystem::upload_remesh_result(RemeshResult&& result) {
     }
 
     // Skip empty meshes (fully air chunks) — no draw needed.
-    if (result.mesh.vertices.empty() || result.mesh.indices.empty()) {
+    if (mesh.vertices.empty() || mesh.indices.empty()) {
         SNT_LOG_DEBUG("ChunkRenderSystem: chunk (%d,%d,%d) empty, skip upload",
                       key.chunk_x, key.chunk_y, key.chunk_z);
         return;
     }
 
-    auto upload_r = renderer_->upload_mesh(result.mesh);
+    auto upload_r = renderer_->upload_mesh(mesh);
     if (!upload_r) {
         SNT_LOG_ERROR("ChunkRenderSystem: upload_mesh failed for chunk (%d,%d,%d): %s",
                       key.chunk_x, key.chunk_y, key.chunk_z,
@@ -186,7 +135,7 @@ void ChunkRenderSystem::upload_remesh_result(RemeshResult&& result) {
 
     SNT_LOG_DEBUG("ChunkRenderSystem: remeshed chunk (%d,%d,%d) -> %zu verts, %zu idx",
                   key.chunk_x, key.chunk_y, key.chunk_z,
-                  result.mesh.vertices.size(), result.mesh.indices.size());
+                  mesh.vertices.size(), mesh.indices.size());
 }
 
 // ---------------------------------------------------------------------------
