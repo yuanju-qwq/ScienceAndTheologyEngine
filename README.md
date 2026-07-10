@@ -1,41 +1,66 @@
-# ScienceAndTheology Engine
+# ScienceAndTheologyEngine
 
-The C++20 runtime for ScienceAndTheology. It owns platform integration,
-rendering, ECS, data, scene serialization, scripting and engine-side tests.
-It does not own a game executable, game content or a source-tree package
-layout.
+ScienceAndTheologyEngine 是 Science & Theology 使用的 C++20 运行时。它负责平台集成、渲染、ECS、资产加载、场景序列化、脚本、面向游戏的数据系统和引擎测试。它是一个库仓库，不提供游戏可执行程序或游戏内容包。
 
-## Build Standalone
+## 环境要求
+
+当前支持的开发环境是 Windows 10/11 x64 和 PowerShell 7。
+
+- Git
+- CMake 3.20 或更高版本
+- Visual Studio 2019 或 2022，并安装“使用 C++ 的桌面开发”工作负载
+- Vulkan SDK：设置 `VULKAN_SDK`，并确保 SDK 的 `Include`、`Lib` 和 `Bin` 目录中提供 `shaderc_shared`
+
+CMake 所需的第三方源码压缩包已跟踪在 `third_party/_downloads`。正常克隆后不需要运行依赖下载脚本；SDL3 会在第一次配置时解压到 CMake 构建目录，源码树不会产生解压后的依赖文件。
+
+## 编译引擎库
+
+克隆引擎并构建静态库目标 `snt_engine`：
 
 ```powershell
-cmake -S . -B build -DSNT_BUILD_TESTS=ON
+git clone https://github.com/yuanju-qwq/ScienceAndTheologyEngine.git
+Set-Location ScienceAndTheologyEngine
+cmake -S . -B build -DSNT_BUILD_TESTS=OFF
 cmake --build build --target snt_engine --config Debug
-cmake --build build --target snt_tests --config Debug
-ctest --test-dir build -C Debug --output-on-failure
 ```
 
-## Embed In A Game
+使用 Visual Studio 生成器时，生成的库位于 `build/engine/Debug/`。`snt_engine` 是静态库，因此该仓库不会生成可运行的游戏程序。
 
-The game repository adds this repository as a submodule and includes it with
-CMake:
+从同一构建目录编译 Release：
+
+```powershell
+cmake --build build --target snt_engine --config Release
+```
+
+## 运行测试
+
+启用测试时使用独立构建目录：
+
+```powershell
+cmake -S . -B build-tests -DSNT_BUILD_TESTS=ON
+cmake --build build-tests --target snt_tests --config Debug
+ctest --test-dir build-tests -C Debug --output-on-failure
+```
+
+`snt_tests` 是唯一的引擎测试可执行程序。
+
+## 嵌入游戏
+
+游戏仓库将此引擎作为子模块，并将两个项目加入 CMake：
 
 ```cmake
 add_subdirectory(snt_engine)
 add_subdirectory(game)
 ```
 
-The game host links `snt_engine` and must pass `snt::core::RuntimePaths` when
-calling `Engine::init`:
+宿主链接 `snt_engine`，并用显式的 `snt::core::RuntimePaths` 初始化它：
 
-- `engine_root`: packaged engine resources such as shaders and ICU data.
-- `game_root`: game-owned config, scenes, scripts and assets.
-- `user_root`: writable logs, saves and caches.
+- `engine_root`：着色器和 ICU 数据等已打包的引擎资源。
+- `game_root`：游戏拥有的配置、场景、脚本和资产。
+- `user_root`：可写的日志、存档和缓存目录。
 
-The engine deliberately does not infer any of these paths from the current
-working directory, parent folders or the submodule directory name.
+引擎绝不会从当前工作目录、父目录或子模块名称推断这些路径。可执行程序生命周期和运行时包组装始终属于游戏宿主。
 
-## Development Contract
+## 许可证
 
-Engine code may read only its explicit engine root or the game/user roots
-provided by the host API. Packaging, gameplay content and executable lifecycle
-belong to the game repository.
+代码和资源使用 [PolyForm Noncommercial License 1.0.0](LICENSE)。商业使用需向 yuanju（2358586959@qq.com）单独取得授权。
