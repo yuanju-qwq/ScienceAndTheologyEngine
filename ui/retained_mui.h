@@ -87,8 +87,26 @@ struct TextCluster {
     bool requires_color = false;
 };
 
+// A raster-ready HarfBuzz glyph. Metrics are derived from the same
+// FreeType face used during shaping; UVs address the dynamic Unicode atlas.
+struct TextGlyph {
+    uint32_t glyph_id = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 0.0f;
+    float height = 0.0f;
+    float u0 = 0.0f;
+    float v0 = 0.0f;
+    float u1 = 0.0f;
+    float v1 = 0.0f;
+    bool drawable = false;
+    bool color = false;
+};
+
 struct TextLayout {
     std::vector<TextCluster> clusters;
+    std::vector<TextGlyph> glyphs;
+    std::shared_ptr<const UiGlyphAtlas> glyph_atlas;
     Vec2 size{};
     bool contains_emoji = false;
     bool contains_cjk = false;
@@ -108,6 +126,15 @@ struct TextEngineConfig {
     bool require_icu = true;
     bool require_sdf = true;
     bool require_color_emoji = true;
+    // Ordered font family for real glyph coverage, not a compatibility path.
+    // All entries participate in HarfBuzz/FreeType shaping and rasterization.
+    std::vector<std::string> font_paths{
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/seguiemj.ttf",
+    };
+    std::string locale = "zh-Hans";
+    std::string icu_data_path = "snt_engine/third_party/icu4c/icudt_godot.dat";
 };
 
 class TextEngine {
@@ -117,19 +144,32 @@ public:
     virtual TextLayout shape(std::string_view text, const TextStyle& style) = 0;
 };
 
-class FallbackTextEngine final : public TextEngine {
+// Production MUI text engine. It has no simplified shaping path: UTF-8 is
+// converted to ICU UTF-16, BiDi/grapheme analysis runs through ICU, and each
+// font run is shaped by HarfBuzz using a FreeType face. Missing required
+// backends leave the engine unavailable rather than silently degrading text.
+class UnicodeTextEngine final : public TextEngine {
 public:
-    explicit FallbackTextEngine(TextEngineConfig config = {});
+    explicit UnicodeTextEngine(TextEngineConfig config = {});
+    ~UnicodeTextEngine() override;
+
+    UnicodeTextEngine(const UnicodeTextEngine&) = delete;
+    UnicodeTextEngine& operator=(const UnicodeTextEngine&) = delete;
 
     const TextEngineCapabilities& capabilities() const override { return caps_; }
     TextLayout shape(std::string_view text, const TextStyle& style) override;
+    bool available() const { return available_; }
+    const std::string& initialization_error() const { return initialization_error_; }
 
 private:
-    void warn_missing_backends_once();
+    struct Impl;
 
     TextEngineConfig config_{};
     TextEngineCapabilities caps_{};
-    bool warned_missing_backends_ = false;
+    std::unique_ptr<Impl> impl_;
+    bool available_ = false;
+    bool logged_unavailable_ = false;
+    std::string initialization_error_;
 };
 
 using BindingValue = std::variant<std::monostate, bool, int64_t, double, std::string>;
@@ -188,14 +228,14 @@ private:
 
 class Arc2DRenderer {
 public:
-    // Converts supported Arc2D primitives into renderer draw data. Text
-    // commands stay in the command buffer until the HarfBuzz/ICU/SDF text
-    // backend is wired to glyph atlas pages.
+    // Converts Arc2D primitives into renderer draw data. Text is lowered from
+    // HarfBuzz/FreeType glyphs into dynamic-atlas quads; no bitmap fallback
+    // exists in this renderer.
     UiDrawData build_draw_data(const Arc2DCommandBuffer& commands) const;
 
 private:
     static void append_rect(UiDrawData& out, Rect rect, Color color);
-    static void append_bitmap_text(UiDrawData& out, const DrawTextCommand& text);
+    static void append_glyph_text(UiDrawData& out, const DrawTextCommand& text);
 };
 
 class View {
@@ -401,15 +441,19 @@ struct UiFrameResult {
 
 class UiRuntime {
 public:
-    UiRuntime();
+    explicit UiRuntime(TextEngineConfig config = {});
 
     TextEngine& text_engine() { return text_engine_; }
     const TextEngine& text_engine() const { return text_engine_; }
+    bool text_available() const { return text_engine_.available(); }
+    const std::string& text_initialization_error() const {
+        return text_engine_.initialization_error();
+    }
 
     UiFrameResult build_frame(View& root, Vec2 viewport);
 
 private:
-    FallbackTextEngine text_engine_;
+    UnicodeTextEngine text_engine_;
     Arc2DRenderer renderer_;
 };
 

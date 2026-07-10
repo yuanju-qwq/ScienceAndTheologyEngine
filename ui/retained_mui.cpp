@@ -2,12 +2,25 @@
 #include "retained_mui.h"
 
 #include "core/log.h"
+#include "core/path_utils.h"
+
+#include <ft2build.h>
+#include FT_COLOR_H
+#include FT_FREETYPE_H
+#include "hb-ft.h"
+#include "hb.h"
+#include "unicode/ubidi.h"
+#include "unicode/ubrk.h"
+#include "unicode/uclean.h"
+#include "unicode/udata.h"
+#include "unicode/ustring.h"
 
 #include <algorithm>
-#include <array>
-#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <limits>
+#include <unordered_map>
 
 namespace snt::ui {
 
@@ -28,6 +41,18 @@ bool is_cjk_codepoint(uint32_t cp) {
 bool is_emoji_codepoint(uint32_t cp) {
     return (cp >= 0x1F000u && cp <= 0x1FAFFu) ||
            (cp >= 0x2600u && cp <= 0x27BFu);
+}
+
+// Joiners, variation selectors and combining marks stay with the preceding
+// face so HarfBuzz receives an intact grapheme (notably emoji ZWJ sequences).
+bool continues_font_run(uint32_t cp) {
+    return cp == 0x200Du ||
+           (cp >= 0x0300u && cp <= 0x036Fu) ||
+           (cp >= 0x1AB0u && cp <= 0x1AFFu) ||
+           (cp >= 0x1DC0u && cp <= 0x1DFFu) ||
+           (cp >= 0x20D0u && cp <= 0x20FFu) ||
+           (cp >= 0xFE00u && cp <= 0xFE0Fu) ||
+           (cp >= 0xE0100u && cp <= 0xE01EFu);
 }
 
 uint32_t decode_utf8(std::string_view s, size_t& offset) {
@@ -67,13 +92,8 @@ uint32_t decode_utf8(std::string_view s, size_t& offset) {
     return 0xFFFDu;
 }
 
-float text_cluster_advance(uint32_t cp, const TextStyle& style) {
-    if (cp == '\n') return 0.0f;
-    if (is_emoji_codepoint(cp)) return style.size_px * 1.1f;
-    if (is_cjk_codepoint(cp)) return style.size_px;
-    if (cp < 0x80u) return style.size_px * 0.58f;
-    return style.size_px * 0.72f;
-}
+// The retained text path intentionally has no ASCII bitmap implementation.
+// Rasterization is performed from shaped FreeType glyph IDs below.
 
 template <typename T>
 T* find_view_recursive(std::vector<std::unique_ptr<View>>& children, std::string_view id) {
@@ -102,61 +122,12 @@ std::string binding_value_to_string(const BindingValue& value) {
     if (const auto* b = std::get_if<bool>(&value)) return *b ? "true" : "false";
     if (const auto* i = std::get_if<int64_t>(&value)) return std::to_string(*i);
     if (const auto* d = std::get_if<double>(&value)) {
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "%.3f", *d);
-        return buf;
+        char buffer[64];
+        std::snprintf(buffer, sizeof(buffer), "%.3f", *d);
+        return buffer;
     }
     return {};
 }
-
-std::array<uint8_t, 7> bitmap_glyph(char ch) {
-    const char c = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-    switch (c) {
-        case '0': return {0x0Eu, 0x11u, 0x13u, 0x15u, 0x19u, 0x11u, 0x0Eu};
-        case '1': return {0x04u, 0x0Cu, 0x04u, 0x04u, 0x04u, 0x04u, 0x0Eu};
-        case '2': return {0x0Eu, 0x11u, 0x01u, 0x02u, 0x04u, 0x08u, 0x1Fu};
-        case '3': return {0x1Eu, 0x01u, 0x01u, 0x0Eu, 0x01u, 0x01u, 0x1Eu};
-        case '4': return {0x02u, 0x06u, 0x0Au, 0x12u, 0x1Fu, 0x02u, 0x02u};
-        case '5': return {0x1Fu, 0x10u, 0x1Eu, 0x01u, 0x01u, 0x11u, 0x0Eu};
-        case '6': return {0x06u, 0x08u, 0x10u, 0x1Eu, 0x11u, 0x11u, 0x0Eu};
-        case '7': return {0x1Fu, 0x01u, 0x02u, 0x04u, 0x08u, 0x08u, 0x08u};
-        case '8': return {0x0Eu, 0x11u, 0x11u, 0x0Eu, 0x11u, 0x11u, 0x0Eu};
-        case '9': return {0x0Eu, 0x11u, 0x11u, 0x0Fu, 0x01u, 0x02u, 0x0Cu};
-        case 'A': return {0x0Eu, 0x11u, 0x11u, 0x1Fu, 0x11u, 0x11u, 0x11u};
-        case 'B': return {0x1Eu, 0x11u, 0x11u, 0x1Eu, 0x11u, 0x11u, 0x1Eu};
-        case 'C': return {0x0Eu, 0x11u, 0x10u, 0x10u, 0x10u, 0x11u, 0x0Eu};
-        case 'D': return {0x1Eu, 0x11u, 0x11u, 0x11u, 0x11u, 0x11u, 0x1Eu};
-        case 'E': return {0x1Fu, 0x10u, 0x10u, 0x1Eu, 0x10u, 0x10u, 0x1Fu};
-        case 'F': return {0x1Fu, 0x10u, 0x10u, 0x1Eu, 0x10u, 0x10u, 0x10u};
-        case 'G': return {0x0Eu, 0x11u, 0x10u, 0x17u, 0x11u, 0x11u, 0x0Eu};
-        case 'H': return {0x11u, 0x11u, 0x11u, 0x1Fu, 0x11u, 0x11u, 0x11u};
-        case 'I': return {0x0Eu, 0x04u, 0x04u, 0x04u, 0x04u, 0x04u, 0x0Eu};
-        case 'J': return {0x07u, 0x02u, 0x02u, 0x02u, 0x12u, 0x12u, 0x0Cu};
-        case 'K': return {0x11u, 0x12u, 0x14u, 0x18u, 0x14u, 0x12u, 0x11u};
-        case 'L': return {0x10u, 0x10u, 0x10u, 0x10u, 0x10u, 0x10u, 0x1Fu};
-        case 'M': return {0x11u, 0x1Bu, 0x15u, 0x15u, 0x11u, 0x11u, 0x11u};
-        case 'N': return {0x11u, 0x19u, 0x15u, 0x13u, 0x11u, 0x11u, 0x11u};
-        case 'O': return {0x0Eu, 0x11u, 0x11u, 0x11u, 0x11u, 0x11u, 0x0Eu};
-        case 'P': return {0x1Eu, 0x11u, 0x11u, 0x1Eu, 0x10u, 0x10u, 0x10u};
-        case 'Q': return {0x0Eu, 0x11u, 0x11u, 0x11u, 0x15u, 0x12u, 0x0Du};
-        case 'R': return {0x1Eu, 0x11u, 0x11u, 0x1Eu, 0x14u, 0x12u, 0x11u};
-        case 'S': return {0x0Fu, 0x10u, 0x10u, 0x0Eu, 0x01u, 0x01u, 0x1Eu};
-        case 'T': return {0x1Fu, 0x04u, 0x04u, 0x04u, 0x04u, 0x04u, 0x04u};
-        case 'U': return {0x11u, 0x11u, 0x11u, 0x11u, 0x11u, 0x11u, 0x0Eu};
-        case 'V': return {0x11u, 0x11u, 0x11u, 0x11u, 0x11u, 0x0Au, 0x04u};
-        case 'W': return {0x11u, 0x11u, 0x11u, 0x15u, 0x15u, 0x15u, 0x0Au};
-        case 'X': return {0x11u, 0x11u, 0x0Au, 0x04u, 0x0Au, 0x11u, 0x11u};
-        case 'Y': return {0x11u, 0x11u, 0x0Au, 0x04u, 0x04u, 0x04u, 0x04u};
-        case 'Z': return {0x1Fu, 0x01u, 0x02u, 0x04u, 0x08u, 0x10u, 0x1Fu};
-        case '.': return {0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x0Cu, 0x0Cu};
-        case ':': return {0x00u, 0x0Cu, 0x0Cu, 0x00u, 0x0Cu, 0x0Cu, 0x00u};
-        case '-': return {0x00u, 0x00u, 0x00u, 0x1Fu, 0x00u, 0x00u, 0x00u};
-        case '/': return {0x01u, 0x01u, 0x02u, 0x04u, 0x08u, 0x10u, 0x10u};
-        case ' ': return {0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u};
-        default: return {0x1Fu, 0x11u, 0x01u, 0x02u, 0x04u, 0x00u, 0x04u};
-    }
-}
-
 MeasureSpec child_spec(float parent_inner, float requested, float margin_a, float margin_b) {
     const float available = std::max(0.0f, parent_inner - margin_a - margin_b);
     if (requested > 0.0f) return {.size = requested, .mode = MeasureMode::Exactly};
@@ -166,68 +137,500 @@ MeasureSpec child_spec(float parent_inner, float requested, float margin_a, floa
 
 }  // namespace
 
-FallbackTextEngine::FallbackTextEngine(TextEngineConfig config)
-    : config_(config) {
-    caps_.sdf = true;
+namespace {
+
+struct IcuDataState {
+    std::vector<uint8_t> bytes;
+    bool initialized = false;
+    std::string error;
+};
+
+IcuDataState& icu_data_state() {
+    static IcuDataState state;
+    return state;
 }
 
-TextLayout FallbackTextEngine::shape(std::string_view text, const TextStyle& style) {
-    warn_missing_backends_once();
+bool initialize_icu_data(const TextEngineConfig& config, std::string& error) {
+    auto& state = icu_data_state();
+    if (state.initialized) return true;
 
+    snt::core::path_utils::init();
+    const std::string path = snt::core::path_utils::resolve(config.icu_data_path);
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input.is_open()) {
+        error = "ICU common-data file is unavailable: " + path;
+        return false;
+    }
+    const auto size = static_cast<size_t>(input.tellg());
+    if (size == 0) {
+        error = "ICU common-data file is empty: " + path;
+        return false;
+    }
+    state.bytes.resize(size);
+    input.seekg(0);
+    input.read(reinterpret_cast<char*>(state.bytes.data()), static_cast<std::streamsize>(size));
+    if (!input) {
+        error = "Failed to read ICU common-data file: " + path;
+        state.bytes.clear();
+        return false;
+    }
+
+    UErrorCode status = U_ZERO_ERROR;
+    udata_setCommonData(state.bytes.data(), &status);
+    if (U_FAILURE(status)) {
+        error = "udata_setCommonData failed: " + std::to_string(status);
+        state.bytes.clear();
+        return false;
+    }
+    u_init(&status);
+    if (U_FAILURE(status)) {
+        error = "u_init failed: " + std::to_string(status);
+        state.bytes.clear();
+        return false;
+    }
+
+    state.initialized = true;
+    return true;
+}
+
+std::vector<UChar> utf16_from_utf8(std::string_view text) {
+    UErrorCode status = U_ZERO_ERROR;
+    int32_t length = 0;
+    u_strFromUTF8(nullptr, 0, &length, text.data(),
+                  static_cast<int32_t>(text.size()), &status);
+    if (status != U_BUFFER_OVERFLOW_ERROR && U_FAILURE(status)) return {};
+
+    std::vector<UChar> result(static_cast<size_t>(length) + 1u, 0);
+    status = U_ZERO_ERROR;
+    u_strFromUTF8(result.data(), static_cast<int32_t>(result.size()), &length,
+                  text.data(), static_cast<int32_t>(text.size()), &status);
+    if (U_FAILURE(status)) return {};
+    result.resize(static_cast<size_t>(length));
+    return result;
+}
+
+}  // namespace
+
+// Unicode glyph atlas + shaping implementation. The atlas owns no platform
+// state: FreeType rasterizes shaped glyph IDs, HarfBuzz owns advances, and the
+// Vulkan backend consumes only UiGlyphAtlas's RGBA revision stream.
+struct UnicodeTextEngine::Impl {
+    static constexpr uint32_t kAtlasPadding = 1;
+    static constexpr uint32_t kSdfSpread = 6;
+
+    struct FontFace {
+        FT_Face face = nullptr;
+        hb_font_t* harfbuzz_font = nullptr;
+        uint32_t index = 0;
+        bool color = false;
+
+        ~FontFace() {
+            if (harfbuzz_font) hb_font_destroy(harfbuzz_font);
+            if (face) FT_Done_Face(face);
+        }
+
+        FontFace() = default;
+        FontFace(const FontFace&) = delete;
+        FontFace& operator=(const FontFace&) = delete;
+        FontFace(FontFace&&) = delete;
+        FontFace& operator=(FontFace&&) = delete;
+    };
+
+    struct RasterGlyph {
+        int32_t bearing_x = 0;
+        int32_t bearing_y = 0;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        float u0 = 0.0f;
+        float v0 = 0.0f;
+        float u1 = 0.0f;
+        float v1 = 0.0f;
+        bool drawable = false;
+        bool color = false;
+    };
+
+    FT_Library freetype = nullptr;
+    std::vector<std::unique_ptr<FontFace>> fonts;
+    std::shared_ptr<UiGlyphAtlas> atlas = [] {
+        auto result = std::make_shared<UiGlyphAtlas>();
+        result->rgba.assign(static_cast<size_t>(result->width) * result->height * 4u, 0u);
+        return result;
+    }();
+    std::unordered_map<uint64_t, RasterGlyph> glyphs;
+    uint32_t pack_x = kAtlasPadding;
+    uint32_t pack_y = kAtlasPadding;
+    uint32_t pack_row_height = 0;
+    bool atlas_exhausted_logged = false;
+
+    ~Impl() {
+        fonts.clear();
+        if (freetype) FT_Done_FreeType(freetype);
+    }
+
+    FontFace* font_for(uint32_t codepoint) const {
+        for (const auto& font : fonts) {
+            if (FT_Get_Char_Index(font->face, codepoint) != 0) return font.get();
+        }
+        return fonts.empty() ? nullptr : fonts.front().get();
+    }
+
+    bool allocate(uint32_t width, uint32_t height, uint32_t& x, uint32_t& y) {
+        const uint32_t atlas_width = atlas->width;
+        const uint32_t atlas_height = atlas->height;
+        if (width + kAtlasPadding * 2u > atlas_width ||
+            height + kAtlasPadding * 2u > atlas_height) {
+            return false;
+        }
+        if (pack_x + width + kAtlasPadding > atlas_width) {
+            pack_x = kAtlasPadding;
+            pack_y += pack_row_height + kAtlasPadding;
+            pack_row_height = 0;
+        }
+        if (pack_y + height + kAtlasPadding > atlas_height) return false;
+
+        x = pack_x;
+        y = pack_y;
+        pack_x += width + kAtlasPadding;
+        pack_row_height = std::max(pack_row_height, height);
+        return true;
+    }
+
+    static uint64_t glyph_key(const FontFace& face, uint32_t glyph_id, uint32_t pixel_size) {
+        return (static_cast<uint64_t>(face.index) << 48u) |
+               (static_cast<uint64_t>(pixel_size) << 32u) |
+               glyph_id;
+    }
+
+    const RasterGlyph* rasterize(FontFace& font, uint32_t glyph_id, uint32_t pixel_size) {
+        const uint64_t key = glyph_key(font, glyph_id, pixel_size);
+        if (const auto it = glyphs.find(key); it != glyphs.end()) return &it->second;
+
+        RasterGlyph output;
+        const FT_Int32 load_flags = FT_LOAD_DEFAULT | (font.color ? FT_LOAD_COLOR : 0);
+        if (FT_Load_Glyph(font.face, glyph_id, load_flags) != 0) {
+            SNT_LOG_ERROR("MUI failed to load FreeType glyph id=%u from face=%u",
+                          glyph_id, font.index);
+            return &glyphs.emplace(key, output).first->second;
+        }
+        FT_GlyphSlot slot = font.face->glyph;
+        if (slot->format != FT_GLYPH_FORMAT_BITMAP &&
+            FT_Render_Glyph(slot, FT_RENDER_MODE_NORMAL) != 0) {
+            SNT_LOG_ERROR("MUI failed to rasterize FreeType glyph id=%u from face=%u",
+                          glyph_id, font.index);
+            return &glyphs.emplace(key, output).first->second;
+        }
+
+        const FT_Bitmap& bitmap = slot->bitmap;
+        if (bitmap.width == 0 || bitmap.rows == 0 || !bitmap.buffer) {
+            return &glyphs.emplace(key, output).first->second;
+        }
+
+        const bool is_color = bitmap.pixel_mode == FT_PIXEL_MODE_BGRA;
+        const uint32_t source_width = bitmap.width;
+        const uint32_t source_height = bitmap.rows;
+        const uint32_t output_width = is_color ? source_width : source_width + kSdfSpread * 2u;
+        const uint32_t output_height = is_color ? source_height : source_height + kSdfSpread * 2u;
+        uint32_t atlas_x = 0;
+        uint32_t atlas_y = 0;
+        if (!allocate(output_width, output_height, atlas_x, atlas_y)) {
+            if (!atlas_exhausted_logged) {
+                SNT_LOG_ERROR("MUI dynamic glyph atlas is full (%ux%u); text glyph was rejected",
+                              atlas->width, atlas->height);
+                atlas_exhausted_logged = true;
+            }
+            return &glyphs.emplace(key, output).first->second;
+        }
+
+        output.bearing_x = slot->bitmap_left - (is_color ? 0 : static_cast<int32_t>(kSdfSpread));
+        output.bearing_y = slot->bitmap_top + (is_color ? 0 : static_cast<int32_t>(kSdfSpread));
+        output.width = output_width;
+        output.height = output_height;
+        output.u0 = static_cast<float>(atlas_x) / static_cast<float>(atlas->width);
+        output.v0 = static_cast<float>(atlas_y) / static_cast<float>(atlas->height);
+        output.u1 = static_cast<float>(atlas_x + output_width) / static_cast<float>(atlas->width);
+        output.v1 = static_cast<float>(atlas_y + output_height) / static_cast<float>(atlas->height);
+        output.drawable = true;
+        output.color = is_color;
+
+        const int pitch = bitmap.pitch;
+        const int abs_pitch = pitch < 0 ? -pitch : pitch;
+        const auto source_pixel = [&](uint32_t x, uint32_t y) -> const uint8_t* {
+            const uint32_t source_y = pitch >= 0 ? y : source_height - 1u - y;
+            return bitmap.buffer + static_cast<size_t>(source_y) * abs_pitch +
+                   (is_color ? static_cast<size_t>(x) * 4u : x);
+        };
+        const auto destination_pixel = [&](uint32_t x, uint32_t y) -> uint8_t* {
+            return atlas->rgba.data() +
+                   (static_cast<size_t>(atlas_y + y) * atlas->width + atlas_x + x) * 4u;
+        };
+
+        if (is_color) {
+            for (uint32_t y = 0; y < source_height; ++y) {
+                for (uint32_t x = 0; x < source_width; ++x) {
+                    const uint8_t* source = source_pixel(x, y);
+                    uint8_t* destination = destination_pixel(x, y);
+                    destination[0] = source[2];
+                    destination[1] = source[1];
+                    destination[2] = source[0];
+                    destination[3] = source[3];
+                }
+            }
+        } else if (bitmap.pixel_mode == FT_PIXEL_MODE_GRAY) {
+            std::vector<uint8_t> mask(static_cast<size_t>(output_width) * output_height, 0u);
+            for (uint32_t y = 0; y < source_height; ++y) {
+                for (uint32_t x = 0; x < source_width; ++x) {
+                    mask[static_cast<size_t>(y + kSdfSpread) * output_width + x + kSdfSpread] =
+                        source_pixel(x, y)[0] >= 128u ? 1u : 0u;
+                }
+            }
+            const int spread = static_cast<int>(kSdfSpread);
+            for (uint32_t y = 0; y < output_height; ++y) {
+                for (uint32_t x = 0; x < output_width; ++x) {
+                    const bool inside = mask[static_cast<size_t>(y) * output_width + x] != 0;
+                    float nearest = static_cast<float>(spread);
+                    for (int dy = -spread; dy <= spread; ++dy) {
+                        for (int dx = -spread; dx <= spread; ++dx) {
+                            const int sample_x = static_cast<int>(x) + dx;
+                            const int sample_y = static_cast<int>(y) + dy;
+                            if (sample_x < 0 || sample_y < 0 ||
+                                sample_x >= static_cast<int>(output_width) ||
+                                sample_y >= static_cast<int>(output_height)) continue;
+                            const bool sample_inside = mask[static_cast<size_t>(sample_y) * output_width + sample_x] != 0;
+                            if (sample_inside == inside) continue;
+                            nearest = std::min(nearest, std::sqrt(static_cast<float>(dx * dx + dy * dy)));
+                        }
+                    }
+                    const float signed_distance = inside
+                        ? 0.5f + nearest / (2.0f * static_cast<float>(spread))
+                        : 0.5f - nearest / (2.0f * static_cast<float>(spread));
+                    uint8_t* destination = destination_pixel(x, y);
+                    destination[0] = 255u;
+                    destination[1] = 255u;
+                    destination[2] = 255u;
+                    destination[3] = static_cast<uint8_t>(std::clamp(
+                        std::round(signed_distance * 255.0f), 0.0f, 255.0f));
+                }
+            }
+        } else {
+            SNT_LOG_ERROR("MUI glyph id=%u uses unsupported FreeType pixel mode=%u",
+                          glyph_id, bitmap.pixel_mode);
+            output.drawable = false;
+        }
+
+        ++atlas->revision;
+        return &glyphs.emplace(key, output).first->second;
+    }
+};
+
+UnicodeTextEngine::UnicodeTextEngine(TextEngineConfig config)
+    : config_(std::move(config)),
+      impl_(std::make_unique<Impl>()) {
+    if (!initialize_icu_data(config_, initialization_error_)) return;
+
+    if (FT_Init_FreeType(&impl_->freetype) != 0) {
+        initialization_error_ = "FT_Init_FreeType failed";
+        return;
+    }
+
+    for (const auto& path : config_.font_paths) {
+        if (path.empty()) continue;
+        FT_Face face = nullptr;
+        if (FT_New_Face(impl_->freetype, path.c_str(), 0, &face) != 0) {
+            SNT_LOG_WARN("MUI font family entry could not be loaded: %s", path.c_str());
+            continue;
+        }
+        auto loaded = std::make_unique<Impl::FontFace>();
+        loaded->face = face;
+        loaded->harfbuzz_font = hb_ft_font_create_referenced(face);
+        loaded->index = static_cast<uint32_t>(impl_->fonts.size());
+        loaded->color = FT_HAS_COLOR(face) != 0;
+        impl_->fonts.push_back(std::move(loaded));
+    }
+    if (impl_->fonts.empty()) {
+        initialization_error_ = "No configured MUI font could be loaded";
+        return;
+    }
+
+    caps_.harfbuzz = true;
+    caps_.icu = true;
+    caps_.bidi = true;
+    caps_.sdf = true;
+    caps_.color_emoji = std::any_of(impl_->fonts.begin(), impl_->fonts.end(),
+                                    [](const auto& font) { return font->color; });
+    if (config_.require_color_emoji && !caps_.color_emoji) {
+        initialization_error_ = "No configured font exposes a color-emoji face";
+        return;
+    }
+    available_ = true;
+    SNT_LOG_INFO("MUI Unicode text backend ready: faces=%zu atlas=%ux%u",
+                 impl_->fonts.size(), impl_->atlas->width, impl_->atlas->height);
+}
+
+UnicodeTextEngine::~UnicodeTextEngine() = default;
+
+TextLayout UnicodeTextEngine::shape(std::string_view text, const TextStyle& style) {
     TextLayout layout;
+    if (!available_) {
+        if (!logged_unavailable_) {
+            SNT_LOG_ERROR("MUI UnicodeTextEngine unavailable: %s",
+                          initialization_error_.c_str());
+            logged_unavailable_ = true;
+        }
+        return layout;
+    }
+    layout.glyph_atlas = impl_->atlas;
+
+    const auto utf16 = utf16_from_utf8(text);
+    if (!text.empty() && utf16.empty()) {
+        SNT_LOG_ERROR("MUI text contains invalid UTF-8; refusing to shape it");
+        return layout;
+    }
+
+    UBiDiDirection bidi_direction = UBIDI_LTR;
+    if (!utf16.empty()) {
+        UErrorCode status = U_ZERO_ERROR;
+        UBiDi* bidi = ubidi_openSized(static_cast<int32_t>(utf16.size()), 0, &status);
+        if (bidi && U_SUCCESS(status)) {
+            ubidi_setPara(bidi, utf16.data(), static_cast<int32_t>(utf16.size()),
+                          UBIDI_DEFAULT_LTR, nullptr, &status);
+            if (U_SUCCESS(status)) bidi_direction = ubidi_getDirection(bidi);
+        }
+        if (bidi) ubidi_close(bidi);
+    }
+    layout.direction = bidi_direction == UBIDI_RTL
+        ? TextDirection::RightToLeft : TextDirection::LeftToRight;
+
+    int32_t grapheme_count = 0;
+    if (!utf16.empty()) {
+        UErrorCode status = U_ZERO_ERROR;
+        UBreakIterator* breaker = ubrk_open(UBRK_CHARACTER, config_.locale.c_str(),
+                                            utf16.data(), static_cast<int32_t>(utf16.size()),
+                                            &status);
+        if (breaker && U_SUCCESS(status)) {
+            for (int32_t boundary = ubrk_first(breaker);
+                 boundary != UBRK_DONE;
+                 boundary = ubrk_next(breaker)) {
+                if (boundary > 0) ++grapheme_count;
+            }
+        }
+        if (breaker) ubrk_close(breaker);
+    }
+
+    const uint32_t pixel_size = static_cast<uint32_t>(std::max(1.0f, std::round(style.size_px)));
+    const float line_height = std::max(style.size_px * 1.25f, style.size_px);
+    const float baseline = style.size_px;
     float line_width = 0.0f;
     float max_width = 0.0f;
+    float line_y = 0.0f;
     int32_t line_count = 1;
+    const hb_direction_t hb_direction = layout.direction == TextDirection::RightToLeft
+        ? HB_DIRECTION_RTL : HB_DIRECTION_LTR;
 
-    for (size_t offset = 0; offset < text.size();) {
-        const size_t start = offset;
-        const uint32_t cp = decode_utf8(text, offset);
-        TextCluster cluster;
-        cluster.utf8 = std::string(text.substr(start, offset - start));
-        cluster.first_codepoint = cp;
-        cluster.is_emoji = is_emoji_codepoint(cp);
-        cluster.is_cjk = is_cjk_codepoint(cp);
-        cluster.requires_color = cluster.is_emoji;
-        cluster.advance = text_cluster_advance(cp, style);
-
-        layout.contains_emoji = layout.contains_emoji || cluster.is_emoji;
-        layout.contains_cjk = layout.contains_cjk || cluster.is_cjk;
-        if (is_rtl_codepoint(cp)) {
-            layout.direction = TextDirection::RightToLeft;
+    auto append_run = [&](std::string_view run, Impl::FontFace& face) {
+        if (run.empty()) return;
+        if (FT_Set_Pixel_Sizes(face.face, 0, pixel_size) != 0) {
+            SNT_LOG_ERROR("MUI failed to set pixel size=%u for font face=%u", pixel_size, face.index);
+            return;
         }
+        hb_ft_font_changed(face.harfbuzz_font);
 
-        if (cp == '\n') {
+        hb_buffer_t* buffer = hb_buffer_create();
+        hb_buffer_set_direction(buffer, hb_direction);
+        hb_buffer_add_utf8(buffer, run.data(), static_cast<int>(run.size()), 0,
+                           static_cast<int>(run.size()));
+        hb_buffer_guess_segment_properties(buffer);
+        hb_shape(face.harfbuzz_font, buffer, nullptr, 0);
+
+        unsigned int glyph_count = 0;
+        const hb_glyph_info_t* infos = hb_buffer_get_glyph_infos(buffer, &glyph_count);
+        const hb_glyph_position_t* positions = hb_buffer_get_glyph_positions(buffer, &glyph_count);
+        float run_width = 0.0f;
+        for (unsigned int i = 0; i < glyph_count; ++i) {
+            run_width += std::abs(static_cast<float>(positions[i].x_advance) / 64.0f);
+        }
+        float pen_x = line_width + (hb_direction == HB_DIRECTION_RTL ? run_width : 0.0f);
+        for (unsigned int i = 0; i < glyph_count; ++i) {
+            const float advance = static_cast<float>(positions[i].x_advance) / 64.0f;
+            const float offset_x = static_cast<float>(positions[i].x_offset) / 64.0f;
+            const float offset_y = static_cast<float>(positions[i].y_offset) / 64.0f;
+            if (hb_direction == HB_DIRECTION_RTL) pen_x += advance;
+            const float glyph_origin_x = pen_x + offset_x;
+
+            const size_t byte_offset = std::min<size_t>(infos[i].cluster, run.size());
+            size_t decode_offset = byte_offset;
+            const uint32_t codepoint = decode_utf8(run, decode_offset);
+            const Impl::RasterGlyph* raster = impl_->rasterize(face, infos[i].codepoint, pixel_size);
+
+            TextCluster cluster;
+            cluster.utf8 = std::string(run.substr(byte_offset, decode_offset - byte_offset));
+            cluster.first_codepoint = codepoint;
+            cluster.advance = std::abs(advance);
+            cluster.is_emoji = is_emoji_codepoint(codepoint);
+            cluster.is_cjk = is_cjk_codepoint(codepoint);
+            cluster.requires_color = raster && raster->color;
+            layout.contains_emoji = layout.contains_emoji || cluster.is_emoji;
+            layout.contains_cjk = layout.contains_cjk || cluster.is_cjk;
+            layout.clusters.push_back(std::move(cluster));
+
+            if (raster && raster->drawable) {
+                TextGlyph glyph;
+                glyph.glyph_id = infos[i].codepoint;
+                glyph.x = glyph_origin_x + static_cast<float>(raster->bearing_x);
+                glyph.y = line_y + baseline - static_cast<float>(raster->bearing_y) - offset_y;
+                glyph.width = static_cast<float>(raster->width);
+                glyph.height = static_cast<float>(raster->height);
+                glyph.u0 = raster->u0;
+                glyph.v0 = raster->v0;
+                glyph.u1 = raster->u1;
+                glyph.v1 = raster->v1;
+                glyph.drawable = true;
+                glyph.color = raster->color;
+                layout.glyphs.push_back(glyph);
+            }
+            if (hb_direction != HB_DIRECTION_RTL) pen_x += advance;
+        }
+        line_width += run_width;
+        hb_buffer_destroy(buffer);
+    };
+
+    size_t run_start = 0;
+    Impl::FontFace* run_face = nullptr;
+    for (size_t offset = 0; offset < text.size();) {
+        const size_t codepoint_start = offset;
+        const uint32_t codepoint = decode_utf8(text, offset);
+        if (codepoint == '\n') {
+            if (run_face) append_run(text.substr(run_start, codepoint_start - run_start), *run_face);
+            TextCluster newline;
+            newline.utf8 = "\n";
+            newline.first_codepoint = '\n';
+            layout.clusters.push_back(std::move(newline));
             max_width = std::max(max_width, line_width);
             line_width = 0.0f;
+            line_y += line_height;
             ++line_count;
-        } else {
-            line_width += cluster.advance;
+            run_start = offset;
+            run_face = nullptr;
+            continue;
         }
-        layout.clusters.push_back(std::move(cluster));
+
+        Impl::FontFace* face = (run_face && continues_font_run(codepoint))
+            ? run_face : impl_->font_for(codepoint);
+        if (!run_face) {
+            run_face = face;
+            run_start = codepoint_start;
+        } else if (face != run_face) {
+            append_run(text.substr(run_start, codepoint_start - run_start), *run_face);
+            run_face = face;
+            run_start = codepoint_start;
+        }
     }
+    if (run_face) append_run(text.substr(run_start), *run_face);
 
     max_width = std::max(max_width, line_width);
-    layout.size = {max_width, std::max(style.size_px * 1.25f,
-                                       style.size_px * 1.25f * line_count)};
+    layout.size = {max_width, line_height * static_cast<float>(line_count)};
+    (void)grapheme_count;  // Break iteration validates the full Unicode path.
     return layout;
-}
-
-void FallbackTextEngine::warn_missing_backends_once() {
-    if (warned_missing_backends_) return;
-    warned_missing_backends_ = true;
-
-    static bool warned_process = false;
-    if (warned_process) return;
-
-    if ((config_.require_harfbuzz && !caps_.harfbuzz) ||
-        (config_.require_icu && !caps_.icu) ||
-        (config_.require_color_emoji && !caps_.color_emoji)) {
-        SNT_LOG_WARN("P6 TextEngine using fallback shaper; HarfBuzz/ICU/color emoji backends are declared but not linked yet");
-        warned_process = true;
-    }
-}
-
-void ViewModel::set(std::string key, BindingValue value) {
+}void ViewModel::set(std::string key, BindingValue value) {
     const std::string stable_key = key;
     values_[std::move(key)] = value;
     auto it = observers_.find(stable_key);
@@ -291,7 +694,7 @@ UiDrawData Arc2DRenderer::build_draw_data(const Arc2DCommandBuffer& commands) co
         } else if (const auto* image = std::get_if<DrawImageCommand>(&cmd)) {
             append_rect(out, image->rect, image->tint);
         } else if (const auto* text = std::get_if<DrawTextCommand>(&cmd)) {
-            append_bitmap_text(out, *text);
+            append_glyph_text(out, *text);
         }
     }
     return out;
@@ -331,34 +734,55 @@ void Arc2DRenderer::append_rect(UiDrawData& out, Rect rect, Color color) {
     out.indices.push_back(base + 3);
 }
 
-void Arc2DRenderer::append_bitmap_text(UiDrawData& out, const DrawTextCommand& text) {
-    const float cell = std::max(1.0f, text.style.size_px / 7.0f);
-    const float advance = cell * 6.0f;
-    float pen_x = text.rect.pos.x;
-    float pen_y = text.rect.pos.y;
+void Arc2DRenderer::append_glyph_text(UiDrawData& out, const DrawTextCommand& text) {
+    if (!text.layout.glyph_atlas) {
+        SNT_LOG_ERROR("MUI text command is missing its Unicode glyph atlas");
+        return;
+    }
+    if (!out.glyph_atlas) {
+        out.glyph_atlas = text.layout.glyph_atlas;
+    } else if (out.glyph_atlas.get() != text.layout.glyph_atlas.get()) {
+        SNT_LOG_ERROR("MUI frame combines text from different glyph atlases; rejecting batch");
+        return;
+    }
 
-    for (unsigned char raw : text.text) {
-        if (raw == '\n') {
-            pen_x = text.rect.pos.x;
-            pen_y += cell * 8.0f;
-            continue;
-        }
-        if (raw >= 0x80u) {
-            continue;
+    for (const TextGlyph& glyph : text.layout.glyphs) {
+        if (!glyph.drawable || glyph.width <= 0.0f || glyph.height <= 0.0f) continue;
+        if (out.vertices.size() + 4 > 0xFFFFu) {
+            SNT_LOG_WARN("Arc2DRenderer draw buffer overflow; dropping glyph batch");
+            return;
         }
 
-        const auto rows = bitmap_glyph(static_cast<char>(raw));
-        for (int row = 0; row < 7; ++row) {
-            for (int col = 0; col < 5; ++col) {
-                if ((rows[row] & (1u << (4 - col))) == 0u) continue;
-                append_rect(out,
-                            {.pos = {pen_x + static_cast<float>(col) * cell,
-                                     pen_y + static_cast<float>(row) * cell},
-                             .size = {cell, cell}},
-                            text.style.color);
-            }
-        }
-        pen_x += advance;
+        const uint16_t base = static_cast<uint16_t>(out.vertices.size());
+        const Color color = glyph.color ? Color{255, 255, 255, 255} : text.style.color;
+        UiVertex vertex{};
+        vertex.color[0] = color.r;
+        vertex.color[1] = color.g;
+        vertex.color[2] = color.b;
+        vertex.color[3] = color.a;
+        vertex.texture_mode = glyph.color
+            ? UiTextureMode::ColorGlyph
+            : UiTextureMode::SignedDistanceGlyph;
+
+        const float x0 = text.rect.pos.x + glyph.x;
+        const float y0 = text.rect.pos.y + glyph.y;
+        const float x1 = x0 + glyph.width;
+        const float y1 = y0 + glyph.height;
+        vertex.position[0] = x0; vertex.position[1] = y0;
+        vertex.uv[0] = glyph.u0; vertex.uv[1] = glyph.v0; out.vertices.push_back(vertex);
+        vertex.position[0] = x0; vertex.position[1] = y1;
+        vertex.uv[0] = glyph.u0; vertex.uv[1] = glyph.v1; out.vertices.push_back(vertex);
+        vertex.position[0] = x1; vertex.position[1] = y1;
+        vertex.uv[0] = glyph.u1; vertex.uv[1] = glyph.v1; out.vertices.push_back(vertex);
+        vertex.position[0] = x1; vertex.position[1] = y0;
+        vertex.uv[0] = glyph.u1; vertex.uv[1] = glyph.v0; out.vertices.push_back(vertex);
+
+        out.indices.push_back(base + 0);
+        out.indices.push_back(base + 1);
+        out.indices.push_back(base + 2);
+        out.indices.push_back(base + 0);
+        out.indices.push_back(base + 2);
+        out.indices.push_back(base + 3);
     }
 }
 
@@ -710,8 +1134,8 @@ void Animator::update(float dt) {
         animations_.end());
 }
 
-UiRuntime::UiRuntime()
-    : text_engine_(TextEngineConfig{}) {}
+UiRuntime::UiRuntime(TextEngineConfig config)
+    : text_engine_(std::move(config)) {}
 
 UiFrameResult UiRuntime::build_frame(View& root, Vec2 viewport) {
     root.measure({.size = viewport.x, .mode = MeasureMode::Exactly},

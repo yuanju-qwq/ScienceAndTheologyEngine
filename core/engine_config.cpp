@@ -63,8 +63,9 @@ void from_json(const json& j, VoxelConfig& v) {
 void from_json(const json& j, UiConfig& u) {
     UiConfig def;
     u = def;
-    read_optional(j, "font_path",    u.font_path);
-    read_optional(j, "font_size_px", u.font_size_px);
+    read_optional(j, "font_paths",    u.font_paths);
+    read_optional(j, "locale",        u.locale);
+    read_optional(j, "icu_data_path", u.icu_data_path);
 }
 
 void from_json(const json& j, CameraConfig& c) {

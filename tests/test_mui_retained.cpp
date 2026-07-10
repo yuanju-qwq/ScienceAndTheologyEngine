@@ -34,7 +34,12 @@ const DrawTextCommand* first_text_command(const Arc2DCommandBuffer& buffer,
 }  // namespace
 
 TEST(RetainedMui, TextEngineShapesChineseAndEmoji) {
-    FallbackTextEngine engine;
+    UnicodeTextEngine engine;
+    ASSERT_TRUE(engine.available()) << engine.initialization_error();
+    EXPECT_TRUE(engine.capabilities().harfbuzz);
+    EXPECT_TRUE(engine.capabilities().icu);
+    EXPECT_TRUE(engine.capabilities().bidi);
+    EXPECT_TRUE(engine.capabilities().color_emoji);
     TextStyle style;
     style.size_px = 18.0f;
 
@@ -44,6 +49,57 @@ TEST(RetainedMui, TextEngineShapesChineseAndEmoji) {
     EXPECT_TRUE(layout.contains_emoji);
     EXPECT_GT(layout.size.x, 0.0f);
     EXPECT_GT(layout.clusters.size(), 3u);
+}
+
+TEST(RetainedMui, UnicodeGlyphAtlasEmitsCjkAndColorEmojiQuads) {
+    UnicodeTextEngine engine;
+    ASSERT_TRUE(engine.available()) << engine.initialization_error();
+
+    TextStyle style;
+    style.size_px = 24.0f;
+    const std::string text = "背包 🎒👩‍🚀";
+    TextLayout layout = engine.shape(text, style);
+    ASSERT_TRUE(layout.glyph_atlas);
+    ASSERT_GT(layout.glyph_atlas->revision, 0u);
+    ASSERT_FALSE(layout.glyphs.empty());
+
+    Arc2DCommandBuffer commands;
+    commands.text({.pos = {16.0f, 24.0f}, .size = {600.0f, 64.0f}}, text, style, layout);
+    Arc2DRenderer renderer;
+    UiDrawData draw_data = renderer.build_draw_data(commands);
+
+    ASSERT_EQ(draw_data.glyph_atlas.get(), layout.glyph_atlas.get());
+    ASSERT_FALSE(draw_data.vertices.empty());
+    ASSERT_FALSE(draw_data.indices.empty());
+
+    bool has_sdf = false;
+    bool has_color = false;
+    for (const UiVertex& vertex : draw_data.vertices) {
+        has_sdf = has_sdf || vertex.texture_mode == UiTextureMode::SignedDistanceGlyph;
+        has_color = has_color || vertex.texture_mode == UiTextureMode::ColorGlyph;
+        if (vertex.texture_mode != UiTextureMode::Solid) {
+            EXPECT_GE(vertex.uv[0], 0.0f);
+            EXPECT_GE(vertex.uv[1], 0.0f);
+            EXPECT_LE(vertex.uv[0], 1.0f);
+            EXPECT_LE(vertex.uv[1], 1.0f);
+        }
+    }
+    EXPECT_TRUE(has_sdf);
+    EXPECT_TRUE(has_color);
+}
+
+TEST(RetainedMui, MixedBidiAndJoinedEmojiProduceGlyphs) {
+    UnicodeTextEngine engine;
+    ASSERT_TRUE(engine.available()) << engine.initialization_error();
+
+    TextStyle style;
+    style.size_px = 20.0f;
+    TextLayout layout = engine.shape("玩家 abc العربية 👩‍🚀", style);
+
+    EXPECT_TRUE(layout.contains_cjk);
+    EXPECT_TRUE(layout.contains_emoji);
+    EXPECT_FALSE(layout.glyphs.empty());
+    EXPECT_GT(layout.size.x, 0.0f);
 }
 
 TEST(RetainedMui, ViewModelBindingUpdatesTextView) {

@@ -121,17 +121,61 @@ if(NOT TARGET tinyobjloader::tinyobjloader)
 endif()
 
 # ============================================================
+list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
+# Unicode image codecs for FreeType colour glyphs
+# ============================================================
+# CBDT/sbix colour emoji glyphs are PNG-compressed. These source snapshots
+# are vendored with the project so P6 never silently loses emoji rendering
+# because a developer machine happens to have libpng installed.
+set(_SNT_ZLIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib)
+set(_SNT_LIBPNG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libpng)
+if(NOT EXISTS ${_SNT_ZLIB_DIR}/zlib.h OR NOT EXISTS ${_SNT_LIBPNG_DIR}/png.h)
+    message(FATAL_ERROR "P6 Unicode text requires vendored zlib and libpng sources")
+endif()
+
+add_library(snt_zlib STATIC
+    ${_SNT_ZLIB_DIR}/adler32.c
+    ${_SNT_ZLIB_DIR}/compress.c
+    ${_SNT_ZLIB_DIR}/crc32.c
+    ${_SNT_ZLIB_DIR}/deflate.c
+    ${_SNT_ZLIB_DIR}/inffast.c
+    ${_SNT_ZLIB_DIR}/inflate.c
+    ${_SNT_ZLIB_DIR}/inftrees.c
+    ${_SNT_ZLIB_DIR}/trees.c
+    ${_SNT_ZLIB_DIR}/uncompr.c
+    ${_SNT_ZLIB_DIR}/zutil.c
+)
+target_include_directories(snt_zlib PUBLIC ${_SNT_ZLIB_DIR})
+if(MSVC)
+    target_compile_options(snt_zlib PRIVATE $<$<CONFIG:Debug>:/MDd> $<$<NOT:$<CONFIG:Debug>>:/MD>)
+endif()
+add_library(ZLIB::ZLIB ALIAS snt_zlib)
+
+file(GLOB _SNT_LIBPNG_SOURCES CONFIGURE_DEPENDS ${_SNT_LIBPNG_DIR}/*.c)
+add_library(snt_libpng STATIC ${_SNT_LIBPNG_SOURCES})
+target_include_directories(snt_libpng PUBLIC ${_SNT_LIBPNG_DIR})
+target_compile_definitions(snt_libpng PRIVATE PNG_STATIC)
+if(MSVC)
+    target_compile_options(snt_libpng PRIVATE $<$<CONFIG:Debug>:/MDd> $<$<NOT:$<CONFIG:Debug>>:/MD>)
+endif()
+target_link_libraries(snt_libpng PUBLIC ZLIB::ZLIB)
+add_library(PNG::PNG ALIAS snt_libpng)
+
+# ============================================================
 # FreeType (font rasterization)
 # ============================================================
 set(_FREETYPE_ARCHIVE ${_SNT_DOWNLOADS_DIR}/freetype-VER-2-14-3.zip)
 if(NOT EXISTS ${_FREETYPE_ARCHIVE})
     message(FATAL_ERROR "FreeType archive missing: ${_FREETYPE_ARCHIVE}. Run download_third_party.ps1.")
 endif()
+set(SKIP_INSTALL_ALL ON CACHE BOOL "Disable third-party install exports in the engine build" FORCE)
+set(FT_REQUIRE_PNG ON CACHE BOOL "Require libpng for colour emoji" FORCE)
+set(FT_REQUIRE_ZLIB ON CACHE BOOL "Require zlib for colour emoji" FORCE)
 set(FT_DISABLE_BZIP2 ON CACHE BOOL "Disable FreeType bzip2 support" FORCE)
 set(FT_DISABLE_BROTLI ON CACHE BOOL "Disable FreeType brotli support" FORCE)
 set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "Disable FreeType harfbuzz support" FORCE)
-set(FT_DISABLE_PNG ON CACHE BOOL "Disable FreeType png support" FORCE)
-set(FT_DISABLE_ZLIB ON CACHE BOOL "Disable FreeType zlib support" FORCE)
+set(FT_DISABLE_PNG OFF CACHE BOOL "Enable FreeType PNG colour glyph support" FORCE)
+set(FT_DISABLE_ZLIB OFF CACHE BOOL "Enable FreeType zlib support" FORCE)
 FetchContent_Declare(
     FreeType
     URL ${_FREETYPE_ARCHIVE}

@@ -21,6 +21,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace snt::core {
 
@@ -64,11 +65,17 @@ struct VoxelConfig {
 // ---------------------------------------------------------------------------
 // UI configuration
 // ---------------------------------------------------------------------------
-// Empty `font_path` disables MUI text rendering. Projects should point this
-// at a packaged font asset; the sample config uses a local development font.
+// Retained MUI always uses the Unicode text backend. The ordered family is
+// shaped and rasterized as one modern text pipeline; no legacy text path is
+// available when a font entry cannot be used.
 struct UiConfig {
-    std::string font_path;
-    float font_size_px = 16.0f;
+    std::vector<std::string> font_paths{
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/seguiemj.ttf",
+    };
+    std::string locale = "zh-Hans";
+    std::string icu_data_path = "snt_engine/third_party/icu4c/icudt_godot.dat";
 };
 
 // ---------------------------------------------------------------------------
@@ -147,7 +154,7 @@ struct EngineConfig {
 //     "window":  { "width": 1920, "height": 1080, "title": "SNT" },
 //     "render":  { "vert_shader_path": "shaders/mesh.vert.spv" },
 //     "voxel":   { "max_chunks": 1024 },
-//     "ui":      { "font_path": "resource/fonts/NotoSans-Regular.ttf" },
+//     "ui":      { "font_paths": ["resource/fonts/NotoSans-Regular.ttf"] },
 //     "camera":  { "fov": 75.0, "move_speed": 5.0 },
 //     "assets":  { "default_mesh_path": "test_assets/cube.obj" }
 //   }

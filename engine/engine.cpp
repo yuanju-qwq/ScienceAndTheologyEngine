@@ -152,6 +152,14 @@ struct TickStats {
 
 void append_draw_data(snt::ui::UiDrawData& dst, const snt::ui::UiDrawData& src) {
     if (src.vertices.empty() || src.indices.empty()) return;
+    if (src.glyph_atlas) {
+        if (!dst.glyph_atlas) {
+            dst.glyph_atlas = src.glyph_atlas;
+        } else if (dst.glyph_atlas.get() != src.glyph_atlas.get()) {
+            SNT_LOG_ERROR("MUI draw batches reference different Unicode glyph atlases; batch rejected");
+            return;
+        }
+    }
     if (dst.vertices.size() + src.vertices.size() > 0xFFFFu) {
         SNT_LOG_WARN("UI draw data overflow while appending; dropping appended batch");
         return;
@@ -269,7 +277,7 @@ struct Engine::Impl {
     // state and builds retained View trees each frame.
     std::unique_ptr<snt::ui::GameplayUiController>    gameplay_ui;
     snt::ui::PerformanceViewModel                     performance_ui;
-    snt::ui::UiRuntime                                gameplay_ui_runtime;
+    std::unique_ptr<snt::ui::UiRuntime>               gameplay_ui_runtime;
     snt::ui::Arc2DRenderer                            arc2d_renderer;
     snt::ui::UiDrawData                               ui_draw_data;
 
@@ -653,23 +661,24 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
     impl_->gameplay_ui = std::make_unique<snt::ui::GameplayUiController>(
         snt::ui::InventoryViewModel{snt::ui::make_p6_demo_inventory()},
         snt::ui::make_p6_demo_recipes());
+    snt::ui::TextEngineConfig text_config;
+    text_config.font_paths = config.ui.font_paths;
+    text_config.locale = config.ui.locale;
+    text_config.icu_data_path = config.ui.icu_data_path;
+    impl_->gameplay_ui_runtime = std::make_unique<snt::ui::UiRuntime>(std::move(text_config));
+    if (!impl_->gameplay_ui_runtime->text_available()) {
+        SNT_LOG_ERROR("P6 Unicode MUI text initialization failed: %s",
+                      impl_->gameplay_ui_runtime->text_initialization_error().c_str());
+    }
     SNT_LOG_INFO("P6 retained gameplay UI initialized (Godot UI path not used)");
 
     // --- P6: retained MUI renderer ---
-    // Create + init the MuiRenderer from config. Empty font_path disables
-    // text rendering so headless/cross-platform runs do not depend on a
-    // Windows system font.
+    // The retained MUI renderer is always active. Text glyphs arrive through
+    // the Unicode glyph-atlas contract rather than a static font path.
     {
-        if (config.ui.font_path.empty()) {
-            SNT_LOG_WARN("MUI font_path is empty; text overlay disabled");
-        } else {
-            impl_->mui_renderer = std::make_unique<snt::ui::MuiRenderer>();
+        impl_->mui_renderer = std::make_unique<snt::ui::MuiRenderer>();
             VkFormat color_format = impl_->vk_swapchain.image_format();
-            auto r = impl_->mui_renderer->init(
-                impl_->vk_device,
-                color_format,
-                snt::core::path_utils::resolve(config.ui.font_path),
-                config.ui.font_size_px);
+        auto r = impl_->mui_renderer->init(impl_->vk_device, color_format);
             if (!r) {
                 SNT_LOG_ERROR("MuiRenderer init failed: %s",
                               r.error().format().c_str());
@@ -714,7 +723,6 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
                         };
                         ctx.last_color_pass = pass->name;
                     });
-            }
         }
     }
 
@@ -857,14 +865,14 @@ void Engine::run() {
             auto root = snt::ui::build_gameplay_ui_root(
                 *impl_->gameplay_ui,
                 {static_cast<float>(extent.width), static_cast<float>(extent.height)});
-            auto frame = impl_->gameplay_ui_runtime.build_frame(
+            auto frame = impl_->gameplay_ui_runtime->build_frame(
                 *root,
                 {static_cast<float>(extent.width), static_cast<float>(extent.height)});
             impl_->ui_draw_data = std::move(frame.draw_data);
         }
         if (impl_->performance_ui.visible()) {
             auto panel = snt::ui::build_performance_panel_view(impl_->performance_ui);
-            auto frame = impl_->gameplay_ui_runtime.build_frame(
+            auto frame = impl_->gameplay_ui_runtime->build_frame(
                 *panel,
                 {static_cast<float>(extent.width), static_cast<float>(extent.height)});
             append_draw_data(impl_->ui_draw_data, frame.draw_data);
@@ -880,6 +888,10 @@ void Engine::run() {
         // extent (pixel-space → clip-space). Must happen before
         // render_system.update() so the UBO is current when UI draws.
         if (impl_->mui_renderer) {
+            if (auto sync = impl_->mui_renderer->synchronize_glyph_atlas(impl_->ui_draw_data); !sync) {
+                SNT_LOG_ERROR("MUI glyph atlas synchronization failed: %s",
+                              sync.error().format().c_str());
+            }
             const auto& extent = impl_->vk_swapchain.extent();
             impl_->mui_renderer->update_ortho(extent.width, extent.height);
         }

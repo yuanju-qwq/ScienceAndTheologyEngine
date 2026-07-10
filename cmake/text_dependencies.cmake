@@ -20,6 +20,7 @@ endif()
 # locale-aware line breaking; a partial Unicode implementation is forbidden.
 file(GLOB _SNT_ICU_COMMON CONFIGURE_DEPENDS "${_SNT_ICU_DIR}/common/*.cpp")
 file(GLOB _SNT_ICU_I18N CONFIGURE_DEPENDS "${_SNT_ICU_DIR}/i18n/*.cpp")
+list(APPEND _SNT_ICU_COMMON "${_SNT_ICU_DIR}/icu_data/icudata_stub.cpp")
 add_library(snt_icu STATIC ${_SNT_ICU_COMMON} ${_SNT_ICU_I18N})
 target_include_directories(snt_icu PUBLIC
     "${_SNT_ICU_DIR}/common"
@@ -42,11 +43,17 @@ target_compile_definitions(snt_icu PRIVATE
     U_LIB_SUFFIX_C_NAME=_snt
 )
 target_link_libraries(snt_icu PUBLIC snt_engine_settings)
+target_compile_definitions(snt_icu PUBLIC
+    U_STATIC_IMPLEMENTATION
+    U_HAVE_LIB_SUFFIX=1
+    U_LIB_SUFFIX_C_NAME=_snt
+)
 
 # HarfBuzz has no stable CMake project in this source snapshot. All source
 # files are compiled with optional platform adapters disabled by their own
 # feature guards; hb-ft and hb-icu are enabled for the MUI text backend.
 file(GLOB _SNT_HARFBUZZ_SOURCES CONFIGURE_DEPENDS "${_SNT_HARFBUZZ_DIR}/src/*.cc")
+list(APPEND _SNT_HARFBUZZ_SOURCES "${_SNT_HARFBUZZ_DIR}/src/OT/Var/VARC/VARC.cc")
 add_library(snt_harfbuzz STATIC ${_SNT_HARFBUZZ_SOURCES})
 target_include_directories(snt_harfbuzz PUBLIC "${_SNT_HARFBUZZ_DIR}/src")
 target_compile_definitions(snt_harfbuzz PRIVATE HAVE_FREETYPE HAVE_ICU)

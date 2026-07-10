@@ -69,3 +69,18 @@ add_custom_command(TARGET snt_tests POST_BUILD
     COMMAND_EXPAND_LISTS
     COMMENT "Copying runtime DLLs next to tests"
 )
+# P6 remains testable even while unrelated engine modules are in flight.
+# Keep the retained-MUI contract isolated from voxel/player integration.
+add_executable(snt_p6_tests
+    test_main.cpp
+    test_mui_retained.cpp
+)
+target_link_libraries(snt_p6_tests PRIVATE
+    snt_core
+    snt_assets
+    snt_ui
+    snt_engine_settings
+    snt_third_party
+    GTest::gtest
+)
+gtest_discover_tests(snt_p6_tests DISCOVERY_MODE PRE_TEST)

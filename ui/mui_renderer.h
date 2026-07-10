@@ -1,8 +1,7 @@
 // MuiRenderer — Vulkan rendering backend for retained MUI draw data.
 //
 // Responsibilities:
-//   - Bake an ASCII font atlas (32..126) via assets/font_atlas FreeType into a single
-//     R8_UNORM texture at init time.
+//   - Own a dynamic RGBA Unicode glyph atlas synchronized from UiDrawData.
 //   - Create a UI graphics pipeline: pos2D+uv vertex layout, orthographic
 //     projection UBO, alpha blending, no depth test/write (UI draws on top).
 //   - Per frame: receive UiDrawData from retained MUI / Arc2D, upload to a
@@ -14,8 +13,7 @@
 // composites over the 3D scene.
 //
 // Layering: sits in ui/, depends on render_backend (VulkanDevice, pipeline,
-// buffer, descriptor) + assets/font_atlas. Retained MUI produces draw data;
-// MuiRenderer consumes it.
+// buffer, descriptor). Retained MUI produces draw data; MuiRenderer consumes it.
 
 #pragma once
 
@@ -47,13 +45,10 @@ public:
     MuiRenderer(const MuiRenderer&) = delete;
     MuiRenderer& operator=(const MuiRenderer&) = delete;
 
-    // Initialize: bake font atlas, create texture + pipeline + descriptors.
-    // `font_path` is a TTF file path (e.g. "C:\\Windows\\Fonts\\arial.ttf").
+    // Initialize the dynamic glyph texture, pipeline and descriptors.
     // `color_format` is the swapchain image format for the pipeline.
     snt::core::Expected<void> init(snt::render_backend::VulkanDevice& device,
-                                   VkFormat color_format,
-                                   const std::string& font_path,
-                                   float font_size_px = 16.0f);
+                                   VkFormat color_format);
 
     void destroy();
 
@@ -61,14 +56,19 @@ public:
     // Call once per frame before render().
     void update_ortho(uint32_t fb_width, uint32_t fb_height);
 
+    // Synchronize the current Unicode atlas outside a render pass. The engine
+    // invokes this after retained UI frame construction and before it records
+    // the UI pass, so uploads never race active Vulkan rendering.
+    snt::core::Expected<void> synchronize_glyph_atlas(const UiDrawData& draw_data);
+
     // Record UI draw calls into `cmd`. Uploads `draw_data` vertices/indices
     // to a CPU-visible buffer and draws them with the UI pipeline.
     void render(VkCommandBuffer cmd, const UiDrawData& draw_data);
 
 private:
-    // Bake the font atlas: load TTF, rasterize ASCII 32..126 into a bitmap,
-    // create Vulkan texture + view + sampler.
-    snt::core::Expected<void> bake_font_atlas(const std::string& font_path);
+    // Create and upload the fixed-capacity RGBA Unicode atlas texture.
+    snt::core::Expected<void> create_glyph_atlas_texture();
+    snt::core::Expected<void> upload_glyph_atlas(const UiGlyphAtlas& atlas);
 
     // Create the UI descriptor set layout + pool + set (UBO + sampler).
     snt::core::Expected<void> create_descriptors();
@@ -78,12 +78,13 @@ private:
 
     snt::render_backend::VulkanDevice*              device_ = nullptr;
 
-    // Font atlas texture.
+    // Dynamic glyph atlas texture.
     VkImage        atlas_image_       = VK_NULL_HANDLE;
     VkImageView    atlas_view_        = VK_NULL_HANDLE;
     VmaAllocation  atlas_allocation_  = VK_NULL_HANDLE;
     VkSampler      atlas_sampler_     = VK_NULL_HANDLE;
-    float font_size_   = 16.0f;
+    uint64_t uploaded_atlas_revision_ = 0;
+    const UiGlyphAtlas* uploaded_atlas_ = nullptr;
 
     // Pipeline + descriptor.
     VkPipelineLayout      pipeline_layout_ = VK_NULL_HANDLE;

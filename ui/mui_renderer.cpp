@@ -2,7 +2,7 @@
 
 #include "mui_renderer.h"
 
-#include "assets/font_atlas.h"
+
 #include "vulkan_buffer.h"
 #include "vulkan_device.h"
 
@@ -39,28 +39,31 @@ static bool one_time_submit(snt::render_backend::VulkanDevice& device,
         .commandBufferCount = 1,
     };
     VkCommandBuffer cmd = VK_NULL_HANDLE;
-    vkAllocateCommandBuffers(device.logical(), &alloc_info, &cmd);
+    if (vkAllocateCommandBuffers(device.logical(), &alloc_info, &cmd) != VK_SUCCESS) {
+        vkDestroyCommandPool(device.logical(), pool, nullptr);
+        return false;
+    }
 
     VkCommandBufferBeginInfo begin_info{
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
-    vkBeginCommandBuffer(cmd, &begin_info);
-    recorder(cmd);
-    vkEndCommandBuffer(cmd);
-
-    VkSubmitInfo submit_info{
-        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-        .commandBufferCount = 1,
-        .pCommandBuffers = &cmd,
-    };
-    vkQueueSubmit(device.graphics_queue(), 1, &submit_info, VK_NULL_HANDLE);
-    vkQueueWaitIdle(device.graphics_queue());
+    bool ok = vkBeginCommandBuffer(cmd, &begin_info) == VK_SUCCESS;
+    if (ok) recorder(cmd);
+    if (ok) ok = vkEndCommandBuffer(cmd) == VK_SUCCESS;
+    if (ok) {
+        VkSubmitInfo submit_info{
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &cmd,
+        };
+        ok = vkQueueSubmit(device.graphics_queue(), 1, &submit_info, VK_NULL_HANDLE) == VK_SUCCESS;
+    }
+    if (ok) ok = vkQueueWaitIdle(device.graphics_queue()) == VK_SUCCESS;
 
     vkDestroyCommandPool(device.logical(), pool, nullptr);
-    return true;
+    return ok;
 }
-
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
@@ -71,15 +74,12 @@ MuiRenderer::~MuiRenderer() {
 
 snt::core::Expected<void> MuiRenderer::init(
     snt::render_backend::VulkanDevice& device,
-    VkFormat color_format,
-    const std::string& font_path,
-    float font_size_px) {
+    VkFormat color_format) {
 
     device_ = &device;
-    font_size_ = font_size_px;
 
-    // 1. Bake font atlas into a Vulkan texture.
-    if (auto r = bake_font_atlas(font_path); !r) {
+    // 1. Create the Unicode glyph atlas Vulkan texture.
+    if (auto r = create_glyph_atlas_texture(); !r) {
         return r.error();
     }
 
@@ -93,8 +93,8 @@ snt::core::Expected<void> MuiRenderer::init(
         return r.error();
     }
 
-    SNT_LOG_INFO("MuiRenderer initialized (font_size=%.1f, atlas=512x512 R8)",
-                 font_size_px);
+    SNT_LOG_INFO("MuiRenderer initialized (Unicode atlas=%ux%u RGBA)",
+                 UiGlyphAtlas::kDimension, UiGlyphAtlas::kDimension);
     return {};
 }
 
@@ -117,6 +117,8 @@ void MuiRenderer::destroy() {
     if (atlas_view_)    { vkDestroyImageView(dev, atlas_view_, nullptr);  atlas_view_ = VK_NULL_HANDLE; }
     if (atlas_image_)   { vmaDestroyImage(device_->vma_allocator(), atlas_image_, atlas_allocation_); atlas_image_ = VK_NULL_HANDLE; }
 
+    uploaded_atlas_revision_ = 0;
+    uploaded_atlas_ = nullptr;
     device_ = nullptr;
 }
 
@@ -124,28 +126,13 @@ void MuiRenderer::destroy() {
 // Font atlas baking
 // ---------------------------------------------------------------------------
 
-snt::core::Expected<void> MuiRenderer::bake_font_atlas(const std::string& font_path) {
-    constexpr int kAtlasW = 512;
-    constexpr int kAtlasH = 512;
-    snt::assets::FontAtlasBuildDesc desc;
-    desc.font_path = font_path;
-    desc.pixel_size = font_size_;
-    desc.atlas_width = kAtlasW;
-    desc.atlas_height = kAtlasH;
-
-    auto atlas_result = snt::assets::build_font_atlas_freetype(desc);
-    if (!atlas_result) {
-        return atlas_result.error().with_context("MuiRenderer::bake_font_atlas");
-    }
-
-    const auto& atlas = *atlas_result;
-
-    // --- Create Vulkan texture (R8_UNORM, device-local) ---
+snt::core::Expected<void> MuiRenderer::create_glyph_atlas_texture() {
+    constexpr uint32_t kDimension = UiGlyphAtlas::kDimension;
     VkImageCreateInfo image_ci{
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
-        .format = VK_FORMAT_R8_UNORM,
-        .extent = {atlas.image.width, atlas.image.height, 1},
+        .format = VK_FORMAT_R8G8B8A8_UNORM,
+        .extent = {kDimension, kDimension, 1},
         .mipLevels = 1,
         .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -154,22 +141,19 @@ snt::core::Expected<void> MuiRenderer::bake_font_atlas(const std::string& font_p
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
-
     VmaAllocationCreateInfo alloc_ci{};
     alloc_ci.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-
     if (vmaCreateImage(device_->vma_allocator(), &image_ci, &alloc_ci,
                        &atlas_image_, &atlas_allocation_, nullptr) != VK_SUCCESS) {
         return snt::core::Error{snt::core::ErrorCode::kUnknown,
-                                "vmaCreateImage (atlas) failed"};
+                                "vmaCreateImage (Unicode glyph atlas) failed"};
     }
 
-    // --- Create image view ---
     VkImageViewCreateInfo view_ci{
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = atlas_image_,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = VK_FORMAT_R8_UNORM,
+        .format = VK_FORMAT_R8G8B8A8_UNORM,
         .subresourceRange = {
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
             .baseMipLevel = 0,
@@ -180,42 +164,16 @@ snt::core::Expected<void> MuiRenderer::bake_font_atlas(const std::string& font_p
     };
     if (vkCreateImageView(device_->logical(), &view_ci, nullptr, &atlas_view_) != VK_SUCCESS) {
         return snt::core::Error{snt::core::ErrorCode::kUnknown,
-                                "vkCreateImageView (atlas) failed"};
+                                "vkCreateImageView (Unicode glyph atlas) failed"};
     }
 
-    // --- Upload bitmap via staging buffer + one-shot command ---
-    VkBuffer staging = VK_NULL_HANDLE;
-    VmaAllocation staging_alloc = VK_NULL_HANDLE;
-    VkBufferCreateInfo sb_ci{
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = atlas.image.alpha.size(),
-        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-    };
-    VmaAllocationCreateInfo sb_alloc_ci{};
-    sb_alloc_ci.usage = VMA_MEMORY_USAGE_CPU_ONLY;
-    if (vmaCreateBuffer(device_->vma_allocator(), &sb_ci, &sb_alloc_ci,
-                        &staging, &staging_alloc, nullptr) != VK_SUCCESS) {
-        return snt::core::Error{snt::core::ErrorCode::kUnknown,
-                                "vmaCreateBuffer (staging) failed"};
-    }
-    void* mapped = nullptr;
-    if (vmaMapMemory(device_->vma_allocator(), staging_alloc, &mapped) != VK_SUCCESS) {
-        vmaDestroyBuffer(device_->vma_allocator(), staging, staging_alloc);
-        return snt::core::Error{snt::core::ErrorCode::kVulkanBufferInitFailed,
-                                "vmaMapMemory (ui font staging) failed"};
-    }
-    std::memcpy(mapped, atlas.image.alpha.data(), atlas.image.alpha.size());
-    vmaUnmapMemory(device_->vma_allocator(), staging_alloc);
-
-    one_time_submit(*device_, [&](VkCommandBuffer cmd) {
-        // Transition image to transfer-dst layout.
+    if (!one_time_submit(*device_, [&](VkCommandBuffer cmd) {
         VkImageMemoryBarrier barrier{
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .srcAccessMask = 0,
-            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
             .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .image = atlas_image_,
@@ -227,42 +185,14 @@ snt::core::Expected<void> MuiRenderer::bake_font_atlas(const std::string& font_p
                 .layerCount = 1,
             },
         };
-        vkCmdPipelineBarrier(cmd,
-                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &barrier);
-
-        // Copy buffer to image.
-        VkBufferImageCopy region{
-            .bufferOffset = 0,
-            .bufferRowLength = 0,
-            .bufferImageHeight = 0,
-            .imageSubresource = {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .mipLevel = 0,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-            .imageOffset = {0, 0, 0},
-            .imageExtent = {atlas.image.width, atlas.image.height, 1},
-        };
-        vkCmdCopyBufferToImage(cmd, staging, atlas_image_,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-        // Transition image to shader-read-only layout.
-        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        vkCmdPipelineBarrier(cmd,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
-    });
+    })) {
+        return snt::core::Error{snt::core::ErrorCode::kUnknown,
+                                "Initial Unicode glyph atlas transition failed"};
+    }
 
-    vmaDestroyBuffer(device_->vma_allocator(), staging, staging_alloc);
-
-    // --- Create sampler ---
     VkSamplerCreateInfo sampler_ci{
         .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
         .magFilter = VK_FILTER_LINEAR,
@@ -276,13 +206,93 @@ snt::core::Expected<void> MuiRenderer::bake_font_atlas(const std::string& font_p
     };
     if (vkCreateSampler(device_->logical(), &sampler_ci, nullptr, &atlas_sampler_) != VK_SUCCESS) {
         return snt::core::Error{snt::core::ErrorCode::kUnknown,
-                                "vkCreateSampler (atlas) failed"};
+                                "vkCreateSampler (Unicode glyph atlas) failed"};
     }
-
     return {};
 }
 
-// ---------------------------------------------------------------------------
+snt::core::Expected<void> MuiRenderer::upload_glyph_atlas(const UiGlyphAtlas& atlas) {
+    if (atlas.width != UiGlyphAtlas::kDimension || atlas.height != UiGlyphAtlas::kDimension ||
+        atlas.rgba.size() != static_cast<size_t>(atlas.width) * atlas.height * 4u) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
+                                "Invalid Unicode glyph atlas upload payload"};
+    }
+
+    VkBuffer staging = VK_NULL_HANDLE;
+    VmaAllocation staging_alloc = VK_NULL_HANDLE;
+    VkBufferCreateInfo buffer_ci{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = atlas.rgba.size(),
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VmaAllocationCreateInfo allocation_ci{};
+    allocation_ci.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+    if (vmaCreateBuffer(device_->vma_allocator(), &buffer_ci, &allocation_ci,
+                        &staging, &staging_alloc, nullptr) != VK_SUCCESS) {
+        return snt::core::Error{snt::core::ErrorCode::kUnknown,
+                                "vmaCreateBuffer (Unicode glyph staging) failed"};
+    }
+    void* mapped = nullptr;
+    if (vmaMapMemory(device_->vma_allocator(), staging_alloc, &mapped) != VK_SUCCESS) {
+        vmaDestroyBuffer(device_->vma_allocator(), staging, staging_alloc);
+        return snt::core::Error{snt::core::ErrorCode::kVulkanBufferInitFailed,
+                                "vmaMapMemory (Unicode glyph staging) failed"};
+    }
+    std::memcpy(mapped, atlas.rgba.data(), atlas.rgba.size());
+    vmaUnmapMemory(device_->vma_allocator(), staging_alloc);
+
+    const bool submitted = one_time_submit(*device_, [&](VkCommandBuffer cmd) {
+        VkImageMemoryBarrier barrier{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = atlas_image_,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+        };
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+        VkBufferImageCopy region{
+            .bufferOffset = 0,
+            .bufferRowLength = 0,
+            .bufferImageHeight = 0,
+            .imageSubresource = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel = 0,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+            .imageOffset = {0, 0, 0},
+            .imageExtent = {atlas.width, atlas.height, 1},
+        };
+        vkCmdCopyBufferToImage(cmd, staging, atlas_image_,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+    });
+    vmaDestroyBuffer(device_->vma_allocator(), staging, staging_alloc);
+    if (!submitted) {
+        return snt::core::Error{snt::core::ErrorCode::kUnknown,
+                                "Unicode glyph atlas upload submission failed"};
+    }
+    return {};
+}// ---------------------------------------------------------------------------
 // Descriptor set (UBO + combined image sampler)
 // ---------------------------------------------------------------------------
 
@@ -459,30 +469,36 @@ snt::core::Expected<void> MuiRenderer::create_pipeline(VkFormat color_format) {
         },
     };
 
-    // Vertex input: pos2D (0) + uv (8) + color (16). Total stride = 20 bytes.
+    // Vertex input: pos2D + atlas UV + RGBA + explicit texture mode.
     VkVertexInputBindingDescription binding{
         .binding = 0,
         .stride = sizeof(UiVertex),
         .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
     };
-    VkVertexInputAttributeDescription attrs[3] = {
-        {  // position (vec2 float)
+    VkVertexInputAttributeDescription attrs[4] = {
+        {
             .location = 0,
             .binding = 0,
             .format = VK_FORMAT_R32G32_SFLOAT,
             .offset = offsetof(UiVertex, position),
         },
-        {  // uv (vec2 float)
+        {
             .location = 1,
             .binding = 0,
             .format = VK_FORMAT_R32G32_SFLOAT,
             .offset = offsetof(UiVertex, uv),
         },
-        {  // color (vec4 unorm byte)
+        {
             .location = 2,
             .binding = 0,
             .format = VK_FORMAT_R8G8B8A8_UNORM,
             .offset = offsetof(UiVertex, color),
+        },
+        {
+            .location = 3,
+            .binding = 0,
+            .format = VK_FORMAT_R8_UINT,
+            .offset = offsetof(UiVertex, texture_mode),
         },
     };
 
@@ -490,7 +506,7 @@ snt::core::Expected<void> MuiRenderer::create_pipeline(VkFormat color_format) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1,
         .pVertexBindingDescriptions = &binding,
-        .vertexAttributeDescriptionCount = 3,
+        .vertexAttributeDescriptionCount = 4,
         .pVertexAttributeDescriptions = attrs,
     };
 
@@ -608,6 +624,20 @@ void MuiRenderer::update_ortho(uint32_t fb_width, uint32_t fb_height) {
     vmaUnmapMemory(device_->vma_allocator(), ubo_alloc_);
 }
 
+snt::core::Expected<void> MuiRenderer::synchronize_glyph_atlas(const UiDrawData& draw_data) {
+    if (!draw_data.glyph_atlas) return {};
+    const UiGlyphAtlas& atlas = *draw_data.glyph_atlas;
+    if (uploaded_atlas_ == &atlas && uploaded_atlas_revision_ == atlas.revision) return {};
+
+    if (auto result = upload_glyph_atlas(atlas); !result) {
+        return result.error().with_context("MuiRenderer::synchronize_glyph_atlas");
+    }
+    uploaded_atlas_ = &atlas;
+    uploaded_atlas_revision_ = atlas.revision;
+    SNT_LOG_INFO("MUI Unicode glyph atlas synchronized (revision=%llu)",
+                 static_cast<unsigned long long>(atlas.revision));
+    return {};
+}
 void MuiRenderer::render(VkCommandBuffer cmd, const UiDrawData& draw_data) {
     if (draw_data.vertices.empty() || draw_data.indices.empty()) return;
 
