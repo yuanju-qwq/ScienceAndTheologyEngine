@@ -18,7 +18,7 @@
 //   - Camera entity (Guid=1): position [0,0,3], fov 60, near 0.1, far 100
 //   - Cube entity  (Guid=2): position [-1.5,0,0], rotation [-25,35,0]
 //   - Cube entity2 (Guid=3): position [1.5,0,0],  rotation [-25,-35,0]
-//   Both cubes reference mesh path "test_assets/cube.obj".
+//   Both cubes reference mesh path "assets/dev/cube.obj".
 
 #define SNT_LOG_CHANNEL "gen_scene"
 
@@ -68,7 +68,7 @@ void init_stub_cache(AssetCache<StubMesh, MeshAssetTag>& cache) {
 
 int main(int argc, char* argv[]) {
     const std::string output_path =
-        (argc > 1) ? argv[1] : "game/scenes/default_scene.bin";
+        (argc > 1) ? argv[1] : "default_scene.bin";
 
     World world;
     AssetCache<StubMesh, MeshAssetTag> cache;
@@ -77,7 +77,7 @@ int main(int argc, char* argv[]) {
     // Pre-load the cube mesh path so we get a stable handle to reference.
     // The handle value doesn't matter — save_scene resolves it back to the
     // path string in the scene file.
-    auto mesh_result = cache.load("test_assets/cube.obj");
+    auto mesh_result = cache.load("assets/dev/cube.obj");
     if (!mesh_result) {
         SNT_LOG_ERROR("Failed to load stub mesh: %s",
                       mesh_result.error().format().c_str());
@@ -86,7 +86,7 @@ int main(int argc, char* argv[]) {
     const auto mesh_handle = *mesh_result;
 
     // --- Camera entity (Guid=1) ---
-    // Matches CameraConfig defaults in game/config/engine.json.
+    // Matches CameraConfig defaults in the game-owned engine configuration.
     {
         EntityGuid guid{1};
         entt::entity e = world.create_entity_with_guid(guid);

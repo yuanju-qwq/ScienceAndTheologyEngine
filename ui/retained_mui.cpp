@@ -149,8 +149,8 @@ bool initialize_icu_data(const TextEngineConfig& config, std::string& error) {
     auto& state = icu_data_state();
     if (state.initialized) return true;
 
-    snt::core::path_utils::init();
-    const std::string path = snt::core::path_utils::resolve(config.icu_data_path);
+
+    const std::string path = snt::core::path_utils::resolve_engine(config.icu_data_path);
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input.is_open()) {
         error = "ICU common-data file is unavailable: " + path;

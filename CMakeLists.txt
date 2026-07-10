@@ -13,6 +13,9 @@
 # to target ... which is not built in this directory."
 cmake_minimum_required(VERSION 3.20)
 project(snt_engine CXX)
+# Public CMake integration contract for an embedding game. This is the only
+# source-tree location the game layer may use while developing via submodule.
+set(SNT_ENGINE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" CACHE INTERNAL "SNT engine source root")
 cmake_policy(SET CMP0079 NEW)
 
 if(MSVC)
@@ -59,7 +62,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/fetch_third_party.cmake)
 # ============================================================
 # Each module is its own static library for clear layering.
 # Layering rule (top -> bottom, never reverse):
-#   engine_app -> engine -> {ui, render, voxel, physics, script, audio, network}
+#   host application -> engine -> {ui, render, voxel, physics, script, audio, network}
 #                         -> renderer -> render_backend -> platform
 #                         -> ecs -> input -> core
 #                         -> data -> core
@@ -78,7 +81,6 @@ add_subdirectory(voxel)         # P3: voxel meshing + chunk renderer
 add_subdirectory(data)          # P2: data definitions ported from src/core/
 add_subdirectory(player)        # P4: first-person controller + voxel collision/raycast
 add_subdirectory(engine)
-add_subdirectory(engine_app)
 add_subdirectory(tools)         # NEW: standalone dev tools (gen_default_scene, ...)
 
 # Tests are optional: gated by SNT_BUILD_TESTS (default ON). CI can

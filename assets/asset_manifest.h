@@ -15,7 +15,7 @@
 // Format (JSON):
 //   {
 //     "assets": [
-//       { "id": "cube",    "path": "test_assets/cube.obj" },
+//       { "id": "cube",    "path": "assets/dev/cube.obj" },
 //       { "id": "sphere",  "path": "assets/sphere.obj" }
 //     ]
 //   }
@@ -61,11 +61,11 @@ struct AssetManifest {
 //     useful for aliasing, e.g. "cube" and "default_mesh" both pointing
 //     to cube.obj. They get DIFFERENT handles but load the same data).
 //
-// Example JSON (game/config/default_manifest.json):
+// Example game-owned JSON (config/default_manifest.json):
 //
 //   {
 //     "assets": [
-//       { "id": "cube", "path": "test_assets/cube.obj" }
+//       { "id": "cube", "path": "assets/dev/cube.obj" }
 //     ]
 //   }
 snt::core::Expected<AssetManifest> load_manifest(const std::string& path);

@@ -35,6 +35,9 @@ add_executable(snt_tests
     test_player_physics.cpp    # P4: voxel collision + DDA ray cast
     test_mui_retained.cpp      # P6: retained MUI + gameplay UI ViewModels
 )
+target_compile_definitions(snt_tests PRIVATE
+    SNT_ENGINE_TEST_ROOT="${SNT_ENGINE_SOURCE_DIR}"
+)
 target_link_libraries(snt_tests PRIVATE
     snt_core
     snt_ecs
@@ -57,12 +60,6 @@ target_link_libraries(snt_tests PRIVATE
 include(GoogleTest)
 gtest_discover_tests(snt_tests DISCOVERY_MODE PRE_TEST)
 
-# Copy config + scenes + test_assets + shaders next to the test executable
-# so tests that read engine.json / default_scene.bin / cube.obj /
-# mesh.vert.spv can find them via path_utils::resolve(). Mirrors the
-# snt_engine_app copy steps.
-add_dependencies(snt_tests snt_copy_shaders snt_copy_config snt_copy_scenes snt_copy_test_assets)
-
 add_custom_command(TARGET snt_tests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         $<TARGET_RUNTIME_DLLS:snt_tests>
@@ -70,18 +67,3 @@ add_custom_command(TARGET snt_tests POST_BUILD
     COMMAND_EXPAND_LISTS
     COMMENT "Copying runtime DLLs next to tests"
 )
-# P6 remains testable even while unrelated engine modules are in flight.
-# Keep the retained-MUI contract isolated from voxel/player integration.
-add_executable(snt_p6_tests
-    test_main.cpp
-    test_mui_retained.cpp
-)
-target_link_libraries(snt_p6_tests PRIVATE
-    snt_core
-    snt_assets
-    snt_ui
-    snt_engine_settings
-    snt_third_party
-    GTest::gtest
-)
-gtest_discover_tests(snt_p6_tests DISCOVERY_MODE PRE_TEST)

@@ -106,24 +106,6 @@ TEST(AssetPipelineTest, FontAtlasBuildsWithFreeType) {
     EXPECT_GT(atlas->line_height, 0.0f);
 }
 
-TEST(AssetPipelineTest, TextureCacheLoadsTerrainPng) {
-    if (!snt::core::path_utils::init()) {
-        GTEST_SKIP() << "path_utils could not locate project root";
-    }
-    const std::string path =
-        snt::core::path_utils::resolve("resource/terrain/stone/stone_tile_32.png");
-    if (!snt::core::path_utils::exists(path)) {
-        GTEST_SKIP() << "terrain texture missing: " << path;
-    }
-
-    snt::assets::TextureCache cache;
-    auto image = cache.load_rgba(path);
-    ASSERT_TRUE(image.has_value()) << image.error().format();
-    EXPECT_EQ((*image)->width, 32);
-    EXPECT_EQ((*image)->height, 32);
-    EXPECT_EQ((*image)->rgba.size(), 32u * 32u * 4u);
-}
-
 TEST(AssetPipelineTest, MaterialAtlasFailsWhenTextureIsMissing) {
     snt::assets::TextureCache cache;
     auto atlas = snt::assets::build_material_atlas(

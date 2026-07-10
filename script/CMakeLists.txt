@@ -4,7 +4,7 @@
 # ScriptContextPool, ScriptModule, ScriptLoader, ScriptManager.
 #
 # This module is the single integration point between the engine and
-# AngelScript. Downstream modules (engine_app, gameplay) link against
+# AngelScript. Downstream modules (engine host, gameplay) link against
 # snt_script and never touch <angelscript.h> directly.
 
 add_library(snt_script STATIC

@@ -17,7 +17,7 @@ add_library(snt_render_backend STATIC
 )
 target_include_directories(snt_render_backend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # VMA include path: FetchContent puts source in _deps/vulkanmemoryallocator-src/.
-# PUBLIC because vulkan_buffer.h / vulkan_depth.h (included by engine_app)
+# PUBLIC because vulkan_buffer.h / vulkan_depth.h (consumed by engine hosts)
 # include <vk_mem_alloc.h>.
 target_include_directories(snt_render_backend PUBLIC
     ${CMAKE_BINARY_DIR}/_deps/vulkanmemoryallocator-src/include
@@ -74,15 +74,8 @@ endforeach()
 
 add_custom_target(snt_shaders ALL DEPENDS ${SHADER_SPV_FILES})
 
-# Copy compiled shaders to the engine_app output directory after build.
-# Destination uses snt_engine/shaders/ to match path_utils routing: in the
-# packaged layout (bin/$<CONFIG>/), engine built-in resources (shaders/,
-# builtin/) live under an snt_engine/ subdirectory, mirroring the source
-# tree layout where they live under snt_engine/shaders/.
-add_custom_target(snt_copy_shaders ALL
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${SHADER_OUTPUT_DIR}
-    ${CMAKE_BINARY_DIR}/bin/$<CONFIG>/snt_engine/shaders
-    COMMENT "Copying compiled shaders to output directory"
-    DEPENDS snt_shaders
-)
+# The host application owns packaging. Export this generated directory through
+# CMake so a game can copy shaders into any runtime layout without the engine
+# assuming a parent repository or an output subdirectory name.
+set(SNT_SHADER_OUTPUT_DIR "${SHADER_OUTPUT_DIR}" CACHE INTERNAL
+    "Directory containing compiled SNT engine shaders")

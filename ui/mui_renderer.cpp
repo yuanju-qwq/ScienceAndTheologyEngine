@@ -432,8 +432,8 @@ snt::core::Expected<void> MuiRenderer::create_pipeline(VkFormat color_format) {
         return spv;
     };
 
-    auto vert_spv = read_spv(snt::core::path_utils::resolve("shaders/ui.vert.spv"));
-    auto frag_spv = read_spv(snt::core::path_utils::resolve("shaders/ui.frag.spv"));
+    auto vert_spv = read_spv(snt::core::path_utils::resolve_engine("shaders/ui.vert.spv"));
+    auto frag_spv = read_spv(snt::core::path_utils::resolve_engine("shaders/ui.frag.spv"));
     if (vert_spv.empty() || frag_spv.empty()) {
         return snt::core::Error{snt::core::ErrorCode::kUnknown,
                                 "Failed to load UI shaders (ui.vert.spv / ui.frag.spv)"};

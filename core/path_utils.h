@@ -1,83 +1,54 @@
-// Path utilities: resolve engine resources independent of CWD.
+// Runtime path contract shared by the engine and its host application.
 //
-// Design goals:
-//   - Remove the dependency on the process's current working directory.
-//     Running the .exe from VS, from the bin/ folder, or from a packaged
-//     install should all resolve "shaders/mesh.vert.spv" the same way.
-//   - Anchor all paths to the project root, located by walking up from the
-//     executable's directory until a marker file/dir is found (currently
-//     `game/config/engine.json` or the `snt_engine/` source dir during dev).
-//   - Cross-platform: Windows uses GetModuleFileNameW; Linux reads
-//     /proc/self/exe; macOS uses _NSGetExecutablePath (future).
-//   - Thin wrappers over std::filesystem; no virtual file system, no
-//     archive mounts — that's the P3 resource system's job.
+// The engine never discovers a parent repository or assumes a directory name.
+// A host supplies the three roots once during Engine::init:
+//   - engine_root: engine-owned packaged resources (shaders, ICU data, ...)
+//   - game_root: game-owned content (config, scenes, scripts, assets, ...)
+//   - user_root: writable per-install data (logs, saves, caches, ...)
 //
-// Resource routing (by path prefix):
-//   - "shaders/..." or "builtin/..."  -> engine subdir (snt_engine/)
-//   - "game/...", "config/...", "scenes/...", "test_assets/..."
-//                                      -> project root (game content / tests)
-//   - fallback                         -> project root (back-compat)
-//
-// Usage:
-//   // Once at startup (main.cpp):
-//   snt::core::path_utils::init();
-//
-//   // Anywhere after:
-//   std::string shader = snt::core::path_utils::resolve("shaders/mesh.vert.spv");
-//   std::string config = snt::core::path_utils::resolve("game/config/engine.json");
-//   if (snt::core::path_utils::exists(shader)) { ... }
+// Keeping this boundary in core makes the engine independently buildable and
+// lets an embedding game choose any package layout or submodule location.
 
 #pragma once
+
+#include "core/expected.h"
 
 #include <string>
 #include <string_view>
 
 namespace snt::core {
+
+struct RuntimePaths {
+    std::string engine_root;
+    std::string game_root;
+    std::string user_root;
+};
+
 namespace path_utils {
 
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
-// Locate the project root by walking up from the executable's directory
-// until a marker is found (game/config/engine.json, or the snt_engine/
-// source dir in development builds). Caches the result so subsequent
-// resolve() calls are O(1). Safe to call multiple times; idempotent.
-//
-// Returns true on success. On failure, resolve() will fall back to
-// returning the input path as-is (so the engine still runs, just with
-// CWD-dependent behavior).
-bool init();
+// Normalizes and installs the host-owned path contract. Reconfiguration is
+// intentional so integration tests and editor sessions can start cleanly.
+Expected<void> configure(RuntimePaths paths);
 
-// ---------------------------------------------------------------------------
-// Path operations
-// ---------------------------------------------------------------------------
-// Resolve a relative path against the project root. Always returns an
-// absolute path after init() succeeds; before init() or on init failure,
-// returns the input unchanged (so callers get sensible behavior).
-//
-// Routing by prefix (see "Resource routing" in the file header):
-//   - "shaders/..." or "builtin/..."  -> project_root/engine_subdir/...
-//   - other prefixes                  -> project_root/...
-//
-// `relative_path` may use either '/' or '\\' as separator; the result
-// uses the platform-native separator.
-std::string resolve(std::string_view relative_path);
+// Returns whether configure() completed successfully for this process.
+bool configured();
 
-// Join two path segments with the platform separator. Helper for callers
-// that build paths incrementally. Does NOT make the result absolute.
+// Read-only access to the normalized roots. Empty until configure() succeeds.
+const RuntimePaths& runtime_paths();
+
+// Resolve a relative resource path under its declared ownership root. Absolute
+// paths pass through unchanged, which permits hosts to explicitly opt out of
+// packaged-relative resolution for a particular resource.
+std::string resolve_engine(std::string_view relative_path);
+std::string resolve_game(std::string_view relative_path);
+std::string resolve_user(std::string_view relative_path);
+
+// Join two path segments with the platform-native separator. Does not make a
+// path absolute and is safe for composing host paths before configure().
 std::string join(std::string_view a, std::string_view b);
 
-// Check whether a path exists on disk (file or directory).
+// Check whether a file or directory exists without throwing.
 bool exists(std::string_view path);
-
-// Read-only access to the cached project root (empty if init() failed
-// or was never called). The project root contains both the engine
-// submodule (snt_engine/) and the game content (game/).
-const std::string& project_root();
-
-// Read-only access to the engine submodule directory name relative to
-// the project root (e.g. "snt_engine"). Empty if init() failed.
-const std::string& engine_subdir();
 
 }  // namespace path_utils
 }  // namespace snt::core

@@ -1,7 +1,7 @@
 # Tools: standalone utilities for engine development.
 #
 # Each tool is a separate executable. They link against engine modules
-# but are NOT part of the runtime engine build (snt_engine_app doesn't
+# but are NOT part of the runtime engine library (the game host does not
 # depend on them). Tools are built by default so they're available for
 # CI; individual tools can be gated with options if needed.
 

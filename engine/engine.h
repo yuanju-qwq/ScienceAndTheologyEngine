@@ -22,6 +22,7 @@
 #include "core/clock.h"         // IClock, TimePoint (time accessors)
 #include "core/engine_config.h"  // EngineConfig for init
 #include "core/expected.h"       // Expected<void> for init
+#include "core/path_utils.h"    // RuntimePaths for host-owned resource roots
 
 namespace snt::platform { class Window; }
 namespace snt::input   { class InputSystem; }
@@ -47,15 +48,10 @@ public:
     Engine(const Engine&) = delete;
     Engine& operator=(const Engine&) = delete;
 
-    // One-time initialization. `config` supplies all tunable parameters
-    // (window size, shader paths, camera defaults, asset paths). Pass a
-    // default-constructed EngineConfig to use built-in defaults.
-    snt::core::Expected<void> init(const snt::core::EngineConfig& config);
-
-    // Convenience overload: uses default-constructed EngineConfig.
-    snt::core::Expected<void> init() {
-        return init(snt::core::EngineConfig{});
-    }
+    // One-time initialization. The host supplies its package layout rather
+    // than the engine inferring a repository root or submodule directory.
+    snt::core::Expected<void> init(const snt::core::EngineConfig& config,
+                                   snt::core::RuntimePaths runtime_paths);
 
     // Main loop. Returns when the window requests close.
     void run();

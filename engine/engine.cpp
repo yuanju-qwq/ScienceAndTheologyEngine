@@ -15,7 +15,7 @@
 #include "core/events.h"          // SdlEventFired, MouseLockChanged
 #include "core/job_system.h"
 #include "core/memory_tracker.h"
-#include "core/path_utils.h"      // path_utils::resolve for shader/asset paths
+#include "core/path_utils.h"      // explicit engine/game/user resource roots
 #include "core/profiling.h"
 #include "data/world/chunk_registry.h"  // P3: ChunkRegistry
 #include "engine/demo_world_bootstrap.h"
@@ -310,7 +310,8 @@ struct Engine::Impl {
 Engine::Engine() : impl_(std::make_unique<Impl>()) {}
 Engine::~Engine() { shutdown(); }
 
-snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
+snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config,
+                                       snt::core::RuntimePaths runtime_paths) {
     using namespace snt::platform;
     using namespace snt::render_backend;
     using namespace snt::ecs;
@@ -320,9 +321,13 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
     // Stash config for runtime reference (future hot-reload will re-read it).
     impl_->config = config;
 
-    // Locate engine root so all relative paths (shaders/, assets/, config/)
-    // resolve independent of the process's current working directory.
-    snt::core::path_utils::init();
+    // The host declares package roots explicitly. This replaces repository
+    // walking so the engine can be built and versioned independently.
+    if (auto result = snt::core::path_utils::configure(std::move(runtime_paths)); !result) {
+        auto error = result.error();
+        error.with_context("Engine::init(RuntimePaths)");
+        return error;
+    }
 
     // --- Job System (P2) ---
     // Install the real work-stealing thread pool as the global default.
@@ -334,13 +339,13 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
                  impl_->job_system.worker_count());
 
     // --- File logger sink ---
-    // Mirror all log output to logs/engine.log (relative to engine root).
+    // Mirror all log output to the host-provided writable data root.
     // The file is opened in append mode so restarts preserve history. If
     // the directory is missing or the file can't be created, logging
     // continues to stderr only (best-effort).
     {
         const std::string log_path =
-            snt::core::path_utils::resolve("logs/engine.log");
+            snt::core::path_utils::resolve_user("logs/engine.log");
         // Ensure the parent directory exists (std::fopen doesn't create
         // directories). create_directories is idempotent — no error if the
         // directory already exists.
@@ -371,7 +376,7 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
         impl_->script_manager_started = true;
 
         const std::filesystem::path script_root(
-            snt::core::path_utils::resolve(config.scripts.root));
+            snt::core::path_utils::resolve_game(config.scripts.root));
         std::error_code ec;
         if (std::filesystem::is_directory(script_root, ec) && !ec) {
             const auto result = config.scripts.watch_for_changes
@@ -474,8 +479,8 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
     if (auto r = impl_->vk_pipeline.init(impl_->vk_device, impl_->vk_descriptor,
                                  impl_->vk_swapchain.image_format(),
                                  impl_->vk_depth.format(),
-                                 snt::core::path_utils::resolve(config.render.vert_shader_path),
-                                 snt::core::path_utils::resolve(config.render.frag_shader_path),
+                                 snt::core::path_utils::resolve_engine(config.render.vert_shader_path),
+                                 snt::core::path_utils::resolve_engine(config.render.frag_shader_path),
                                  // MeshVertex layout: vec3 position + vec3 color.
                                  VkVertexInputBindingDescription{
                                      .binding   = 0,
@@ -513,7 +518,7 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
     // of building entities in C++ code, the scene is data-driven — edit
     // scenes/default_scene.bin with gen_default_scene to change content.
     const std::string scene_path =
-        snt::core::path_utils::resolve(config.scene.path);
+        snt::core::path_utils::resolve_game(config.scene.path);
     auto scene_result = snt::scene::load_scene(
         impl_->world,
         snt::assets::AssetManager::instance().mesh_cache(),
@@ -584,8 +589,8 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
                 impl_->vk_device,
                 impl_->vk_swapchain.image_format(),
                 impl_->vk_depth.format(),
-                snt::core::path_utils::resolve("shaders/voxel.vert.spv"),
-                snt::core::path_utils::resolve("shaders/voxel.frag.spv"),
+                snt::core::path_utils::resolve_engine("shaders/voxel.vert.spv"),
+                snt::core::path_utils::resolve_engine("shaders/voxel.frag.spv"),
                 max_chunks); !r) {
             snt::core::Error e = r.error();
             e.with_context("Engine::init (chunk_renderer)");

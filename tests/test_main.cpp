@@ -1,23 +1,35 @@
 // GoogleTest main entry for the SNT engine test suite.
 //
-// Provides the standard `RUN_ALL_TESTS()` driver. Individual test TUs
-// (test_*.cpp) define TEST(...) blocks; GoogleTest collects them at link
-// time. Keeping a dedicated test_main.cpp lets us add global setup/teardown
-// later (e.g. initializing path_utils before any test runs) without
-// touching every test file.
+// Every engine test executable is a small host. It supplies explicit runtime
+// paths just as a real game does, keeping tests independent of repository
+// discovery logic that production code must not have.
+
+#include "core/path_utils.h"
 
 #include <gtest/gtest.h>
 
-// Global test environment: runs init once before any test, cleanup once
-// after all tests. Used here to initialize path_utils so tests that touch
-// the filesystem resolve paths the same way the engine does.
+#include <filesystem>
+
+#ifndef SNT_ENGINE_TEST_ROOT
+#error "SNT_ENGINE_TEST_ROOT must be supplied by the engine test target"
+#endif
+
 class SntTestEnvironment : public ::testing::Environment {
 public:
     void SetUp() override {
-        // path_utils::init is idempotent; failure is non-fatal for tests
-        // (tests that depend on it will check project_root() themselves).
+        const auto scratch = std::filesystem::temp_directory_path() / "snt_engine_tests";
+        std::filesystem::create_directories(scratch / "game");
+        std::filesystem::create_directories(scratch / "user");
+
+        auto configured = snt::core::path_utils::configure({
+            .engine_root = SNT_ENGINE_TEST_ROOT,
+            .game_root = (scratch / "game").string(),
+            .user_root = (scratch / "user").string(),
+        });
+        if (!configured) {
+            ADD_FAILURE() << configured.error().format();
+        }
     }
-    void TearDown() override {}
 };
 
 int main(int argc, char** argv) {

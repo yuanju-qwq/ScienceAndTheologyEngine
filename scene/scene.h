@@ -335,7 +335,7 @@ snt::core::Expected<void> save_scene(
     }
 
     // `path` is used verbatim — callers that need engine-root resolution
-    // should call path_utils::resolve() before passing it in. This keeps
+    // should call path_utils::resolve_game() before passing it in. This keeps
     // save_scene usable with absolute paths (e.g. temp files in tests)
     // without being forced through the engine-root prefix.
     std::ofstream ofs(path, std::ios::binary);

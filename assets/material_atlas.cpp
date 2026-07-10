@@ -70,10 +70,10 @@ snt::core::Expected<MaterialAtlasImage> build_material_atlas(
 snt::core::Expected<MaterialAtlasImage> build_default_voxel_material_atlas(
         TextureCache& texture_cache) {
     std::vector<std::string> paths = {
-        snt::core::path_utils::resolve("resource/terrain/stone/stone_tile_32.png"),
-        snt::core::path_utils::resolve("resource/terrain/dirt/dirt_tile_32.png"),
-        snt::core::path_utils::resolve("resource/terrain/sand/sand_tile_01_32.png"),
-        snt::core::path_utils::resolve("resource/terrain/snow/snow_tile_32.png"),
+        snt::core::path_utils::resolve_game("assets/terrain/stone/stone_tile_32.png"),
+        snt::core::path_utils::resolve_game("assets/terrain/dirt/dirt_tile_32.png"),
+        snt::core::path_utils::resolve_game("assets/terrain/sand/sand_tile_01_32.png"),
+        snt::core::path_utils::resolve_game("assets/terrain/snow/snow_tile_32.png"),
     };
     return build_material_atlas(texture_cache, paths, 32);
 }

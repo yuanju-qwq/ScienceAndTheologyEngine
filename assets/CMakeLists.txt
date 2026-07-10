@@ -5,7 +5,7 @@
 # Owns the canonical AssetHandle<T> type + AssetManager singleton.
 #
 # Layering rule (top -> bottom, never reverse):
-#   engine_app -> engine -> assets -> render_backend -> core
+#   host application -> engine -> assets -> render_backend -> core
 #   render/ecs/ui also depend on assets via includes.
 
 add_library(snt_assets STATIC

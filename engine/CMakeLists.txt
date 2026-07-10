@@ -2,8 +2,8 @@
 # P2.B1: Engine class wraps Window + Vulkan + World + InputSystem + the
 # per-frame loop. main.cpp becomes a thin entry point.
 #
-# Layering: sits at the application layer alongside engine_app. Kept as
-# a separate static lib so engine_app stays a trivial executable wrapper.
+# Layering: sits below a game-owned host application. Kept as
+# a separate static lib so hosts stay thin executable wrappers.
 
 add_library(snt_engine STATIC
     demo_world_bootstrap.cpp

@@ -38,7 +38,7 @@ TEST(EngineConfig, MissingFileReturnsDefaults) {
     EXPECT_EQ(cfg.window.height, 720);
     EXPECT_EQ(cfg.render.max_entities, 256u);
     EXPECT_FLOAT_EQ(cfg.camera.fov, 60.0f);
-    EXPECT_EQ(cfg.assets.default_mesh_path, "test_assets/cube.obj");
+    EXPECT_EQ(cfg.assets.default_mesh_path, "assets/dev/cube.obj");
 }
 
 TEST(EngineConfig, OverridesApplied) {

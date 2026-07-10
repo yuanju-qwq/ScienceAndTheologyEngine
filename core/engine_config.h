@@ -3,7 +3,7 @@
 // Design goals:
 //   - Replace every hardcoded constant (window size, shader paths, camera
 //     defaults, asset paths, render limits) with a field in EngineConfig.
-//   - Load from JSON (game/config/engine.json) at startup; fall back to sensible
+//   - Load from a game-owned JSON file at startup; fall back to sensible
 //     defaults if the file is missing so the engine always runs.
 //   - Subsystem constructors receive only the slice they need (WindowConfig
 //     / RenderConfig / CameraConfig / AssetConfig), keeping module
@@ -75,7 +75,7 @@ struct UiConfig {
         "C:/Windows/Fonts/seguiemj.ttf",
     };
     std::string locale = "zh-Hans";
-    std::string icu_data_path = "snt_engine/third_party/icu4c/icudt_godot.dat";
+    std::string icu_data_path = "third_party/icu4c/icudt_godot.dat";
 };
 
 // ---------------------------------------------------------------------------
@@ -101,8 +101,8 @@ struct CameraConfig {
 // handle<->path mappings; see assets/asset_manifest.h). Empty string
 // disables manifest-based pre-allocation (falls back to runtime load()).
 struct AssetConfig {
-    std::string default_mesh_path = "test_assets/cube.obj";
-    std::string manifest_path     = "game/config/default_manifest.json";
+    std::string default_mesh_path = "assets/dev/cube.obj";
+    std::string manifest_path     = "config/default_manifest.json";
 };
 
 // ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ struct AssetConfig {
 // cubes + a camera) so the engine always runs out-of-the-box. The
 // scene format is documented in scene/scene.h.
 struct SceneConfig {
-    std::string path = "game/scenes/default_scene.bin";
+    std::string path = "scenes/default_scene.bin";
 };
 
 // ---------------------------------------------------------------------------
@@ -125,7 +125,7 @@ struct SceneConfig {
 struct ScriptConfig {
     bool enabled = true;
     bool watch_for_changes = true;
-    std::string root = "game/scripts";
+    std::string root = "scripts";
 };
 
 // ---------------------------------------------------------------------------
@@ -162,14 +162,14 @@ struct EngineConfig {
 //   - Unknown fields: silently ignored (forward-compatible).
 //   - Missing fields: fall back to the defaults from the struct above.
 //
-// Example JSON (game/config/engine.json):
+// Example game-owned JSON:
 //   {
 //     "window":  { "width": 1920, "height": 1080, "title": "SNT" },
 //     "render":  { "vert_shader_path": "shaders/mesh.vert.spv" },
 //     "voxel":   { "max_chunks": 1024 },
 //     "ui":      { "font_paths": ["resource/fonts/NotoSans-Regular.ttf"] },
 //     "camera":  { "fov": 75.0, "move_speed": 5.0 },
-//     "assets":  { "default_mesh_path": "test_assets/cube.obj" }
+//     "assets":  { "default_mesh_path": "assets/dev/cube.obj" }
 //   }
 Expected<EngineConfig> load_engine_config(const std::string& path);
 

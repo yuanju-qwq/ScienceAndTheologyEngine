@@ -2,7 +2,7 @@
 # P2.1: RenderGraph skeleton (declarations only, no implementation yet).
 #
 # Layering (top -> bottom, never reverse):
-#   engine_app -> renderer -> render_backend -> platform
+#   host application -> engine -> renderer -> render_backend -> platform
 #
 # References:
 #   - KhronosGroup/Vulkan-Samples (vkb-framework) for PipelineCache / ResourceCache design.

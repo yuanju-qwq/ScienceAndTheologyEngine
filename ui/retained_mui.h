@@ -134,7 +134,7 @@ struct TextEngineConfig {
         "C:/Windows/Fonts/seguiemj.ttf",
     };
     std::string locale = "zh-Hans";
-    std::string icu_data_path = "snt_engine/third_party/icu4c/icudt_godot.dat";
+    std::string icu_data_path = "third_party/icu4c/icudt_godot.dat";
 };
 
 class TextEngine {
