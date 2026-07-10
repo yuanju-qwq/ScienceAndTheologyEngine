@@ -249,18 +249,30 @@ if(NOT TARGET shaderc::shaderc_shared)
 endif()
 
 # ============================================================
-# SDL3 (extracted source under third_party/)
+# SDL3 (offline archive extracted into the build tree)
 # ============================================================
-# SDL3 is built from source for full control and debug symbols.
-# Source is downloaded by download_third_party.ps1 and extracted to
-# third_party/SDL-release-3.4.10/.
-set(_SDL3_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL-release-3.4.10)
-if(EXISTS ${_SDL3_SOURCE_DIR}/CMakeLists.txt)
-    set(SDL_SHARED ON CACHE BOOL "Build SDL as shared library" FORCE)
-    set(SDL_STATIC OFF CACHE BOOL "Don't build SDL static" FORCE)
-    set(SDL_TEST_LIBRARY OFF CACHE BOOL "Don't build SDL test lib" FORCE)
-    add_subdirectory(${_SDL3_SOURCE_DIR} ${CMAKE_BINARY_DIR}/SDL3-build EXCLUDE_FROM_ALL)
+# SDL3 is built from source for full control and debug symbols. Keep its
+# extracted sources in the build tree so a fresh engine checkout is usable
+# without a separate bootstrap step or untracked files in the repository.
+set(_SDL3_ARCHIVE ${_SNT_DOWNLOADS_DIR}/SDL3-release-3.4.10.zip)
+set(_SDL3_EXTRACT_ROOT ${CMAKE_BINARY_DIR}/_deps/snt_sdl3-src)
+set(_SDL3_SOURCE_DIR ${_SDL3_EXTRACT_ROOT}/SDL-release-3.4.10)
+if(NOT EXISTS ${_SDL3_SOURCE_DIR}/CMakeLists.txt)
+    if(NOT EXISTS ${_SDL3_ARCHIVE})
+        message(FATAL_ERROR
+            "SNT requires the offline SDL3 archive at ${_SDL3_ARCHIVE}. "
+            "Restore it from the repository before configuring.")
+    endif()
+
+    message(STATUS "SNT: extracting SDL3 source from offline archive")
+    file(MAKE_DIRECTORY ${_SDL3_EXTRACT_ROOT})
+    file(ARCHIVE_EXTRACT INPUT ${_SDL3_ARCHIVE} DESTINATION ${_SDL3_EXTRACT_ROOT})
 endif()
+
+set(SDL_SHARED ON CACHE BOOL "Build SDL as shared library" FORCE)
+set(SDL_STATIC OFF CACHE BOOL "Don't build SDL static" FORCE)
+set(SDL_TEST_LIBRARY OFF CACHE BOOL "Don't build SDL test lib" FORCE)
+add_subdirectory(${_SDL3_SOURCE_DIR} ${CMAKE_BINARY_DIR}/SDL3-build EXCLUDE_FROM_ALL)
 
 # ============================================================
 # AngelScript (gameplay scripting language, C++ syntax, JIT)
