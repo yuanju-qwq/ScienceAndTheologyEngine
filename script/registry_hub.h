@@ -105,6 +105,7 @@ public:
     // callback_id only after it has selected the current module for script_id.
     snt::core::Expected<void> add_event_listener(EventListener listener);
     std::vector<EventListener> event_listeners(std::string_view event_name) const;
+    std::vector<EventListener> event_listeners_for_script(ScriptId script_id) const;
 
     // StateStore survives reloads but is cleared when the engine session ends.
     // It is namespaced by ScriptId to prevent scripts from corrupting each

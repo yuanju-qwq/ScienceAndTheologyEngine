@@ -28,6 +28,7 @@
 #include "player/player_controller.h"
 #include "render/render_system.h"
 #include "scene/scene.h"          // load_scene for binary scene loading
+#include "script/script_manager.h"
 #include "render_backend/command_context.h"
 #include "render_backend/vulkan_buffer.h"        // P3: complete type for MSVC eager unique_ptr deleter instantiation
 #include "render_backend/vulkan_depth.h"
@@ -291,6 +292,10 @@ struct Engine::Impl {
     // event; CameraSystem subscribes and skips mouse-look when unlocked.
     bool mouse_locked = false;
 
+    // P7.1 ScriptManager is a process singleton. This flag records whether
+    // this Engine session initialized it and therefore owns its shutdown.
+    bool script_manager_started = false;
+
     // P2 Job System: real work-stealing thread pool. Installed as the
     // global default via set_default_job_system() in init() so any code
     // calling default_job_system() (ECS systems, future async asset
@@ -350,6 +355,36 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
                          log_path.c_str());
         } else {
             SNT_LOG_INFO("Logging to file: %s", log_path.c_str());
+        }
+    }
+
+    // --- P7.1 gameplay scripts ---
+    // ScriptManager owns AngelScript and consumes watcher changes on this
+    // same thread. A missing content root is valid for a content-free build.
+    if (config.scripts.enabled) {
+        auto& scripts = snt::script::ScriptManager::instance();
+        if (auto result = scripts.init(); !result) {
+            snt::core::Error error = result.error();
+            error.with_context("Engine::init(ScriptManager)");
+            return error;
+        }
+        impl_->script_manager_started = true;
+
+        const std::filesystem::path script_root(
+            snt::core::path_utils::resolve(config.scripts.root));
+        std::error_code ec;
+        if (std::filesystem::is_directory(script_root, ec) && !ec) {
+            const auto result = config.scripts.watch_for_changes
+                ? scripts.watch_directory(script_root)
+                : scripts.load_directory(script_root.string());
+            if (!result) {
+                snt::core::Error error = result.error();
+                error.with_context("Engine::init(gameplay scripts)");
+                return error;
+            }
+        } else {
+            SNT_LOG_INFO("P7 script root not present; no gameplay modules loaded: %s",
+                         script_root.string().c_str());
         }
     }
 
@@ -758,6 +793,14 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config) {
     return {};
 }
 
+snt::core::Expected<void> Engine::execute_command(std::string_view command) {
+    if (!impl_ || !impl_->script_manager_started) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "Gameplay script commands are not enabled"};
+    }
+    return snt::script::ScriptManager::instance().execute_command(command);
+}
+
 void Engine::run() {
     using namespace snt::render_backend;
 
@@ -805,6 +848,20 @@ void Engine::run() {
             impl_->performance_ui.toggle_visible();
             SNT_LOG_INFO("P6 performance UI %s",
                          impl_->performance_ui.visible() ? "opened" : "closed");
+        }
+
+        if (impl_->script_manager_started) {
+            if (input_state.key_pressed[SDL_SCANCODE_F5]) {
+                if (auto result = execute_command("/snt reload"); !result) {
+                    SNT_LOG_ERROR("/snt reload failed: %s", result.error().format().c_str());
+                } else {
+                    SNT_LOG_INFO("/snt reload completed");
+                }
+            }
+            // File changes are consumed on the frame thread before gameplay
+            // systems tick, so committed content is atomically visible to the
+            // next fixed simulation update.
+            snt::script::ScriptManager::instance().update(dt);
         }
 
         // --- P2.A2: mouse lock management (MC-style) ---
@@ -925,6 +982,11 @@ void Engine::shutdown() {
     // vk_device.wait_idle() already called at end of run(); call again
     // in case shutdown() is invoked without run() returning normally.
     impl_->vk_device.wait_idle();
+
+    if (impl_->script_manager_started) {
+        snt::script::ScriptManager::instance().shutdown();
+        impl_->script_manager_started = false;
+    }
 
     // Disconnect all event bus subscribers before subsystems are destroyed.
     // Without this, a late event publish could invoke a dangling method on

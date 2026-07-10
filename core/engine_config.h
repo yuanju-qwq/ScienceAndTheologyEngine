@@ -117,6 +117,18 @@ struct SceneConfig {
 };
 
 // ---------------------------------------------------------------------------
+// Gameplay script configuration
+// ---------------------------------------------------------------------------
+// P7.1 watches this root from the main thread. Missing roots are allowed so
+// a content-free engine build remains runnable; the engine logs that no
+// gameplay modules were loaded.
+struct ScriptConfig {
+    bool enabled = true;
+    bool watch_for_changes = true;
+    std::string root = "game/scripts";
+};
+
+// ---------------------------------------------------------------------------
 // Development/demo configuration
 // ---------------------------------------------------------------------------
 // Keeps verification content out of the core engine path. Production builds
@@ -137,6 +149,7 @@ struct EngineConfig {
     CameraConfig  camera;
     AssetConfig   assets;
     SceneConfig   scene;
+    ScriptConfig  scripts;
     DemoConfig    demo;
 };
 

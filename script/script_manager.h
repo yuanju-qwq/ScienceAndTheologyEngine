@@ -12,10 +12,13 @@
 
 #pragma once
 
+#include <filesystem>
+#include <memory>
 #include <string>
 #include <string_view>
 
 #include "core/expected.h"
+#include "script/file_watcher.h"
 #include "script/script_engine.h"
 #include "script/script_context.h"
 #include "script/script_loader.h"
@@ -36,6 +39,20 @@ public:
     // `dt` is the frame delta in seconds (currently unused, reserved
     // for future throttling of reload checks).
     void update(float dt);
+
+    // Load every gameplay module under `root`, then start the P7.1 file
+    // watcher. The watcher enqueues changes only; update() consumes them on
+    // the main thread and performs per-script transactions.
+    snt::core::Expected<void> watch_directory(const std::filesystem::path& root);
+
+    // Explicit reload entry point used by the command layer. It follows the
+    // same compile/register/commit or rollback flow as file changes.
+    snt::core::Expected<void> reload_all();
+
+    // P7.1 command boundary. Only `/snt reload` is accepted; future console,
+    // network-admin, and editor frontends call this rather than reaching into
+    // ScriptLoader directly.
+    snt::core::Expected<void> execute_command(std::string_view command);
 
     // Release the AS engine and all modules.
     void shutdown();
@@ -62,6 +79,9 @@ public:
     ScriptModule* get_module(std::string_view name) {
         return loader_.get_module(name);
     }
+    ScriptModule* get_module(ScriptId script_id) {
+        return loader_.get_module(script_id);
+    }
 
     ScriptEngine&       engine()  { return engine_; }
     ScriptContextPool&  contexts() { return contexts_; }
@@ -80,6 +100,8 @@ private:
     ScriptContextPool contexts_;
     ScriptLoader      loader_;
     RegistryHub       registry_hub_;
+    std::unique_ptr<FileWatcher> watcher_;
+    bool initialized_ = false;
 };
 
 }  // namespace snt::script

@@ -210,6 +210,20 @@ std::vector<EventListener> RegistryHub::event_listeners(std::string_view event_n
     return it == event_listeners_.end() ? std::vector<EventListener>{} : it->second;
 }
 
+std::vector<EventListener> RegistryHub::event_listeners_for_script(
+    ScriptId script_id) const {
+    std::vector<EventListener> listeners;
+    for (const auto& [event_name, entries] : event_listeners_) {
+        (void)event_name;
+        for (const auto& listener : entries) {
+            if (listener.script_id == script_id) {
+                listeners.push_back(listener);
+            }
+        }
+    }
+    return listeners;
+}
+
 snt::core::Expected<void> RegistryHub::set_state(ScriptId script_id,
                                                   std::string key,
                                                   std::string value) {

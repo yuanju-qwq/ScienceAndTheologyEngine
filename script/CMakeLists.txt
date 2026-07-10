@@ -13,6 +13,8 @@ add_library(snt_script STATIC
     script_module.cpp
     script_loader.cpp
     script_manager.cpp
+    file_watcher.cpp
+    script_api.cpp
     registry_hub.cpp
 )
 

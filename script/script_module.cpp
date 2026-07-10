@@ -11,6 +11,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <utility>
 
 #include "core/log.h"
 #include "core/error.h"
@@ -21,6 +22,20 @@ namespace snt::script {
 
 ScriptModule::~ScriptModule() {
     discard();
+}
+
+ScriptModule::ScriptModule(ScriptModule&& other) noexcept
+    : engine_(std::exchange(other.engine_, nullptr))
+    , module_(std::exchange(other.module_, nullptr)) {
+}
+
+ScriptModule& ScriptModule::operator=(ScriptModule&& other) noexcept {
+    if (this != &other) {
+        discard();
+        engine_ = std::exchange(other.engine_, nullptr);
+        module_ = std::exchange(other.module_, nullptr);
+    }
+    return *this;
 }
 
 // ---- Helper: read a .as file into a string ----
@@ -78,6 +93,13 @@ snt::core::Expected<void> ScriptModule::compile_source(asIScriptEngine* engine,
 
     r = builder.BuildModule();
     if (r < 0) {
+        // This module uses a unique candidate name during transactional
+        // reloads. Discard a failed candidate so diagnostics do not leave a
+        // dead module registered in AngelScript's module manager.
+        if (asIScriptModule* failed = engine->GetModule(
+                std::string(name).c_str(), asGM_ONLY_IF_EXISTS)) {
+            failed->Discard();
+        }
         // Compile errors are already routed to our Logger via the
         // message callback; here we only propagate the failure code.
         return snt::core::Error{
@@ -86,7 +108,7 @@ snt::core::Expected<void> ScriptModule::compile_source(asIScriptEngine* engine,
         };
     }
 
-    module_ = engine->GetModule(std::string(name).c_str());
+    module_ = engine->GetModule(std::string(name).c_str(), asGM_ONLY_IF_EXISTS);
     SNT_ASSERT_MSG(module_, "Module not found after successful build");
 
     SNT_LOG_DEBUG("ScriptModule '%.*s' compiled (%zu bytes)",

@@ -17,6 +17,7 @@
 #pragma once
 
 #include <memory>
+#include <string_view>
 
 #include "core/clock.h"         // IClock, TimePoint (time accessors)
 #include "core/engine_config.h"  // EngineConfig for init
@@ -61,6 +62,11 @@ public:
 
     // Release all resources. Idempotent.
     void shutdown();
+
+    // Engine command boundary for local console, editor, and server-admin
+    // frontends. P7.1 currently owns `/snt reload`; unsupported commands are
+    // rejected explicitly instead of reaching subsystems directly.
+    snt::core::Expected<void> execute_command(std::string_view command);
 
     // -----------------------------------------------------------------------
     // Time accessors.

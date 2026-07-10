@@ -34,6 +34,8 @@ public:
 
     ScriptModule(const ScriptModule&) = delete;
     ScriptModule& operator=(const ScriptModule&) = delete;
+    ScriptModule(ScriptModule&& other) noexcept;
+    ScriptModule& operator=(ScriptModule&& other) noexcept;
 
     // Read `path` (.as file), add it as a script section to a freshly
     // created module, and compile. On success, holds the module pointer.

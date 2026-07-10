@@ -51,7 +51,7 @@ private:
 }  // namespace
 
 TEST(ScriptLoaderTest, LoadFileAndGetModule) {
-    TempScriptFile f("loader_test_1", "void snt_entry() {}");
+    TempScriptFile f("loader_test_1", "void snt_register() {}");
 
     auto& sm = ScriptManager::instance();
     ASSERT_TRUE(sm.init());
@@ -59,14 +59,14 @@ TEST(ScriptLoaderTest, LoadFileAndGetModule) {
 
     auto* m = sm.get_module("loader_test_1");
     EXPECT_NE(m, nullptr);
-    EXPECT_TRUE(m->call_void(sm.contexts(), "void snt_entry()"));
+    EXPECT_TRUE(m->call_void(sm.contexts(), "void snt_register()"));
 
     sm.shutdown();
 }
 
-TEST(ScriptLoaderTest, HotReloadPicksUpChanges) {
+TEST(ScriptLoaderTest, ExplicitReloadPicksUpChanges) {
     TempScriptFile f("loader_test_2",
-        "void snt_entry() {}"
+        "void snt_register() {}"
         "int  version() { return 1; }");
 
     auto& sm = ScriptManager::instance();
@@ -82,11 +82,11 @@ TEST(ScriptLoaderTest, HotReloadPicksUpChanges) {
 
     // Rewrite the file with a new version number.
     f.write(
-        "void snt_entry() {}"
+        "void snt_register() {}"
         "int  version() { return 2; }");
 
-    // update() should detect the mtime change and recompile.
-    sm.update(0.016f);
+    // The engine command runs the same transaction path used by FileWatcher.
+    ASSERT_TRUE(sm.execute_command("/snt reload"));
 
     auto* m = sm.get_module("loader_test_2");
     ASSERT_NE(m, nullptr);

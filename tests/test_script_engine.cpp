@@ -135,11 +135,11 @@ TEST(ScriptManagerTest, InitLoadSourceCallShutdown) {
     ASSERT_TRUE(sm.init());
 
     // Load an inline script that does nothing.
-    ASSERT_TRUE(sm.load_source("hello", "void snt_entry() {}"));
+    ASSERT_TRUE(sm.load_source("hello", "void snt_register() {}"));
 
     auto* m = sm.get_module("hello");
     ASSERT_NE(m, nullptr);
-    EXPECT_TRUE(m->call_void(sm.contexts(), "void snt_entry()"));
+    EXPECT_TRUE(m->call_void(sm.contexts(), "void snt_register()"));
 
     sm.update(0.016f);  // should not crash
     sm.shutdown();

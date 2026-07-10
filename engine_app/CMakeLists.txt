@@ -68,9 +68,25 @@ add_custom_target(snt_copy_scenes ALL
 add_dependencies(snt_engine_app snt_copy_scenes)
 add_custom_command(TARGET snt_engine_app POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${SNT_GAME_CONTENT_ROOT}/game/scenes
-        $<TARGET_FILE_DIR:snt_engine_app>/game/scenes
+    ${SNT_GAME_CONTENT_ROOT}/game/scenes
+    $<TARGET_FILE_DIR:snt_engine_app>/game/scenes
     COMMENT "Copying game scenes next to executable"
+)
+
+# P7.1 gameplay AngelScript content. ScriptManager watches this directory at
+# runtime, so source scripts are intentionally copied as editable text.
+add_custom_target(snt_copy_scripts ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${SNT_GAME_CONTENT_ROOT}/game/scripts
+    ${CMAKE_BINARY_DIR}/bin/$<CONFIG>/game/scripts
+    COMMENT "Copying gameplay scripts to output directory"
+)
+add_dependencies(snt_engine_app snt_copy_scripts)
+add_custom_command(TARGET snt_engine_app POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${SNT_GAME_CONTENT_ROOT}/game/scripts
+    $<TARGET_FILE_DIR:snt_engine_app>/game/scripts
+    COMMENT "Copying gameplay scripts next to executable"
 )
 
 # Copy the test_assets/ directory (placeholder meshes for development).

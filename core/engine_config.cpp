@@ -97,6 +97,14 @@ void from_json(const json& j, SceneConfig& s) {
     read_optional(j, "path", s.path);
 }
 
+void from_json(const json& j, ScriptConfig& s) {
+    ScriptConfig def;
+    s = def;
+    read_optional(j, "enabled", s.enabled);
+    read_optional(j, "watch_for_changes", s.watch_for_changes);
+    read_optional(j, "root", s.root);
+}
+
 void from_json(const json& j, DemoConfig& d) {
     DemoConfig def;
     d = def;
@@ -113,6 +121,7 @@ void from_json(const json& j, EngineConfig& cfg) {
     if (j.contains("camera")) cfg.camera  = j["camera"].get<CameraConfig>();
     if (j.contains("assets")) cfg.assets  = j["assets"].get<AssetConfig>();
     if (j.contains("scene"))  cfg.scene   = j["scene"].get<SceneConfig>();
+    if (j.contains("scripts")) cfg.scripts = j["scripts"].get<ScriptConfig>();
     if (j.contains("demo"))   cfg.demo    = j["demo"].get<DemoConfig>();
 }
 
