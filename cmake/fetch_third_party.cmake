@@ -120,8 +120,9 @@ if(NOT TARGET tinyobjloader::tinyobjloader)
     add_library(tinyobjloader::tinyobjloader ALIAS tinyobjloader)
 endif()
 
-# ============================================================
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
+
+# ============================================================
 # Unicode image codecs for FreeType colour glyphs
 # ============================================================
 # CBDT/sbix colour emoji glyphs are PNG-compressed. These source snapshots

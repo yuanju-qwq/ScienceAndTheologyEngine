@@ -64,6 +64,7 @@ static bool one_time_submit(snt::render_backend::VulkanDevice& device,
     vkDestroyCommandPool(device.logical(), pool, nullptr);
     return ok;
 }
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
@@ -638,6 +639,7 @@ snt::core::Expected<void> MuiRenderer::synchronize_glyph_atlas(const UiDrawData&
                  static_cast<unsigned long long>(atlas.revision));
     return {};
 }
+
 void MuiRenderer::render(VkCommandBuffer cmd, const UiDrawData& draw_data) {
     if (draw_data.vertices.empty() || draw_data.indices.empty()) return;
 

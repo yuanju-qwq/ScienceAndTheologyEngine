@@ -100,6 +100,18 @@ TEST(RetainedMui, MixedBidiAndJoinedEmojiProduceGlyphs) {
     EXPECT_TRUE(layout.contains_emoji);
     EXPECT_FALSE(layout.glyphs.empty());
     EXPECT_GT(layout.size.x, 0.0f);
+
+    TextLayout visual_order = engine.shape("abc אבג", style);
+    std::vector<uint32_t> hebrew_clusters;
+    for (const TextCluster& cluster : visual_order.clusters) {
+        if (cluster.first_codepoint >= 0x05D0u && cluster.first_codepoint <= 0x05EAu) {
+            hebrew_clusters.push_back(cluster.first_codepoint);
+        }
+    }
+    ASSERT_EQ(hebrew_clusters.size(), 3u);
+    EXPECT_EQ(hebrew_clusters[0], 0x05D2u);
+    EXPECT_EQ(hebrew_clusters[1], 0x05D1u);
+    EXPECT_EQ(hebrew_clusters[2], 0x05D0u);
 }
 
 TEST(RetainedMui, ViewModelBindingUpdatesTextView) {

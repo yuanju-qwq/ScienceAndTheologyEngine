@@ -26,11 +26,6 @@ namespace snt::ui {
 
 namespace {
 
-bool is_rtl_codepoint(uint32_t cp) {
-    return (cp >= 0x0590u && cp <= 0x08FFu) ||
-           (cp >= 0xFB1Du && cp <= 0xFDFFu) ||
-           (cp >= 0xFE70u && cp <= 0xFEFFu);
-}
 
 bool is_cjk_codepoint(uint32_t cp) {
     return (cp >= 0x3400u && cp <= 0x4DBFu) ||
@@ -486,19 +481,7 @@ TextLayout UnicodeTextEngine::shape(std::string_view text, const TextStyle& styl
         return layout;
     }
 
-    UBiDiDirection bidi_direction = UBIDI_LTR;
-    if (!utf16.empty()) {
-        UErrorCode status = U_ZERO_ERROR;
-        UBiDi* bidi = ubidi_openSized(static_cast<int32_t>(utf16.size()), 0, &status);
-        if (bidi && U_SUCCESS(status)) {
-            ubidi_setPara(bidi, utf16.data(), static_cast<int32_t>(utf16.size()),
-                          UBIDI_DEFAULT_LTR, nullptr, &status);
-            if (U_SUCCESS(status)) bidi_direction = ubidi_getDirection(bidi);
-        }
-        if (bidi) ubidi_close(bidi);
-    }
-    layout.direction = bidi_direction == UBIDI_RTL
-        ? TextDirection::RightToLeft : TextDirection::LeftToRight;
+    layout.direction = TextDirection::LeftToRight;
 
     int32_t grapheme_count = 0;
     if (!utf16.empty()) {
@@ -523,10 +506,7 @@ TextLayout UnicodeTextEngine::shape(std::string_view text, const TextStyle& styl
     float max_width = 0.0f;
     float line_y = 0.0f;
     int32_t line_count = 1;
-    const hb_direction_t hb_direction = layout.direction == TextDirection::RightToLeft
-        ? HB_DIRECTION_RTL : HB_DIRECTION_LTR;
-
-    auto append_run = [&](std::string_view run, Impl::FontFace& face) {
+    auto append_run = [&](std::string_view run, Impl::FontFace& face, hb_direction_t direction) {
         if (run.empty()) return;
         if (FT_Set_Pixel_Sizes(face.face, 0, pixel_size) != 0) {
             SNT_LOG_ERROR("MUI failed to set pixel size=%u for font face=%u", pixel_size, face.index);
@@ -535,7 +515,7 @@ TextLayout UnicodeTextEngine::shape(std::string_view text, const TextStyle& styl
         hb_ft_font_changed(face.harfbuzz_font);
 
         hb_buffer_t* buffer = hb_buffer_create();
-        hb_buffer_set_direction(buffer, hb_direction);
+        hb_buffer_set_direction(buffer, direction);
         hb_buffer_add_utf8(buffer, run.data(), static_cast<int>(run.size()), 0,
                            static_cast<int>(run.size()));
         hb_buffer_guess_segment_properties(buffer);
@@ -548,12 +528,12 @@ TextLayout UnicodeTextEngine::shape(std::string_view text, const TextStyle& styl
         for (unsigned int i = 0; i < glyph_count; ++i) {
             run_width += std::abs(static_cast<float>(positions[i].x_advance) / 64.0f);
         }
-        float pen_x = line_width + (hb_direction == HB_DIRECTION_RTL ? run_width : 0.0f);
+        float pen_x = line_width + (direction == HB_DIRECTION_RTL ? run_width : 0.0f);
         for (unsigned int i = 0; i < glyph_count; ++i) {
             const float advance = static_cast<float>(positions[i].x_advance) / 64.0f;
             const float offset_x = static_cast<float>(positions[i].x_offset) / 64.0f;
             const float offset_y = static_cast<float>(positions[i].y_offset) / 64.0f;
-            if (hb_direction == HB_DIRECTION_RTL) pen_x += advance;
+            if (direction == HB_DIRECTION_RTL) pen_x += advance;
             const float glyph_origin_x = pen_x + offset_x;
 
             const size_t byte_offset = std::min<size_t>(infos[i].cluster, run.size());
@@ -587,50 +567,144 @@ TextLayout UnicodeTextEngine::shape(std::string_view text, const TextStyle& styl
                 glyph.color = raster->color;
                 layout.glyphs.push_back(glyph);
             }
-            if (hb_direction != HB_DIRECTION_RTL) pen_x += advance;
+            if (direction != HB_DIRECTION_RTL) pen_x += advance;
         }
         line_width += run_width;
         hb_buffer_destroy(buffer);
     };
 
-    size_t run_start = 0;
-    Impl::FontFace* run_face = nullptr;
-    for (size_t offset = 0; offset < text.size();) {
-        const size_t codepoint_start = offset;
-        const uint32_t codepoint = decode_utf8(text, offset);
-        if (codepoint == '\n') {
-            if (run_face) append_run(text.substr(run_start, codepoint_start - run_start), *run_face);
-            TextCluster newline;
-            newline.utf8 = "\n";
-            newline.first_codepoint = '\n';
-            layout.clusters.push_back(std::move(newline));
-            max_width = std::max(max_width, line_width);
-            line_width = 0.0f;
-            line_y += line_height;
-            ++line_count;
-            run_start = offset;
-            run_face = nullptr;
-            continue;
+    auto append_visual_run = [&](std::string_view run, hb_direction_t direction) {
+        struct FontRun {
+            std::string_view bytes;
+            Impl::FontFace* face = nullptr;
+        };
+        std::vector<FontRun> font_runs;
+        size_t run_start = 0;
+        Impl::FontFace* run_face = nullptr;
+        for (size_t offset = 0; offset < run.size();) {
+            const size_t codepoint_start = offset;
+            const uint32_t codepoint = decode_utf8(run, offset);
+            Impl::FontFace* face = (run_face && continues_font_run(codepoint))
+                ? run_face : impl_->font_for(codepoint);
+            if (!run_face) {
+                run_face = face;
+                run_start = codepoint_start;
+            } else if (face != run_face) {
+                font_runs.push_back({run.substr(run_start, codepoint_start - run_start), run_face});
+                run_face = face;
+                run_start = codepoint_start;
+            }
+        }
+        if (run_face) font_runs.push_back({run.substr(run_start), run_face});
+
+        if (direction == HB_DIRECTION_RTL) {
+            for (auto it = font_runs.rbegin(); it != font_runs.rend(); ++it) {
+                append_run(it->bytes, *it->face, direction);
+            }
+        } else {
+            for (const FontRun& font_run : font_runs) {
+                append_run(font_run.bytes, *font_run.face, direction);
+            }
+        }
+    };
+
+    auto append_bidi_line = [&](std::string_view line, bool first_line) {
+        if (line.empty()) return;
+        const auto line_utf16 = utf16_from_utf8(line);
+        if (line_utf16.empty()) {
+            SNT_LOG_ERROR("MUI line contains invalid UTF-8; refusing to shape it");
+            return;
         }
 
-        Impl::FontFace* face = (run_face && continues_font_run(codepoint))
-            ? run_face : impl_->font_for(codepoint);
-        if (!run_face) {
-            run_face = face;
-            run_start = codepoint_start;
-        } else if (face != run_face) {
-            append_run(text.substr(run_start, codepoint_start - run_start), *run_face);
-            run_face = face;
-            run_start = codepoint_start;
+        std::vector<size_t> byte_offsets(line_utf16.size() + 1u, line.size());
+        size_t byte_offset = 0;
+        int32_t utf16_offset = 0;
+        byte_offsets[0] = 0;
+        while (byte_offset < line.size() && utf16_offset < static_cast<int32_t>(line_utf16.size())) {
+            const size_t codepoint_start = byte_offset;
+            const uint32_t codepoint = decode_utf8(line, byte_offset);
+            const int32_t units = codepoint > 0xFFFFu ? 2 : 1;
+            for (int32_t unit = 0; unit < units && utf16_offset + unit < static_cast<int32_t>(byte_offsets.size()); ++unit) {
+                byte_offsets[utf16_offset + unit] = codepoint_start;
+            }
+            utf16_offset += units;
+            if (utf16_offset < static_cast<int32_t>(byte_offsets.size())) {
+                byte_offsets[utf16_offset] = byte_offset;
+            }
         }
+
+        UErrorCode status = U_ZERO_ERROR;
+        UBiDi* bidi = ubidi_openSized(static_cast<int32_t>(line_utf16.size()), 0, &status);
+        if (!bidi || U_FAILURE(status)) {
+            if (bidi) ubidi_close(bidi);
+            SNT_LOG_ERROR("MUI failed to allocate ICU BiDi state: %d", status);
+            return;
+        }
+        ubidi_setPara(bidi, line_utf16.data(), static_cast<int32_t>(line_utf16.size()),
+                      UBIDI_DEFAULT_LTR, nullptr, &status);
+        if (U_FAILURE(status)) {
+            SNT_LOG_ERROR("MUI ICU BiDi analysis failed: %d", status);
+            ubidi_close(bidi);
+            return;
+        }
+        if (first_line && ubidi_getDirection(bidi) == UBIDI_RTL) {
+            layout.direction = TextDirection::RightToLeft;
+        }
+
+        const int32_t visual_run_count = ubidi_countRuns(bidi, &status);
+        if (U_FAILURE(status)) {
+            SNT_LOG_ERROR("MUI ICU BiDi visual-run analysis failed: %d", status);
+            ubidi_close(bidi);
+            return;
+        }
+        for (int32_t visual_index = 0; visual_index < visual_run_count; ++visual_index) {
+            int32_t logical_start = 0;
+            int32_t length = 0;
+            const UBiDiDirection direction = ubidi_getVisualRun(
+                bidi, visual_index, &logical_start, &length);
+            const int32_t logical_end = logical_start + length;
+            if (logical_start < 0 || logical_end < logical_start ||
+                logical_end >= static_cast<int32_t>(byte_offsets.size())) {
+                SNT_LOG_ERROR("MUI ICU BiDi returned an invalid visual run");
+                continue;
+            }
+            const size_t start_byte = byte_offsets[logical_start];
+            const size_t end_byte = byte_offsets[logical_end];
+            if (end_byte > start_byte) {
+                append_visual_run(line.substr(start_byte, end_byte - start_byte),
+                                  direction == UBIDI_RTL ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
+            }
+        }
+        ubidi_close(bidi);
+    };
+
+    size_t line_start = 0;
+    bool first_line = true;
+    while (line_start <= text.size()) {
+        const size_t line_end = text.find('\n', line_start);
+        const size_t line_length = line_end == std::string_view::npos
+            ? text.size() - line_start : line_end - line_start;
+        append_bidi_line(text.substr(line_start, line_length), first_line);
+        first_line = false;
+        max_width = std::max(max_width, line_width);
+        if (line_end == std::string_view::npos) break;
+
+        TextCluster newline;
+        newline.utf8 = "\n";
+        newline.first_codepoint = '\n';
+        layout.clusters.push_back(std::move(newline));
+        line_width = 0.0f;
+        line_y += line_height;
+        ++line_count;
+        line_start = line_end + 1u;
     }
-    if (run_face) append_run(text.substr(run_start), *run_face);
-
     max_width = std::max(max_width, line_width);
     layout.size = {max_width, line_height * static_cast<float>(line_count)};
     (void)grapheme_count;  // Break iteration validates the full Unicode path.
     return layout;
-}void ViewModel::set(std::string key, BindingValue value) {
+}
+
+void ViewModel::set(std::string key, BindingValue value) {
     const std::string stable_key = key;
     values_[std::move(key)] = value;
     auto it = observers_.find(stable_key);
