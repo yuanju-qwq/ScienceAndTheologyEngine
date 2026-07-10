@@ -23,6 +23,7 @@
 #include "ecs/entity_guid.h"
 #include "ecs/event_bus.h"        // EventBus = entt::dispatcher
 #include "ecs/world.h"
+#include "gameplay/machine_tick_system.h"
 #include "input/input_system.h"
 #include "platform/window.h"
 #include "player/player_controller.h"
@@ -374,6 +375,12 @@ snt::core::Expected<void> Engine::init(const snt::core::EngineConfig& config,
             return error;
         }
         impl_->script_manager_started = true;
+
+        // P7.2 machine logic consumes RegistryHub value snapshots only. It
+        // is registered after ScriptManager init so its reference is valid
+        // for this Engine session, and world updates run after script file
+        // changes are committed at the top of each frame.
+        impl_->world.add_system<snt::gameplay::MachineTickSystem>(scripts.registries());
 
         const std::filesystem::path script_root(
             snt::core::path_utils::resolve_game(config.scripts.root));

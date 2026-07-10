@@ -23,6 +23,7 @@ add_executable(snt_tests
     test_script_loader.cpp
     test_registry_hub.cpp       # P7: script-owned content + transactional reload
     test_p7_reload.cpp          # P7.1: watcher, bindings, transactional reload
+    test_machine_tick_system.cpp # P7.2: deterministic machine recipe snapshots
     test_entity_guid.cpp       # Phase 1: EntityGuid + World mapping
     test_asset_manifest.cpp    # Phase 2: asset manifest + pre-allocated handles
     test_binary_io.cpp         # Phase 3: BinaryWriter/Reader + Serializer<T>
@@ -44,6 +45,7 @@ target_link_libraries(snt_tests PRIVATE
     snt_assets
     snt_ui
     snt_script
+    snt_gameplay
     snt_engine_settings
     snt_third_party
     snt_scene                  # Phase 4: scene module under test

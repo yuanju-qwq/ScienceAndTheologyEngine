@@ -75,6 +75,7 @@ add_subdirectory(renderer)
 add_subdirectory(ecs)
 add_subdirectory(render)
 add_subdirectory(script)        # NEW: AngelScript integration (depends on core)
+add_subdirectory(gameplay)      # P7.2: deterministic content execution systems
 add_subdirectory(scene)         # NEW: binary scene serialization (depends on ecs + assets)
 add_subdirectory(ui)
 add_subdirectory(voxel)         # P3: voxel meshing + chunk renderer

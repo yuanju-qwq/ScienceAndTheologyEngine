@@ -27,4 +27,5 @@ target_link_libraries(snt_engine PUBLIC
     snt_data_world         # P3: ChunkRegistry
     snt_data_worldgen      # P3: TerrainGenerator (test chunk at origin)
     snt_script             # P7.1: AngelScript gameplay content + reload boundary
+    snt_gameplay           # P7.2: deterministic machine tick system
 )
