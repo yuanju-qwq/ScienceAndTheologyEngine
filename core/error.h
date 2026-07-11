@@ -19,7 +19,7 @@
 //   }
 //
 //   // Wrapping with context at a higher level:
-//   Expected<void> Engine::init() {
+//   Expected<void> Runtime::init() {
 //       auto dev = vk_device.init(...);
 //       if (!dev) return dev.error().with_context("VulkanDevice init");
 //       ...
@@ -110,7 +110,7 @@ public:
 
     // Wrap this error with a higher-level context string. The original
     // message is preserved; `context_` accumulates a call-chain like
-    // "Engine::init -> VulkanDevice::init -> vkCreateDevice".
+    // "Runtime::init -> VulkanDevice::init -> vkCreateDevice".
     // Returns *this so callers can write `return err.with_context("...");`.
     Error& with_context(std::string_view ctx) {
         if (!context_.empty()) {

@@ -15,7 +15,7 @@
 //      their init.
 //   3. Producers call bus.enqueue<Event>({...}) then bus.update() to
 //      dispatch.
-//   4. Engine::shutdown calls bus.clear() before subsystems are destroyed
+//   4. Runtime::shutdown calls bus.clear() before subsystems are destroyed
 //      so dangling subscriber callbacks never fire.
 //
 // Header-only. Include from anywhere; pulls entt via ecs/entt_config.h

@@ -11,7 +11,7 @@
 //     gameplay decisions (steady_clock semantics). Wall-clock is only used
 //     for log timestamps, which keep using system_clock internally.
 //   - Cheap: virtual call per frame is negligible; systems that read time
-//     every frame (Engine::run) cache `now()` once per frame.
+//     every frame (Runtime::run) cache `now()` once per frame.
 //
 // Usage:
 //   // Production:

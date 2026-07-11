@@ -45,7 +45,7 @@ public:
 
     // Create descriptor set layout + pool + sets + dynamic UBO buffers.
     // `max_entities` controls the dynamic UBO slot count (one MVP per
-    // entity); sourced from EngineConfig::RenderConfig::max_entities.
+    // entity); sourced from RuntimeConfig::RenderConfig::max_entities.
     // Returns void on success, or an Error describing the failure.
     snt::core::Expected<void> init(VulkanDevice& device, uint32_t max_entities);
     snt::core::Expected<void> init_with_texture(VulkanDevice& device,

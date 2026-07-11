@@ -103,7 +103,7 @@ void RenderSystem::destroy_render_graph() {
         graph_initialized_ = false;
     }
     // P2.F: MeshCache is now owned by AssetManager; released via
-    // AssetManager::shutdown() called from Engine::shutdown().
+    // AssetManager::shutdown() is called from Runtime::shutdown().
 }
 
 void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {

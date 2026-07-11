@@ -14,7 +14,7 @@ endif()
 # module executables adds CMake boilerplate without value at this scale.
 add_executable(snt_tests
     test_main.cpp              # GoogleTest main entry (no TEST()s here)
-    test_engine_config.cpp
+    test_runtime_config.cpp
     test_clock.cpp
     test_path_utils.cpp
     test_asset_cache.cpp

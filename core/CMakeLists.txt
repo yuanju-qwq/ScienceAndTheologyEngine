@@ -33,7 +33,7 @@ add_library(snt_core STATIC
     job_system.cpp
     log.cpp
     memory_tracker.cpp
-    engine_config.cpp
+    runtime_config.cpp
     path_utils.cpp
     uuid.cpp
 )

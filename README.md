@@ -53,13 +53,13 @@ add_subdirectory(snt_engine)
 add_subdirectory(game)
 ```
 
-宿主链接 `snt_engine`，并用显式的 `snt::core::RuntimePaths` 初始化它：
+宿主链接 `snt_engine`，并用显式的 `snt::core::RuntimePaths`、`RuntimeConfig` 和游戏实现的 `IGameSession` 初始化 `snt::engine::Runtime`：
 
 - `engine_root`：着色器和 ICU 数据等已打包的引擎资源。
 - `game_root`：游戏拥有的配置、场景、脚本和资产。
 - `user_root`：可写的日志、存档和缓存目录。
 
-引擎绝不会从当前工作目录、父目录或子模块名称推断这些路径。可执行程序生命周期和运行时包组装始终属于游戏宿主。
+典型调用为 `runtime.init(runtime_config, paths, std::make_unique<GameSession>())`，随后调用 `run` 与 `shutdown`。Runtime 绝不会从当前工作目录、父目录或子模块名称推断这些路径；场景、脚本、玩家、玩法 UI 和内容注册始终属于游戏会话。
 
 ## 许可证
 

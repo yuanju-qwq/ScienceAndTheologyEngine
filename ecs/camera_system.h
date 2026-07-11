@@ -44,7 +44,7 @@ public:
     // Set the entity to use as the active camera.
     void set_active_camera(entt::entity e) { active_camera_ = e; }
 
-    // Tunable parameters (mirror EngineConfig::CameraConfig fields).
+    // Tunable parameters supplied by the game session configuration.
     void set_move_speed(float s) { move_speed_ = s; }
     void set_look_speed(float s) { look_speed_ = s; }
 

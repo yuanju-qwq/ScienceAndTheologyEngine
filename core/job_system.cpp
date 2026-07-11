@@ -4,7 +4,7 @@
 //   - JobSystem:        P1 serial stub, kept for reference / fallback.
 //   - JobSystemP2:      P2 real thread pool with per-worker deques,
 //                        work-stealing, dependency tracking and graceful
-//                        shutdown. Engine::init() installs a JobSystemP2
+//                        shutdown. Runtime::init() installs a JobSystemP2
 //                        as the default via set_default_job_system().
 
 #include "job_system.h"
@@ -41,7 +41,7 @@ void JobHandle::wait() const {
     // is not thread-safe.
     //
     // We identify the main thread as "any thread that is NOT one of the
-    // JobSystemP2 worker threads". This covers Engine::run() and any test
+    // JobSystemP2 worker threads". This covers Runtime::run() and any test
     // thread that calls wait() directly.
     JobSystemP2* p2 = dynamic_cast<JobSystemP2*>(&default_job_system());
 

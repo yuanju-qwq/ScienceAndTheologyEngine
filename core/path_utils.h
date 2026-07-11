@@ -1,7 +1,7 @@
 // Runtime path contract shared by the engine and its host application.
 //
 // The engine never discovers a parent repository or assumes a directory name.
-// A host supplies the three roots once during Engine::init:
+// A host supplies the three roots once during Runtime::init:
 //   - engine_root: engine-owned packaged resources (shaders, ICU data, ...)
 //   - game_root: game-owned content (config, scenes, scripts, assets, ...)
 //   - user_root: writable per-install data (logs, saves, caches, ...)

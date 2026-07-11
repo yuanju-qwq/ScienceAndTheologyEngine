@@ -21,7 +21,7 @@
 //   SNT_LOG_INFO("GPU: %s (score %d)", name, score);
 //   SNT_LOG_ERROR("vkCreateDevice failed: %d", res);
 //
-//   // In Engine::init() (once, before any logging):
+//   // In Runtime::init() (once, before any logging):
 //   snt::core::Logger::instance().set_level(LogLevel::kInfo);
 
 #pragma once
@@ -52,7 +52,7 @@ enum class LogLevel : int {
 //
 // File sink: add_file_sink(path) opens an additional sink that receives
 // the same log lines (without ANSI color codes, so the file is greppable).
-// Engine::init calls this to mirror logs to logs/engine.log. If the file
+// Runtime::init calls this to mirror logs to logs/engine.log. If the file
 // can't be opened, the stderr sink still works — logging is best-effort.
 class Logger {
 public:

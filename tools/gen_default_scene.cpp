@@ -1,5 +1,5 @@
 // gen_default_scene: standalone tool that generates the default binary
-// scene file (scenes/default_scene.bin) consumed by Engine::init.
+// scene file (scenes/default_scene.bin) consumed by the game session.
 //
 // Why a separate tool:
 //   - The scene file is "data" — it should be generated once and checked
@@ -14,7 +14,7 @@
 //   gen_default_scene [output_path]
 //   Default output_path = "scenes/default_scene.bin" (relative to CWD).
 //
-// Scene contents (matches the previous hardcoded Engine::init demo):
+// Scene contents match the ScienceAndTheology session bootstrap.
 //   - Camera entity (Guid=1): position [0,0,3], fov 60, near 0.1, far 100
 //   - Cube entity  (Guid=2): position [-1.5,0,0], rotation [-25,35,0]
 //   - Cube entity2 (Guid=3): position [1.5,0,0],  rotation [-25,-35,0]
