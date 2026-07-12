@@ -52,12 +52,15 @@ namespace snt::voxel {
 
 class ChunkRenderSystem : public snt::ecs::System {
 public:
-    ChunkRenderSystem() = default;
+    // The Runtime-owned pool is required: remesh work must never silently
+    // fall back to process-global scheduler state.
+    explicit ChunkRenderSystem(snt::core::JobSystem& job_system)
+        : job_system_(job_system) {}
     ~ChunkRenderSystem() override = default;
 
-    // Wire up dependencies. All pointers are borrowed and must outlive the
-    // system. ChunkRenderer is required for both update + render; the
-    // ChunkRegistry is required for update (to fetch ChunkData).
+    // Wire up borrowed dependencies. They and the constructor-supplied
+    // JobSystem must outlive the system. ChunkRenderer is required for both
+    // update + render; ChunkRegistry is required for update (to fetch data).
     void set_chunk_renderer(ChunkRenderer* r) { renderer_ = r; }
     void set_chunk_registry(snt::data::ChunkRegistry* r) { registry_ = r; }
 
@@ -120,6 +123,7 @@ private:
     void upload_ready_remeshes();
     void upload_remesh_result(RemeshResult&& result);
 
+    snt::core::JobSystem&       job_system_;
     ChunkRenderer*              renderer_      = nullptr;
     snt::data::ChunkRegistry*   registry_      = nullptr;
 

@@ -2,6 +2,7 @@
 
 #define SNT_LOG_CHANNEL "voxel"
 #include "core/log.h"
+#include "core/path_utils.h"
 
 #include "voxel/chunk_renderer.h"
 
@@ -227,13 +228,14 @@ snt::core::Expected<void> copy_buffer_to_image_now(
 
 snt::core::Expected<void> create_material_atlas_texture(
         snt::render_backend::VulkanDevice& device,
+        const snt::core::RuntimePathResolver& paths,
         VkCommandPool command_pool,
         VkImage& image,
         VmaAllocation& allocation,
         VkImageView& view,
         VkSampler& sampler) {
     snt::assets::TextureCache texture_cache;
-    auto atlas_r = snt::assets::build_default_voxel_material_atlas(texture_cache);
+    auto atlas_r = snt::assets::build_default_voxel_material_atlas(texture_cache, paths);
     if (!atlas_r) {
         return atlas_r.error().with_context("ChunkRenderer::create_material_atlas_texture");
     }
@@ -322,6 +324,7 @@ ChunkRenderer::~ChunkRenderer() {
 
 snt::core::Expected<void> ChunkRenderer::init(
         snt::render_backend::VulkanDevice& device,
+        const snt::core::RuntimePathResolver& paths,
         VkFormat color_format,
         VkFormat depth_format,
         const std::string& vert_spv_path,
@@ -347,7 +350,7 @@ snt::core::Expected<void> ChunkRenderer::init(
     }
 
     VmaAllocation atlas_alloc = VK_NULL_HANDLE;
-    if (auto r = create_material_atlas_texture(device, upload_command_pool_,
+    if (auto r = create_material_atlas_texture(device, paths, upload_command_pool_,
                                                atlas_image_, atlas_alloc,
                                                atlas_view_, atlas_sampler_); !r) {
         return r;

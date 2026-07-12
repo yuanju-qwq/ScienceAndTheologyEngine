@@ -44,7 +44,7 @@ public:
     virtual std::vector<FileChange> drain_changes() = 0;
 };
 
-// P7.1 default implementation. It snapshots the watched tree when started,
+// Default implementation. It snapshots the watched tree when started,
 // then compares timestamps and sizes when the main thread drains changes.
 // A polling implementation is deliberately used until native notifications
 // are required; its queue contract stays identical across future backends.

@@ -6,13 +6,16 @@
 
 #include "core/error.h"
 #include "core/log.h"
-#include "script/script_api.h"
 
 namespace snt::script {
 
-ScriptManager& ScriptManager::instance() {
-    static ScriptManager inst;
-    return inst;
+snt::core::Expected<void> ScriptManager::set_content_host(IScriptContentHost& content_host) {
+    if (initialized_) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "ScriptManager content host cannot change after init"};
+    }
+    content_host_ = &content_host;
+    return {};
 }
 
 snt::core::Expected<void> ScriptManager::init() {
@@ -20,15 +23,20 @@ snt::core::Expected<void> ScriptManager::init() {
         return snt::core::Error{snt::core::ErrorCode::kInvalidState,
                                 "ScriptManager is already initialized"};
     }
+    if (!content_host_) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "ScriptManager requires an IScriptContentHost before init"};
+    }
     SNT_LOG_INFO("Initializing ScriptManager...");
 
-    registry_hub_.reset();
+    content_host_->reset();
     const auto fail = [this](snt::core::Error error) -> snt::core::Expected<void> {
         loader_.set_runtime(nullptr, nullptr, nullptr);
         watcher_.reset();
         contexts_.shutdown();
         engine_.shutdown();
-        registry_hub_.reset();
+        if (content_host_) content_host_->reset();
+        content_host_ = nullptr;
         return error;
     };
 
@@ -45,10 +53,10 @@ snt::core::Expected<void> ScriptManager::init() {
         error.with_context("ScriptManager::init(core types)");
         return fail(std::move(error));
     }
-    r = register_gameplay_script_api(engine_.raw());
+    r = content_host_->register_script_api(engine_.raw());
     if (!r) {
         snt::core::Error error = r.error();
-        error.with_context("ScriptManager::init(gameplay API)");
+        error.with_context("ScriptManager::init(content host API)");
         return fail(std::move(error));
     }
 
@@ -59,7 +67,7 @@ snt::core::Expected<void> ScriptManager::init() {
         return fail(std::move(error));
     }
 
-    loader_.set_runtime(engine_.raw(), &contexts_, &registry_hub_);
+    loader_.set_runtime(engine_.raw(), &contexts_, content_host_);
     watcher_ = create_polling_file_watcher();
     if (!watcher_) {
         return fail(snt::core::Error{snt::core::ErrorCode::kScriptEngineInitFailed,
@@ -84,7 +92,7 @@ void ScriptManager::update(float /*dt*/) {
                 : loader_.reload_file(change.path);
             if (!result) {
                 ++failed;
-                SNT_LOG_ERROR("P7 script change rejected for %s: %s",
+                SNT_LOG_ERROR("Script content change rejected for %s: %s",
                               change.path.string().c_str(), result.error().format().c_str());
             } else {
                 ++applied;
@@ -124,31 +132,20 @@ snt::core::Expected<void> ScriptManager::reload_all() {
     return loader_.reload_all();
 }
 
-snt::core::Expected<void> ScriptManager::execute_command(std::string_view command) {
-    const size_t begin = command.find_first_not_of(" \t\r\n");
-    if (begin == std::string_view::npos) {
-        return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
-                                "Empty engine command"};
-    }
-    const size_t end = command.find_last_not_of(" \t\r\n");
-    const std::string_view normalized = command.substr(begin, end - begin + 1);
-    if (normalized != "/snt reload") {
-        return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
-                                "Unknown script command: " + std::string(normalized)};
-    }
-    return reload_all();
-}
-
 void ScriptManager::shutdown() {
-    if (!initialized_) return;
+    if (!initialized_) {
+        content_host_ = nullptr;
+        return;
+    }
     SNT_LOG_INFO("Shutting down ScriptManager...");
     if (watcher_) watcher_->stop();
     loader_.unload_all();
-    registry_hub_.reset();
+    if (content_host_) content_host_->reset();
     contexts_.shutdown();
     engine_.shutdown();
     loader_.set_runtime(nullptr, nullptr, nullptr);
     watcher_.reset();
+    content_host_ = nullptr;
     initialized_ = false;
     SNT_LOG_INFO("ScriptManager shut down");
 }

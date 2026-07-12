@@ -28,6 +28,7 @@ class VulkanPipeline;
 class VulkanDescriptor;
 class VertexBufferPool;
 }
+namespace snt::core { class RuntimePathResolver; }
 
 namespace snt::voxel {
 
@@ -61,8 +62,10 @@ public:
 
     // Create the voxel pipeline + chunk descriptor + buffer pool.
     // `max_chunks` caps the per-frame UBO slot count (one MVP per chunk).
-    // `vert_spv_path` / `frag_spv_path` are the voxel shader SPIR-V files.
+    // `paths` is borrowed only during init to resolve the game-owned default
+    // material atlas. `vert_spv_path` / `frag_spv_path` are voxel shader SPIR-V.
     snt::core::Expected<void> init(snt::render_backend::VulkanDevice& device,
+                                   const snt::core::RuntimePathResolver& paths,
                                    VkFormat color_format,
                                    VkFormat depth_format,
                                    const std::string& vert_spv_path,

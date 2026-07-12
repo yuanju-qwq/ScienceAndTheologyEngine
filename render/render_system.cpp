@@ -109,7 +109,7 @@ void RenderSystem::destroy_render_graph() {
 void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
     SNT_PROFILE_FUNCTION();  // Profiling zone (no-op until a backend is wired in)
     if (!device_ || !swapchain_ || !depth_ || !pipeline_ ||
-        !descriptor_ || !frame_ || !graph_initialized_) {
+        !descriptor_ || !frame_ || !assets_ || !graph_initialized_) {
         return;
     }
     if (active_camera_ == entt::null) return;
@@ -158,7 +158,7 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
         auto& mesh_ref  = registry.get<snt::ecs::MeshRef>(e);
 
         // Resolve the mesh handle to a VulkanMesh via the AssetManager.
-        auto* mesh = snt::assets::AssetManager::instance().mesh_cache().get(mesh_ref.handle.id);
+        auto* mesh = assets_->mesh_cache().get(mesh_ref.handle.id);
         if (!mesh) {
             SNT_LOG_ERROR("entity %u: invalid mesh handle",
                           static_cast<unsigned>(e));

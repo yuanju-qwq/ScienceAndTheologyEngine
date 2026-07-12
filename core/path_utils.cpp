@@ -9,10 +9,6 @@
 
 namespace snt::core::path_utils {
 namespace {
-
-RuntimePaths g_runtime_paths;
-bool g_configured = false;
-
 Expected<std::string> normalize_root(std::string_view raw_path, const char* label) {
     if (raw_path.empty()) {
         return Error{ErrorCode::kInvalidArgument,
@@ -38,7 +34,16 @@ std::string resolve_from(std::string_view root, std::string_view relative_path) 
 
 }  // namespace
 
-Expected<void> configure(RuntimePaths paths) {
+}  // namespace snt::core::path_utils
+
+namespace snt::core {
+
+RuntimePathResolver::RuntimePathResolver(RuntimePaths paths)
+    : paths_(std::move(paths)) {}
+
+Expected<RuntimePathResolver> RuntimePathResolver::create(RuntimePaths paths) {
+    using namespace path_utils;
+
     auto engine_root = normalize_root(paths.engine_root, "engine_root");
     if (!engine_root) return engine_root.error();
     auto game_root = normalize_root(paths.game_root, "game_root");
@@ -46,39 +51,38 @@ Expected<void> configure(RuntimePaths paths) {
     auto user_root = normalize_root(paths.user_root, "user_root");
     if (!user_root) return user_root.error();
 
-    g_runtime_paths = {
+    RuntimePaths normalized_paths{
         .engine_root = std::move(*engine_root),
         .game_root = std::move(*game_root),
         .user_root = std::move(*user_root),
     };
-    g_configured = true;
 
-    SNT_LOG_INFO("Runtime paths configured: engine='%s', game='%s', user='%s'",
-                 g_runtime_paths.engine_root.c_str(),
-                 g_runtime_paths.game_root.c_str(),
-                 g_runtime_paths.user_root.c_str());
-    return {};
+    SNT_LOG_INFO("Runtime path resolver created: engine='%s', game='%s', user='%s'",
+                 normalized_paths.engine_root.c_str(),
+                 normalized_paths.game_root.c_str(),
+                 normalized_paths.user_root.c_str());
+    return RuntimePathResolver(std::move(normalized_paths));
 }
 
-bool configured() {
-    return g_configured;
+const RuntimePaths& RuntimePathResolver::roots() const noexcept {
+    return paths_;
 }
 
-const RuntimePaths& runtime_paths() {
-    return g_runtime_paths;
+std::string RuntimePathResolver::resolve_engine(std::string_view relative_path) const {
+    return path_utils::resolve_from(paths_.engine_root, relative_path);
 }
 
-std::string resolve_engine(std::string_view relative_path) {
-    return resolve_from(g_runtime_paths.engine_root, relative_path);
+std::string RuntimePathResolver::resolve_game(std::string_view relative_path) const {
+    return path_utils::resolve_from(paths_.game_root, relative_path);
 }
 
-std::string resolve_game(std::string_view relative_path) {
-    return resolve_from(g_runtime_paths.game_root, relative_path);
+std::string RuntimePathResolver::resolve_user(std::string_view relative_path) const {
+    return path_utils::resolve_from(paths_.user_root, relative_path);
 }
 
-std::string resolve_user(std::string_view relative_path) {
-    return resolve_from(g_runtime_paths.user_root, relative_path);
-}
+}  // namespace snt::core
+
+namespace snt::core::path_utils {
 
 std::string join(std::string_view a, std::string_view b) {
     if (a.empty()) return std::string(b);

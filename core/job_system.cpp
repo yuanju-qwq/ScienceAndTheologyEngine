@@ -4,8 +4,8 @@
 //   - JobSystem:        P1 serial stub, kept for reference / fallback.
 //   - JobSystemP2:      P2 real thread pool with per-worker deques,
 //                        work-stealing, dependency tracking and graceful
-//                        shutdown. Runtime::init() installs a JobSystemP2
-//                        as the default via set_default_job_system().
+//                        shutdown. Runtime owns and injects this instance
+//                        into every system that submits work.
 
 #include "job_system.h"
 
@@ -15,10 +15,6 @@
 #include <thread>
 
 namespace snt::core {
-
-// Pointer installed by set_default_job_system(); nullptr = use built-in.
-// Written once at engine init, read by every default_job_system() call.
-static JobSystem* g_default_override = nullptr;
 
 // A worker can execute nested jobs while waiting on a child handle. The
 // handle uses this ownership marker to distinguish its pool from unrelated
@@ -451,30 +447,6 @@ void JobSystemP2::on_counter_zero(JobHandle::Counter* c) {
     }
     c->cv.notify_all();
     global_cv_.notify_all();
-}
-
-// ---------------------------------------------------------------------------
-// Global default instance + override
-// ---------------------------------------------------------------------------
-
-JobSystem& default_job_system() {
-    // Built-in fallback: a P1 stub, lazily initialized. Only used if
-    // nobody has called set_default_job_system() (e.g. in unit tests
-    // that don't construct a JobSystemP2).
-    static JobSystem fallback;
-    static bool initialized = false;
-    if (!initialized) {
-        fallback.init();
-        initialized = true;
-    }
-    if (g_default_override != nullptr) {
-        return *g_default_override;
-    }
-    return fallback;
-}
-
-void set_default_job_system(JobSystem* new_default) {
-    g_default_override = new_default;
 }
 
 }  // namespace snt::core

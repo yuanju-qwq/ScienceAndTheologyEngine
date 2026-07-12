@@ -1,7 +1,7 @@
 // Unit tests for the P2 Job System (work-stealing thread pool).
 //
-// These tests install a fresh JobSystemP2 per fixture so they don't
-// interfere with the global default_job_system() used by engine code.
+// These tests install a fresh JobSystemP2 per fixture so each test owns its
+// complete scheduling lifetime without depending on engine runtime state.
 // Each test:
 //   1. Constructs a JobSystemP2 on the test thread (so the test thread
 //      is treated as the "main thread" for wait() dispatch).

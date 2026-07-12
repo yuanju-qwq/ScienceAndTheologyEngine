@@ -76,8 +76,8 @@ private:
         // of relying on the process-wide default job system.
         JobSystemP2* owner = nullptr;
         // P2 fields below are unused by the P1 stub; they live here so the
-        // Counter layout is identical across implementations (avoids ABI
-        // friction when default_job_system() swaps P1 <-> P2 at runtime).
+        // Counter layout and handle semantics stay uniform across the serial
+        // and threaded implementations.
         std::mutex mtx;
         std::condition_variable cv;
         std::vector<Job*> waiters;  // raw pointers; owned by JobSystem
@@ -271,16 +271,6 @@ private:
 
     int32_t worker_count_ = 0;
 };
-
-// Global default job system instance (defined in job_system.cpp).
-// Main loop and ECS systems use this by default.
-JobSystem& default_job_system();
-
-// Override the global default job system. Engine calls this at init() to
-// swap the P1 stub for a real JobSystemP2; tests can also swap in their
-// own instance. Pass nullptr to revert to the built-in default.
-// `new_default` must outlive all callers of default_job_system().
-void set_default_job_system(JobSystem* new_default);
 
 // ---------------------------------------------------------------------------
 // Template method implementations (must be in header for instantiation).

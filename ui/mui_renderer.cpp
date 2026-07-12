@@ -75,7 +75,8 @@ MuiRenderer::~MuiRenderer() {
 
 snt::core::Expected<void> MuiRenderer::init(
     snt::render_backend::VulkanDevice& device,
-    VkFormat color_format) {
+    VkFormat color_format,
+    const snt::core::RuntimePathResolver& paths) {
 
     device_ = &device;
 
@@ -90,7 +91,7 @@ snt::core::Expected<void> MuiRenderer::init(
     }
 
     // 3. Create graphics pipeline.
-    if (auto r = create_pipeline(color_format); !r) {
+    if (auto r = create_pipeline(color_format, paths); !r) {
         return r.error();
     }
 
@@ -407,7 +408,9 @@ snt::core::Expected<void> MuiRenderer::create_descriptors() {
 // Graphics pipeline (alpha blend, no depth)
 // ---------------------------------------------------------------------------
 
-snt::core::Expected<void> MuiRenderer::create_pipeline(VkFormat color_format) {
+snt::core::Expected<void> MuiRenderer::create_pipeline(
+    VkFormat color_format,
+    const snt::core::RuntimePathResolver& paths) {
     VkDevice dev = device_->logical();
 
     // Pipeline layout: one descriptor set (UBO + sampler).
@@ -432,8 +435,8 @@ snt::core::Expected<void> MuiRenderer::create_pipeline(VkFormat color_format) {
         return spv;
     };
 
-    auto vert_spv = read_spv(snt::core::path_utils::resolve_engine("shaders/ui.vert.spv"));
-    auto frag_spv = read_spv(snt::core::path_utils::resolve_engine("shaders/ui.frag.spv"));
+    auto vert_spv = read_spv(paths.resolve_engine("shaders/ui.vert.spv"));
+    auto frag_spv = read_spv(paths.resolve_engine("shaders/ui.frag.spv"));
     if (vert_spv.empty() || frag_spv.empty()) {
         return snt::core::Error{snt::core::ErrorCode::kUnknown,
                                 "Failed to load UI shaders (ui.vert.spv / ui.frag.spv)"};

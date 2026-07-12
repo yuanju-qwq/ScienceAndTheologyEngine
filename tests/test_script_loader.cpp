@@ -15,6 +15,7 @@
 #include <string>
 
 #include "script/script_manager.h"
+#include "test_script_content_host.h"
 
 namespace fs = std::filesystem;
 
@@ -53,7 +54,9 @@ private:
 TEST(ScriptLoaderTest, LoadFileAndGetModule) {
     TempScriptFile f("loader_test_1", "void snt_register() {}");
 
-    auto& sm = ScriptManager::instance();
+    snt::test::TestScriptContentHost content_host;
+    ScriptManager sm;
+    ASSERT_TRUE(sm.set_content_host(content_host));
     ASSERT_TRUE(sm.init());
     ASSERT_TRUE(sm.load_file(f.path()));
 
@@ -69,7 +72,9 @@ TEST(ScriptLoaderTest, ExplicitReloadPicksUpChanges) {
         "void snt_register() {}"
         "int  version() { return 1; }");
 
-    auto& sm = ScriptManager::instance();
+    snt::test::TestScriptContentHost content_host;
+    ScriptManager sm;
+    ASSERT_TRUE(sm.set_content_host(content_host));
     ASSERT_TRUE(sm.init());
     ASSERT_TRUE(sm.load_file(f.path()));
 
@@ -85,8 +90,8 @@ TEST(ScriptLoaderTest, ExplicitReloadPicksUpChanges) {
         "void snt_register() {}"
         "int  version() { return 2; }");
 
-    // The engine command runs the same transaction path used by FileWatcher.
-    ASSERT_TRUE(sm.execute_command("/snt reload"));
+    // The generic reload API runs the same transaction path used by FileWatcher.
+    ASSERT_TRUE(sm.reload_all());
 
     auto* m = sm.get_module("loader_test_2");
     ASSERT_NE(m, nullptr);

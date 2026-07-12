@@ -1,10 +1,10 @@
-// ScriptLoader -- transactional gameplay module lifetime.
+// ScriptLoader -- transactional content-module lifetime.
 //
 // Every file path maps to a stable ScriptId. A reload compiles a unique
-// candidate module first, then runs void snt_register() inside a RegistryHub
-// transaction. Only a successful commit discards the old module, so failed
-// compilation, entry execution, or callback validation cannot leave stale
-// registrations or function pointers behind.
+// candidate module first, then runs void snt_register() inside the game's
+// IScriptContentHost transaction. Only a successful commit discards the old
+// module, so failed compilation, entry execution, or callback validation
+// cannot leave stale registrations or function pointers behind.
 
 #pragma once
 
@@ -15,7 +15,7 @@
 #include <string_view>
 
 #include "core/expected.h"
-#include "script/registry_hub.h"
+#include "script/content_host.h"
 #include "script/script_module.h"
 
 // AS types are declared as `class` in angelscript.h — see note in
@@ -49,7 +49,7 @@ public:
     // while ScriptManager is initialized on the main thread.
     void set_runtime(asIScriptEngine* engine,
                      ScriptContextPool* contexts,
-                     RegistryHub* registries);
+                     IScriptContentHost* content_host);
 
     // Scan `dir` for .as files and load each one as a module. The module
     // name is the file stem (e.g. "foo.as" → "foo"). Returns Err on the
@@ -66,19 +66,19 @@ public:
 
     // Reload one watched file or all loaded file-backed scripts. Each script
     // commits independently; a failure rolls that script back to its last
-    // known-good module and RegistryHub snapshot.
+    // known-good module and content-host snapshot.
     snt::core::Expected<void> reload_file(const std::filesystem::path& path);
     snt::core::Expected<void> reload_all();
 
     // Remove a deleted file's module and live registrations. StateStore is
-    // deliberately retained by RegistryHub for a future recreation.
+    // deliberately retained by the content host for a future recreation.
     snt::core::Expected<void> unload_file(const std::filesystem::path& path);
 
     // Look up a loaded module by name. Returns null if not found.
     ScriptModule* get_module(std::string_view name);
 
-    // Event dispatch resolves a RegistryHub listener's stable ScriptId only
-    // at call time, so it always observes the current committed module.
+    // Event dispatch resolves a host-owned stable ScriptId only at call time,
+    // so it always observes the current committed module.
     ScriptModule* get_module(ScriptId script_id);
 
     // Drop all loaded modules. Called by ScriptManager::shutdown().
@@ -102,7 +102,7 @@ private:
 
     asIScriptEngine* engine_ = nullptr;
     ScriptContextPool* contexts_ = nullptr;
-    RegistryHub* registries_ = nullptr;
+    IScriptContentHost* content_host_ = nullptr;
     std::map<std::string, ScriptEntry, std::less<>> entries_;
 };
 

@@ -51,8 +51,8 @@ TEST(PathUtils, ExistsFindsCurrentDirectory) {
     EXPECT_TRUE(snt::core::path_utils::exists(std::filesystem::current_path().string()));
 }
 
-TEST(PathUtils, ConfigureRejectsMissingRoot) {
-    auto result = snt::core::path_utils::configure({
+TEST(PathUtils, ResolverRejectsMissingRoot) {
+    auto result = snt::core::RuntimePathResolver::create({
         .engine_root = "",
         .game_root = "game",
         .user_root = "user",
@@ -61,33 +61,36 @@ TEST(PathUtils, ConfigureRejectsMissingRoot) {
     EXPECT_NE(result.error().message().find("engine_root"), std::string::npos);
 }
 
-TEST(PathUtils, ResolveRoutesResourcesByOwnership) {
-    const auto paths = make_test_paths("ownership");
-    ASSERT_TRUE(snt::core::path_utils::configure(paths).has_value());
+TEST(PathUtils, ResolverRoutesResourcesByOwnership) {
+    auto resolver_result = snt::core::RuntimePathResolver::create(make_test_paths("ownership"));
+    ASSERT_TRUE(resolver_result) << resolver_result.error().format();
+    const auto& resolver = *resolver_result;
+    const auto& roots = resolver.roots();
 
-    const auto& configured = snt::core::path_utils::runtime_paths();
-    EXPECT_EQ(snt::core::path_utils::resolve_engine("shaders/mesh.vert.spv"),
-              normalized(std::filesystem::path(configured.engine_root) / "shaders/mesh.vert.spv"));
-    EXPECT_EQ(snt::core::path_utils::resolve_game("scripts/bootstrap.as"),
-              normalized(std::filesystem::path(configured.game_root) / "scripts/bootstrap.as"));
-    EXPECT_EQ(snt::core::path_utils::resolve_user("logs/engine.log"),
-              normalized(std::filesystem::path(configured.user_root) / "logs/engine.log"));
+    EXPECT_EQ(resolver.resolve_engine("shaders/mesh.vert.spv"),
+              normalized(std::filesystem::path(roots.engine_root) / "shaders/mesh.vert.spv"));
+    EXPECT_EQ(resolver.resolve_game("scripts/bootstrap.as"),
+              normalized(std::filesystem::path(roots.game_root) / "scripts/bootstrap.as"));
+    EXPECT_EQ(resolver.resolve_user("logs/engine.log"),
+              normalized(std::filesystem::path(roots.user_root) / "logs/engine.log"));
 }
 
 TEST(PathUtils, ResolveKeepsAbsolutePaths) {
-    const auto paths = make_test_paths("absolute");
-    ASSERT_TRUE(snt::core::path_utils::configure(paths).has_value());
+    auto resolver_result = snt::core::RuntimePathResolver::create(make_test_paths("absolute"));
+    ASSERT_TRUE(resolver_result) << resolver_result.error().format();
 
     const std::string absolute = std::filesystem::absolute("standalone.asset").string();
-    EXPECT_EQ(snt::core::path_utils::resolve_game(absolute), absolute);
+    EXPECT_EQ(resolver_result->resolve_game(absolute), absolute);
 }
 
-TEST(PathUtils, ReconfigurationReplacesHostRoots) {
-    ASSERT_TRUE(snt::core::path_utils::configure(make_test_paths("first")).has_value());
-    const std::string first = snt::core::path_utils::resolve_game("config/engine.json");
+TEST(PathUtils, IndependentResolversKeepSeparateHostRoots) {
+    auto first_resolver = snt::core::RuntimePathResolver::create(make_test_paths("first"));
+    ASSERT_TRUE(first_resolver) << first_resolver.error().format();
+    const std::string first = first_resolver->resolve_game("config/engine.json");
 
-    ASSERT_TRUE(snt::core::path_utils::configure(make_test_paths("second")).has_value());
-    const std::string second = snt::core::path_utils::resolve_game("config/engine.json");
+    auto second_resolver = snt::core::RuntimePathResolver::create(make_test_paths("second"));
+    ASSERT_TRUE(second_resolver) << second_resolver.error().format();
+    const std::string second = second_resolver->resolve_game("config/engine.json");
 
     EXPECT_NE(first, second);
     EXPECT_NE(second.find("second"), std::string::npos);

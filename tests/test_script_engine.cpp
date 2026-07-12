@@ -10,6 +10,7 @@
 #include "script/script_context.h"
 #include "script/script_module.h"
 #include "script/script_manager.h"
+#include "test_script_content_host.h"
 
 using namespace snt::script;
 
@@ -127,11 +128,13 @@ TEST(ScriptModuleTest, CallVoidFunction) {
 }
 
 // ============================================================
-// ScriptManager (singleton)
+// ScriptManager
 // ============================================================
 
 TEST(ScriptManagerTest, InitLoadSourceCallShutdown) {
-    auto& sm = ScriptManager::instance();
+    snt::test::TestScriptContentHost content_host;
+    ScriptManager sm;
+    ASSERT_TRUE(sm.set_content_host(content_host));
     ASSERT_TRUE(sm.init());
 
     // Load an inline script that does nothing.
@@ -143,4 +146,9 @@ TEST(ScriptManagerTest, InitLoadSourceCallShutdown) {
 
     sm.update(0.016f);  // should not crash
     sm.shutdown();
+}
+
+TEST(ScriptManagerTest, InitRequiresExplicitContentHost) {
+    ScriptManager sm;
+    EXPECT_FALSE(sm.init());
 }

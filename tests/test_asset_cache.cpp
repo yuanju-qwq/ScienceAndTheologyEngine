@@ -6,6 +6,7 @@
 
 #include "assets/asset_cache.h"
 #include "assets/asset_handle.h"
+#include "assets/asset_manager.h"
 #include "core/expected.h"
 
 #include <gtest/gtest.h>
@@ -21,6 +22,15 @@ struct FakeAsset {
 };
 
 }  // namespace
+
+TEST(AssetManagerTest, SeparateUninitializedInstancesHaveIndependentLifetimes) {
+    snt::assets::AssetManager first;
+    {
+        snt::assets::AssetManager second;
+        second.shutdown();
+    }
+    first.shutdown();
+}
 
 // ---------------------------------------------------------------------------
 // AssetHandle

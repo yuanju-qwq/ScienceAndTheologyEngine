@@ -145,12 +145,14 @@ IcuDataState& icu_data_state() {
     return state;
 }
 
-bool initialize_icu_data(const TextEngineConfig& config, std::string& error) {
+bool initialize_icu_data(const snt::core::RuntimePathResolver& paths,
+                         const TextEngineConfig& config,
+                         std::string& error) {
     auto& state = icu_data_state();
     if (state.initialized) return true;
 
 
-    const std::string path = snt::core::path_utils::resolve_engine(config.icu_data_path);
+    const std::string path = paths.resolve_engine(config.icu_data_path);
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input.is_open()) {
         error = "ICU common-data file is unavailable: " + path;
@@ -417,10 +419,11 @@ struct UnicodeTextEngine::Impl {
     }
 };
 
-UnicodeTextEngine::UnicodeTextEngine(TextEngineConfig config)
+UnicodeTextEngine::UnicodeTextEngine(const snt::core::RuntimePathResolver& paths,
+                                     TextEngineConfig config)
     : config_(std::move(config)),
       impl_(std::make_unique<Impl>()) {
-    if (!initialize_icu_data(config_, initialization_error_)) return;
+    if (!initialize_icu_data(paths, config_, initialization_error_)) return;
 
     if (FT_Init_FreeType(&impl_->freetype) != 0) {
         initialization_error_ = "FT_Init_FreeType failed";
@@ -1208,8 +1211,9 @@ void Animator::update(float dt) {
         animations_.end());
 }
 
-UiRuntime::UiRuntime(TextEngineConfig config)
-    : text_engine_(std::move(config)) {}
+UiRuntime::UiRuntime(const snt::core::RuntimePathResolver& paths,
+                     TextEngineConfig config)
+    : text_engine_(paths, std::move(config)) {}
 
 UiFrameResult UiRuntime::build_frame(View& root, Vec2 viewport) {
     root.measure({.size = viewport.x, .mode = MeasureMode::Exactly},

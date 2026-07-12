@@ -3,9 +3,9 @@
 # Wraps the raw AS SDK in engine-friendly RAII types: ScriptEngine,
 # ScriptContextPool, ScriptModule, ScriptLoader, ScriptManager.
 #
-# This module is the single integration point between the engine and
-# AngelScript. Downstream modules (engine host, gameplay) link against
-# snt_script and never touch <angelscript.h> directly.
+# This module owns generic AngelScript lifecycle and hot-reload orchestration.
+# The game supplies its own IScriptContentHost for concrete content data and
+# native script declarations.
 
 add_library(snt_script STATIC
     script_engine.cpp
@@ -14,8 +14,6 @@ add_library(snt_script STATIC
     script_loader.cpp
     script_manager.cpp
     file_watcher.cpp
-    script_api.cpp
-    registry_hub.cpp
 )
 
 target_include_directories(snt_script PUBLIC

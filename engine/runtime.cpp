@@ -43,6 +43,7 @@
 #include <chrono>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -147,12 +148,6 @@ void append_draw_data(snt::ui::UiDrawData& destination,
     }
 }
 
-std::string resolve_path(std::string_view root, std::string_view relative_path) {
-    const std::filesystem::path path(relative_path);
-    if (path.is_absolute()) return path.string();
-    return (std::filesystem::path(root) / path).lexically_normal().string();
-}
-
 }  // namespace
 
 struct Runtime::Impl {
@@ -161,7 +156,7 @@ struct Runtime::Impl {
     snt::ecs::EventBus event_bus;
 
     snt::core::RuntimeConfig config;
-    snt::core::RuntimePaths paths;
+    std::optional<snt::core::RuntimePathResolver> paths;
     snt::core::RealClock real_clock;
     snt::core::IClock* clock = &real_clock;
 
@@ -173,6 +168,8 @@ struct Runtime::Impl {
     snt::render_backend::VulkanDescriptor vk_descriptor;
     snt::render_backend::VulkanPipeline vk_pipeline;
     snt::render_backend::VulkanFrame vk_frame;
+    snt::assets::AssetManager asset_manager;
+    snt::script::ScriptManager script_manager;
 
     snt::ecs::World world;
     entt::entity active_camera = entt::null;
@@ -202,7 +199,7 @@ struct Runtime::Impl {
 };
 
 RuntimeServices::RuntimeServices(const snt::core::RuntimeConfig& config,
-                                 const snt::core::RuntimePaths& paths,
+                                 const snt::core::RuntimePathResolver& paths,
                                  snt::core::IClock& clock,
                                  snt::core::Logger& logger,
                                  snt::core::JobSystem& jobs,
@@ -212,24 +209,12 @@ RuntimeServices::RuntimeServices(const snt::core::RuntimeConfig& config,
       assets_(&assets), scripts_(&scripts) {}
 
 const snt::core::RuntimeConfig& RuntimeServices::config() const noexcept { return *config_; }
-const snt::core::RuntimePaths& RuntimeServices::paths() const noexcept { return *paths_; }
+const snt::core::RuntimePathResolver& RuntimeServices::paths() const noexcept { return *paths_; }
 snt::core::IClock& RuntimeServices::clock() const noexcept { return *clock_; }
 snt::core::Logger& RuntimeServices::logger() const noexcept { return *logger_; }
 snt::core::JobSystem& RuntimeServices::jobs() const noexcept { return *jobs_; }
 snt::assets::AssetManager& RuntimeServices::assets() const noexcept { return *assets_; }
 snt::script::ScriptManager& RuntimeServices::scripts() const noexcept { return *scripts_; }
-
-std::string RuntimeServices::resolve_engine(std::string_view relative_path) const {
-    return resolve_path(paths_->engine_root, relative_path);
-}
-
-std::string RuntimeServices::resolve_game(std::string_view relative_path) const {
-    return resolve_path(paths_->game_root, relative_path);
-}
-
-std::string RuntimeServices::resolve_user(std::string_view relative_path) const {
-    return resolve_path(paths_->user_root, relative_path);
-}
 
 snt::ecs::World& WorldSession::world() const noexcept { return runtime_->impl_->world; }
 snt::data::ChunkRegistry& WorldSession::chunks() const noexcept {
@@ -306,20 +291,20 @@ snt::core::Expected<void> Runtime::init(const snt::core::RuntimeConfig& config,
     SNT_LOG_INFO("Starting SNT runtime");
     impl_->config = config;
 
-    if (auto result = snt::core::path_utils::configure(std::move(runtime_paths)); !result) {
-        auto error = result.error();
+    auto resolved_paths = snt::core::RuntimePathResolver::create(std::move(runtime_paths));
+    if (!resolved_paths) {
+        auto error = resolved_paths.error();
         error.with_context("Runtime::init(RuntimePaths)");
         return error;
     }
-    impl_->paths = snt::core::path_utils::runtime_paths();
+    impl_->paths.emplace(std::move(*resolved_paths));
 
     impl_->job_system.init();
-    snt::core::set_default_job_system(&impl_->job_system);
     SNT_LOG_INFO("Job system started: %d workers", impl_->job_system.worker_count());
     impl_->system_scheduler = std::make_unique<snt::ecs::SystemScheduler>(impl_->job_system);
 
     {
-        const std::string log_path = resolve_path(impl_->paths.user_root, "logs/engine.log");
+        const std::string log_path = impl_->paths->resolve_user("logs/engine.log");
         try {
             std::filesystem::create_directories(std::filesystem::path(log_path).parent_path());
         } catch (const std::exception& error) {
@@ -373,7 +358,7 @@ snt::core::Expected<void> Runtime::init(const snt::core::RuntimeConfig& config,
         error.with_context("Runtime::init(vk_device)");
         return error;
     }
-    if (auto result = snt::assets::AssetManager::instance().init(&impl_->vk_device); !result) {
+    if (auto result = impl_->asset_manager.init(&impl_->vk_device, *impl_->paths); !result) {
         auto error = result.error();
         error.with_context("Runtime::init(AssetManager)");
         return error;
@@ -397,8 +382,8 @@ snt::core::Expected<void> Runtime::init(const snt::core::RuntimeConfig& config,
     }
     if (auto result = impl_->vk_pipeline.init(
             impl_->vk_device, impl_->vk_descriptor, impl_->vk_swapchain.image_format(),
-            impl_->vk_depth.format(), resolve_path(impl_->paths.engine_root, config.render.vert_shader_path),
-            resolve_path(impl_->paths.engine_root, config.render.frag_shader_path),
+            impl_->vk_depth.format(), impl_->paths->resolve_engine(config.render.vert_shader_path),
+            impl_->paths->resolve_engine(config.render.frag_shader_path),
             VkVertexInputBindingDescription{
                 .binding = 0,
                 .stride = sizeof(snt::render_backend::MeshVertex),
@@ -427,6 +412,7 @@ snt::core::Expected<void> Runtime::init(const snt::core::RuntimeConfig& config,
     impl_->render_system.set_pipeline(&impl_->vk_pipeline);
     impl_->render_system.set_descriptor(&impl_->vk_descriptor);
     impl_->render_system.set_frame(&impl_->vk_frame);
+    impl_->render_system.set_assets(&impl_->asset_manager);
     if (auto result = impl_->render_system.init_render_graph(); !result) {
         auto error = result.error();
         error.with_context("Runtime::init(render_graph)");
@@ -435,15 +421,15 @@ snt::core::Expected<void> Runtime::init(const snt::core::RuntimeConfig& config,
 
     impl_->chunk_renderer = std::make_unique<snt::voxel::ChunkRenderer>();
     if (auto result = impl_->chunk_renderer->init(
-            impl_->vk_device, impl_->vk_swapchain.image_format(), impl_->vk_depth.format(),
-            resolve_path(impl_->paths.engine_root, "shaders/voxel.vert.spv"),
-            resolve_path(impl_->paths.engine_root, "shaders/voxel.frag.spv"),
+            impl_->vk_device, *impl_->paths, impl_->vk_swapchain.image_format(), impl_->vk_depth.format(),
+            impl_->paths->resolve_engine("shaders/voxel.vert.spv"),
+            impl_->paths->resolve_engine("shaders/voxel.frag.spv"),
             config.voxel.max_chunks); !result) {
         auto error = result.error();
         error.with_context("Runtime::init(chunk_renderer)");
         return error;
     }
-    auto chunk_system = std::make_shared<snt::voxel::ChunkRenderSystem>();
+    auto chunk_system = std::make_shared<snt::voxel::ChunkRenderSystem>(impl_->job_system);
     chunk_system->set_chunk_renderer(impl_->chunk_renderer.get());
     chunk_system->set_chunk_registry(&impl_->chunk_registry);
     chunk_system->set_remesh_jobs_per_frame(config.voxel.remesh_jobs_per_frame);
@@ -503,14 +489,15 @@ snt::core::Expected<void> Runtime::init(const snt::core::RuntimeConfig& config,
     text_config.font_paths = config.ui.font_paths;
     text_config.locale = config.ui.locale;
     text_config.icu_data_path = config.ui.icu_data_path;
-    impl_->ui_runtime = std::make_unique<snt::ui::UiRuntime>(std::move(text_config));
+    impl_->ui_runtime = std::make_unique<snt::ui::UiRuntime>(*impl_->paths, std::move(text_config));
     if (!impl_->ui_runtime->text_available()) {
         SNT_LOG_ERROR("MUI text initialization failed: %s",
                       impl_->ui_runtime->text_initialization_error().c_str());
     }
 
     impl_->mui_renderer = std::make_unique<snt::ui::MuiRenderer>();
-    if (auto result = impl_->mui_renderer->init(impl_->vk_device, impl_->vk_swapchain.image_format());
+    if (auto result = impl_->mui_renderer->init(
+            impl_->vk_device, impl_->vk_swapchain.image_format(), *impl_->paths);
         !result) {
         SNT_LOG_ERROR("MuiRenderer init failed: %s", result.error().format().c_str());
         impl_->mui_renderer.reset();
@@ -555,9 +542,9 @@ snt::core::Expected<void> Runtime::init(const snt::core::RuntimeConfig& config,
     }
 
     impl_->services = std::unique_ptr<RuntimeServices>(new RuntimeServices(
-        impl_->config, impl_->paths, *impl_->clock, snt::core::Logger::instance(),
-        impl_->job_system, snt::assets::AssetManager::instance(),
-        snt::script::ScriptManager::instance()));
+        impl_->config, *impl_->paths, *impl_->clock, snt::core::Logger::instance(),
+        impl_->job_system, impl_->asset_manager,
+        impl_->script_manager));
     impl_->world_session = std::unique_ptr<WorldSession>(new WorldSession(*this));
     impl_->session = std::move(session);
     impl_->session_started = true;
@@ -679,13 +666,11 @@ void Runtime::shutdown() {
 
     // Worker tasks can retain immutable chunk snapshots and result queues.
     // Join them before destroying the World or GPU resources they reference.
-    snt::core::set_default_job_system(nullptr);
     impl_->job_system.shutdown();
     impl_->vk_device.wait_idle();
 
-    // Sessions own script content, but Runtime owns the process-scoped service
-    // lifetime until ScriptManager itself is made instance-owned.
-    snt::script::ScriptManager::instance().shutdown();
+    // Sessions own script content; Runtime owns the manager lifetime.
+    impl_->script_manager.shutdown();
     impl_->world_session.reset();
     impl_->services.reset();
 
@@ -705,7 +690,7 @@ void Runtime::shutdown() {
     impl_->vk_descriptor.destroy();
     impl_->vk_depth.destroy();
     impl_->vk_swapchain.destroy();
-    snt::assets::AssetManager::instance().shutdown();
+    impl_->asset_manager.shutdown();
 
     impl_->vk_device.destroy();
     if (impl_->vk_surface != VK_NULL_HANDLE) {

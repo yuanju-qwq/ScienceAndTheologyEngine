@@ -34,6 +34,7 @@ class VulkanDevice;
 class VulkanPipeline;
 class VulkanBuffer;
 }
+namespace snt::core { class RuntimePathResolver; }
 
 namespace snt::ui {
 
@@ -46,9 +47,11 @@ public:
     MuiRenderer& operator=(const MuiRenderer&) = delete;
 
     // Initialize the dynamic glyph texture, pipeline and descriptors.
+    // `paths` is borrowed only during init for engine-owned shader lookup.
     // `color_format` is the swapchain image format for the pipeline.
     snt::core::Expected<void> init(snt::render_backend::VulkanDevice& device,
-                                   VkFormat color_format);
+                                   VkFormat color_format,
+                                   const snt::core::RuntimePathResolver& paths);
 
     void destroy();
 
@@ -74,7 +77,9 @@ private:
     snt::core::Expected<void> create_descriptors();
 
     // Create the UI graphics pipeline.
-    snt::core::Expected<void> create_pipeline(VkFormat color_format);
+    snt::core::Expected<void> create_pipeline(
+        VkFormat color_format,
+        const snt::core::RuntimePathResolver& paths);
 
     snt::render_backend::VulkanDevice*              device_ = nullptr;
 

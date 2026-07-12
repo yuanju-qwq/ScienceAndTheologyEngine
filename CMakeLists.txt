@@ -78,7 +78,6 @@ add_subdirectory(renderer)
 add_subdirectory(ecs)
 add_subdirectory(render)
 add_subdirectory(script)        # NEW: AngelScript integration (depends on core)
-add_subdirectory(gameplay)      # P7.2: deterministic content execution systems
 add_subdirectory(scene)         # NEW: binary scene serialization (depends on ecs + assets)
 add_subdirectory(ui)
 add_subdirectory(voxel)         # P3: voxel meshing + chunk renderer
@@ -133,11 +132,6 @@ snt_register_engine_module(
     TARGET snt_script
     INCLUDE_PREFIXES script
     SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/script"
-)
-snt_register_engine_module(
-    TARGET snt_gameplay
-    INCLUDE_PREFIXES gameplay
-    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/gameplay"
 )
 snt_register_engine_module(
     INTERFACE

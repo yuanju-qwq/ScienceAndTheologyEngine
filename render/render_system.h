@@ -44,6 +44,8 @@ class VulkanDescriptor;
 class VulkanFrame;
 }
 
+namespace snt::assets { class AssetManager; }
+
 namespace snt::render {
 
 // Context passed to render feature modules while they register their
@@ -76,6 +78,7 @@ public:
     void set_pipeline(snt::render_backend::VulkanPipeline* p)     { pipeline_ = p; }
     void set_descriptor(snt::render_backend::VulkanDescriptor* p) { descriptor_ = p; }
     void set_frame(snt::render_backend::VulkanFrame* p)           { frame_ = p; }
+    void set_assets(snt::assets::AssetManager* p)                 { assets_ = p; }
 
     // Set the entity to use as the active camera.
     void set_active_camera(entt::entity e) { active_camera_ = e; }
@@ -107,6 +110,7 @@ private:
     snt::render_backend::VulkanPipeline*   pipeline_    = nullptr;
     snt::render_backend::VulkanDescriptor* descriptor_  = nullptr;
     snt::render_backend::VulkanFrame*      frame_       = nullptr;
+    snt::assets::AssetManager*              assets_      = nullptr;
     entt::entity active_camera_ = entt::null;
 
     snt::renderer::RenderGraph graph_;

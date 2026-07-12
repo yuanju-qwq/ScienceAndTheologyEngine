@@ -6,9 +6,9 @@
 //   - update()  — poll for .as file changes; run one GC step
 //   - shutdown() — release everything in reverse order
 //
-// ScriptManager is a global singleton (instance()), matching the style
-// of AssetManager. Gameplay code calls ScriptManager::instance().load_*
-// to register scripts, and the Engine calls update() each frame.
+// ScriptManager is owned by Runtime. A game injects one IScriptContentHost
+// before init() to own content definitions and native script bindings, while
+// tests construct isolated local instances with a test host.
 
 #pragma once
 
@@ -18,18 +18,23 @@
 #include <string_view>
 
 #include "core/expected.h"
+#include "script/content_host.h"
 #include "script/file_watcher.h"
 #include "script/script_engine.h"
 #include "script/script_context.h"
 #include "script/script_loader.h"
-#include "script/registry_hub.h"
 
 namespace snt::script {
 
 class ScriptManager {
 public:
-    // Singleton accessor. Not thread-safe on first construction.
-    static ScriptManager& instance();
+    ScriptManager() = default;
+    ~ScriptManager() { shutdown(); }
+
+    // Configure the game-owned content host before init(). ScriptManager only
+    // borrows it for one initialized session and clears the reference during
+    // shutdown or initialization failure.
+    snt::core::Expected<void> set_content_host(IScriptContentHost& content_host);
 
     // Create the AS engine, context pool, and register core types.
     snt::core::Expected<void> init();
@@ -40,8 +45,8 @@ public:
     // for future throttling of reload checks).
     void update(float dt);
 
-    // Load every gameplay module under `root`, then start the P7.1 file
-    // watcher. The watcher enqueues changes only; update() consumes them on
+    // Load every content module under `root`, then start the file watcher.
+    // The watcher enqueues changes only; update() consumes them on
     // the main thread and performs per-script transactions.
     snt::core::Expected<void> watch_directory(const std::filesystem::path& root);
 
@@ -49,17 +54,12 @@ public:
     // same compile/register/commit or rollback flow as file changes.
     snt::core::Expected<void> reload_all();
 
-    // P7.1 command boundary. Only `/snt reload` is accepted; future console,
-    // network-admin, and editor frontends call this rather than reaching into
-    // ScriptLoader directly.
-    snt::core::Expected<void> execute_command(std::string_view command);
-
     // Release the AS engine and all modules.
     void shutdown();
 
-    // ---- Script API (used by Engine / gameplay code) ----
+    // ---- Generic script API (used by engine hosts) ----
 
-    // Load all .as files under `dir` recursively.
+    // Load all .as content files under `dir` recursively.
     snt::core::Expected<void> load_directory(std::string_view dir) {
         return loader_.load_directory(dir);
     }
@@ -86,20 +86,15 @@ public:
     ScriptEngine&       engine()  { return engine_; }
     ScriptContextPool&  contexts() { return contexts_; }
     ScriptLoader&       loader()  { return loader_; }
-    RegistryHub&        registries() { return registry_hub_; }
-    const RegistryHub&  registries() const { return registry_hub_; }
 
 private:
-    ScriptManager() = default;
-    ~ScriptManager() = default;
-
     ScriptManager(const ScriptManager&) = delete;
     ScriptManager& operator=(const ScriptManager&) = delete;
 
     ScriptEngine      engine_;
     ScriptContextPool contexts_;
     ScriptLoader      loader_;
-    RegistryHub       registry_hub_;
+    IScriptContentHost* content_host_ = nullptr;
     std::unique_ptr<FileWatcher> watcher_;
     bool initialized_ = false;
 };

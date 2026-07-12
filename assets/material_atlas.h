@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+namespace snt::core { class RuntimePathResolver; }
+
 namespace snt::assets {
 
 class TextureCache;
@@ -25,6 +27,7 @@ snt::core::Expected<MaterialAtlasImage> build_material_atlas(
     uint32_t tile_size);
 
 snt::core::Expected<MaterialAtlasImage> build_default_voxel_material_atlas(
-    TextureCache& texture_cache);
+    TextureCache& texture_cache,
+    const snt::core::RuntimePathResolver& paths);
 
 }  // namespace snt::assets

@@ -17,6 +17,8 @@
 #include <variant>
 #include <vector>
 
+namespace snt::core { class RuntimePathResolver; }
+
 namespace snt::ui {
 
 enum class MeasureMode : uint8_t {
@@ -150,7 +152,10 @@ public:
 // backends leave the engine unavailable rather than silently degrading text.
 class UnicodeTextEngine final : public TextEngine {
 public:
-    explicit UnicodeTextEngine(TextEngineConfig config = {});
+    // `paths` is borrowed only during construction to load engine-owned ICU
+    // data; font paths remain explicit TextEngineConfig entries.
+    UnicodeTextEngine(const snt::core::RuntimePathResolver& paths,
+                      TextEngineConfig config = {});
     ~UnicodeTextEngine() override;
 
     UnicodeTextEngine(const UnicodeTextEngine&) = delete;
@@ -441,7 +446,8 @@ struct UiFrameResult {
 
 class UiRuntime {
 public:
-    explicit UiRuntime(TextEngineConfig config = {});
+    UiRuntime(const snt::core::RuntimePathResolver& paths,
+              TextEngineConfig config = {});
 
     TextEngine& text_engine() { return text_engine_; }
     const TextEngine& text_engine() const { return text_engine_; }

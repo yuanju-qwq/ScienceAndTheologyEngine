@@ -122,7 +122,7 @@ void ChunkRenderSystem::schedule_dirty_remeshes() {
         const int32_t sy = chunk->terrain.size_y;
         const int32_t sz = chunk->terrain.size_z;
 
-        const auto future = snt::core::default_job_system().submit_future<RemeshResult>(
+        const auto future = job_system_.submit_future<RemeshResult>(
             [key, materials = std::move(materials), sx, sy, sz,
              air_material = air_material_, ladder_material = ladder_material_,
              transparent_mask = transparent_mask_]() -> RemeshResult {

@@ -10,17 +10,12 @@
 
 namespace snt::assets {
 
-AssetManager& AssetManager::instance() {
-    static AssetManager inst;
-    return inst;
-}
-
 snt::core::Expected<void> AssetManager::init_mesh_cache() {
     mesh_loader_.init(device_);
     // Wire the mesh cache with closures over the loader.
     if (auto r = mesh_cache_.init(
             [this](const std::string& path) {
-                return mesh_loader_.load(snt::core::path_utils::resolve_game(path));
+                return mesh_loader_.load(paths_->resolve_game(path));
             },
             [this](snt::render_backend::VulkanMesh* m) { mesh_loader_.destroy(m); });
         !r) {
@@ -31,7 +26,9 @@ snt::core::Expected<void> AssetManager::init_mesh_cache() {
     return {};
 }
 
-snt::core::Expected<void> AssetManager::init(snt::render_backend::VulkanDevice* device) {
+snt::core::Expected<void> AssetManager::init(
+    snt::render_backend::VulkanDevice* device,
+    const snt::core::RuntimePathResolver& paths) {
     if (!device) {
         return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
                                 "AssetManager::init: null device"};
@@ -41,6 +38,7 @@ snt::core::Expected<void> AssetManager::init(snt::render_backend::VulkanDevice* 
         return {};
     }
     device_ = device;
+    paths_ = &paths;
     if (auto r = init_mesh_cache(); !r) {
         return r;
     }
@@ -51,6 +49,7 @@ snt::core::Expected<void> AssetManager::init(snt::render_backend::VulkanDevice* 
 
 snt::core::Expected<void> AssetManager::init_from_manifest(
     snt::render_backend::VulkanDevice* device,
+    const snt::core::RuntimePathResolver& paths,
     const std::string& manifest_path) {
     if (!device) {
         return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
@@ -61,13 +60,14 @@ snt::core::Expected<void> AssetManager::init_from_manifest(
         return {};
     }
     device_ = device;
+    paths_ = &paths;
     if (auto r = init_mesh_cache(); !r) {
         return r;
     }
 
     // Load the manifest. Missing file is non-fatal (falls back to runtime
     // load()); only parse errors or duplicate ids abort.
-    const std::string resolved = snt::core::path_utils::resolve_game(manifest_path);
+    const std::string resolved = paths_->resolve_game(manifest_path);
     auto manifest_result = load_manifest(resolved);
     if (!manifest_result) {
         snt::core::Error e = manifest_result.error();
@@ -81,7 +81,7 @@ snt::core::Expected<void> AssetManager::init_from_manifest(
     // assets by handle are then stable across runs.
     for (const auto& entry : manifest.entries) {
         const std::string resolved_path =
-            snt::core::path_utils::resolve_game(entry.path);
+            paths_->resolve_game(entry.path);
         mesh_cache_.register_preallocated(resolved_path);
     }
 
@@ -101,13 +101,17 @@ snt::core::Expected<void> AssetManager::init_from_manifest(
 }
 
 void AssetManager::shutdown() {
-    if (!device_) return;
+    if (!device_) {
+        paths_ = nullptr;
+        return;
+    }
     // Wait for the GPU to finish using any cached resources before
     // their backing buffers are torn down. This matches the original
     // MeshCache::destroy() prelude.
     device_->wait_idle();
     mesh_cache_.destroy();
     device_ = nullptr;
+    paths_ = nullptr;
     SNT_LOG_INFO("AssetManager shut down");
 }
 

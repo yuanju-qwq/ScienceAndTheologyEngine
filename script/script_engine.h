@@ -2,7 +2,7 @@
 //
 // Encapsulates asIScriptEngine lifecycle: creation, message callback
 // (compile/runtime diagnostics → SNT_LOG), and registration of core
-// application APIs that gameplay scripts can call.
+// application APIs that content scripts can call.
 //
 // Registration is split into logical groups so each subsystem can grow
 // independently. Only register_core_types() has a real implementation

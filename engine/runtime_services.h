@@ -44,22 +44,20 @@ namespace snt::engine {
 class RuntimeServices {
 public:
     const snt::core::RuntimeConfig& config() const noexcept;
-    const snt::core::RuntimePaths& paths() const noexcept;
+    // Runtime-owned, immutable path resolver. The returned reference is valid
+    // only while this RuntimeServices instance is alive.
+    const snt::core::RuntimePathResolver& paths() const noexcept;
     snt::core::IClock& clock() const noexcept;
     snt::core::Logger& logger() const noexcept;
     snt::core::JobSystem& jobs() const noexcept;
     snt::assets::AssetManager& assets() const noexcept;
     snt::script::ScriptManager& scripts() const noexcept;
 
-    std::string resolve_engine(std::string_view relative_path) const;
-    std::string resolve_game(std::string_view relative_path) const;
-    std::string resolve_user(std::string_view relative_path) const;
-
 private:
     friend class Runtime;
 
     RuntimeServices(const snt::core::RuntimeConfig& config,
-                    const snt::core::RuntimePaths& paths,
+                    const snt::core::RuntimePathResolver& paths,
                     snt::core::IClock& clock,
                     snt::core::Logger& logger,
                     snt::core::JobSystem& jobs,
@@ -67,7 +65,7 @@ private:
                     snt::script::ScriptManager& scripts);
 
     const snt::core::RuntimeConfig* config_ = nullptr;
-    const snt::core::RuntimePaths* paths_ = nullptr;
+    const snt::core::RuntimePathResolver* paths_ = nullptr;
     snt::core::IClock* clock_ = nullptr;
     snt::core::Logger* logger_ = nullptr;
     snt::core::JobSystem* jobs_ = nullptr;

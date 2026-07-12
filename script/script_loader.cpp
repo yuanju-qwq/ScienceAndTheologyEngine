@@ -13,7 +13,6 @@
 #include "core/error.h"
 #include "core/hash.h"
 #include "core/log.h"
-#include "script/script_api.h"
 #include "script/script_context.h"
 
 namespace snt::script {
@@ -22,10 +21,10 @@ namespace fs = std::filesystem;
 
 void ScriptLoader::set_runtime(asIScriptEngine* engine,
                                ScriptContextPool* contexts,
-                               RegistryHub* registries) {
+                               IScriptContentHost* content_host) {
     engine_ = engine;
     contexts_ = contexts;
-    registries_ = registries;
+    content_host_ = content_host;
 }
 
 snt::core::Expected<void> ScriptLoader::load_directory(std::string_view dir) {
@@ -105,7 +104,7 @@ snt::core::Expected<void> ScriptLoader::load_file(std::string_view path) {
     }
 
     entries_.emplace(key, std::move(entry));
-    SNT_LOG_INFO("Loaded gameplay script '%s' (%llu)", name.c_str(),
+    SNT_LOG_INFO("Loaded content script '%s' (%llu)", name.c_str(),
                  static_cast<unsigned long long>(script_id));
     return {};
 }
@@ -148,7 +147,7 @@ snt::core::Expected<void> ScriptLoader::load_source(std::string_view name,
     }
 
     entries_.emplace(key, std::move(entry));
-    SNT_LOG_DEBUG("Loaded inline gameplay script '%.*s'", static_cast<int>(name.size()), name.data());
+    SNT_LOG_DEBUG("Loaded inline content script '%.*s'", static_cast<int>(name.size()), name.data());
     return {};
 }
 
@@ -182,7 +181,7 @@ snt::core::Expected<void> ScriptLoader::reload_all() {
         }
         ++reloaded;
     }
-    SNT_LOG_INFO("Reloaded %zu gameplay script module(s)", reloaded);
+    SNT_LOG_INFO("Reloaded %zu content script module(s)", reloaded);
     return {};
 }
 
@@ -196,12 +195,12 @@ snt::core::Expected<void> ScriptLoader::unload_file(const fs::path& path) {
     if (entry == entries_.end()) {
         return {};
     }
-    if (auto result = registries_->unload_script(entry->second.script_id); !result) {
+    if (auto result = content_host_->unload_script(entry->second.script_id); !result) {
         return result.error();
     }
     entry->second.module.discard();
     entries_.erase(entry);
-    SNT_LOG_INFO("Unloaded removed gameplay script: %s", normalized->string().c_str());
+    SNT_LOG_INFO("Unloaded removed content script: %s", normalized->string().c_str());
     return {};
 }
 
@@ -228,8 +227,8 @@ ScriptModule* ScriptLoader::get_module(ScriptId script_id) {
 void ScriptLoader::unload_all() {
     for (auto& [key, entry] : entries_) {
         (void)key;
-        if (registries_ && entry.script_id != kBuiltinScriptId) {
-            if (auto result = registries_->unload_script(entry.script_id); !result) {
+        if (content_host_ && entry.script_id != kBuiltinScriptId) {
+            if (auto result = content_host_->unload_script(entry.script_id); !result) {
                 SNT_LOG_ERROR("Failed to unload script %llu: %s",
                               static_cast<unsigned long long>(entry.script_id),
                               result.error().format().c_str());
@@ -241,7 +240,7 @@ void ScriptLoader::unload_all() {
 }
 
 snt::core::Expected<void> ScriptLoader::ensure_runtime() const {
-    if (engine_ && contexts_ && registries_) {
+    if (engine_ && contexts_ && content_host_) {
         return {};
     }
     return snt::core::Error{snt::core::ErrorCode::kInvalidState,
@@ -263,12 +262,12 @@ snt::core::Expected<void> ScriptLoader::reload_entry(ScriptEntry& entry) {
 
 snt::core::Expected<void> ScriptLoader::activate_candidate(ScriptEntry& entry,
                                                              ScriptModule&& candidate) {
-    if (auto begin = registries_->begin_reload(entry.script_id); !begin) {
+    if (auto begin = content_host_->begin_reload(entry.script_id); !begin) {
         return begin.error();
     }
 
     const auto rollback = [this, &entry]() {
-        if (auto result = registries_->rollback_reload(entry.script_id); !result) {
+        if (auto result = content_host_->rollback_reload(entry.script_id); !result) {
             SNT_LOG_ERROR("Failed to roll back script %llu: %s",
                           static_cast<unsigned long long>(entry.script_id),
                           result.error().format().c_str());
@@ -276,7 +275,12 @@ snt::core::Expected<void> ScriptLoader::activate_candidate(ScriptEntry& entry,
     };
 
     const auto registered = [&]() -> snt::core::Expected<void> {
-        ScriptRegistrationScope scope(*registries_, entry.script_id);
+        auto registration_scope = content_host_->begin_registration(entry.script_id);
+        if (!registration_scope) {
+            return snt::core::Error{
+                snt::core::ErrorCode::kInvalidState,
+                "Script content host returned a null registration scope"};
+        }
         return candidate.call_void(*contexts_, "void snt_register()");
     }();
     if (!registered) {
@@ -289,25 +293,25 @@ snt::core::Expected<void> ScriptLoader::activate_candidate(ScriptEntry& entry,
         return callbacks.error();
     }
 
-    if (auto committed = registries_->commit_reload(entry.script_id); !committed) {
+    if (auto committed = content_host_->commit_reload(entry.script_id); !committed) {
         rollback();
         return committed.error();
     }
 
     entry.module = std::move(candidate);
-    SNT_LOG_INFO("Committed gameplay script '%s' (generation %llu)",
+    SNT_LOG_INFO("Committed content script '%s' (generation %llu)",
                  entry.name.c_str(), static_cast<unsigned long long>(entry.generation));
     return {};
 }
 
 snt::core::Expected<void> ScriptLoader::validate_event_callbacks(
     const ScriptEntry& entry, const ScriptModule& candidate) const {
-    for (const EventListener& listener : registries_->event_listeners_for_script(entry.script_id)) {
-        const std::string declaration = "void " + listener.callback_id + "()";
+    for (const std::string& callback_id : content_host_->callback_ids_for_script(entry.script_id)) {
+        const std::string declaration = "void " + callback_id + "()";
         if (!candidate.get_function(declaration)) {
             return snt::core::Error{
                 snt::core::ErrorCode::kScriptModuleNotFound,
-                "Event callback '" + listener.callback_id + "' is not declared as " + declaration};
+                "Event callback '" + callback_id + "' is not declared as " + declaration};
         }
     }
     return {};
@@ -341,7 +345,7 @@ snt::core::Expected<void> ScriptLoader::validate_new_entry_name(
         if (existing_key == key) continue;
         if (entry.name == name) {
             return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
-                                    "Duplicate gameplay script module name: " + std::string(name)};
+                                    "Duplicate content script module name: " + std::string(name)};
         }
         if (entry.script_id == script_id) {
             return snt::core::Error{snt::core::ErrorCode::kInvalidState,
