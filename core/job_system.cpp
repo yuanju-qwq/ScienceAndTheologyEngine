@@ -10,6 +10,7 @@
 #include "job_system.h"
 
 #include <algorithm>
+#include <chrono>
 #include <deque>
 #include <thread>
 
@@ -18,6 +19,12 @@ namespace snt::core {
 // Pointer installed by set_default_job_system(); nullptr = use built-in.
 // Written once at engine init, read by every default_job_system() call.
 static JobSystem* g_default_override = nullptr;
+
+// A worker can execute nested jobs while waiting on a child handle. The
+// handle uses this ownership marker to distinguish its pool from unrelated
+// pools that might be active on another thread.
+thread_local JobSystemP2* g_current_job_system = nullptr;
+thread_local int32_t g_current_worker_index = -1;
 
 // ---------------------------------------------------------------------------
 // JobHandle
@@ -34,53 +41,14 @@ void JobHandle::wait() const {
     // Fast path: already complete.
     if (is_done()) return;
 
-    // Detect whether the caller is a worker thread (has a worker index)
-    // vs. the main thread. Worker threads help by stealing + running jobs
-    // while they wait ("work as wait", Naughty Dog style); the main thread
-    // just condvar-blocks to avoid reentrancy into render/ECS code that
-    // is not thread-safe.
-    //
-    // We identify the main thread as "any thread that is NOT one of the
-    // JobSystemP2 worker threads". This covers Runtime::run() and any test
-    // thread that calls wait() directly.
-    JobSystemP2* p2 = dynamic_cast<JobSystemP2*>(&default_job_system());
-
-    if (p2 == nullptr) {
-        // P1 stub fallback: no worker pool, so just busy-wait.
-        while (!is_done()) {
-            std::this_thread::yield();
-        }
+    if (counter_->owner != nullptr) {
+        counter_->owner->wait_for_counter(counter_);
         return;
     }
 
-    // Worker thread? Compare id against p2's thread list. This is cheap
-    // (a few pointer compares) and only happens once per wait() call.
-    const bool is_main = p2->is_main_thread();
-    if (!is_main) {
-        // Worker / "work-as-wait": keep stealing + running jobs until our
-        // target counter hits 0. This keeps the CPU busy and prevents
-        // worker-thread deadlock when a job's dependency chain crosses
-        // the wait point.
-        //
-        // We cannot call p2->worker_loop() recursively (it would loop
-        // forever on stopping_); instead we ask the pool to wait for the
-        // counter via a helper that picks up work opportunistically.
-        // Simplest correct approach: busy-wait + yield + try_steal.
-        while (!is_done()) {
-            // Yield to let the actual workers progress. Trying to steal
-            // here would require exposing worker internals; keep it
-            // simple for P2. P3 can add a try_steal_one() public helper.
-            std::this_thread::yield();
-        }
-        return;
-    }
-
-    // Main thread: condvar-block on the Counter's cv. on_counter_zero()
-    // notifies_all when the counter reaches 0.
-    std::unique_lock<std::mutex> lk(counter_->mtx);
-    counter_->cv.wait(lk, [this] {
-        return counter_->value.load(std::memory_order_acquire) == 0;
-    });
+    // P1 creates completed handles synchronously. Keep a yield fallback for
+    // future non-P2 implementations that choose asynchronous execution.
+    while (!is_done()) std::this_thread::yield();
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +121,6 @@ void JobSystemP2::init(int32_t worker_count) {
         worker_count = (hw > 1) ? static_cast<int32_t>(hw - 1) : 1;
     }
     worker_count_ = worker_count;
-    main_thread_id_ = std::this_thread::get_id();
 
     // Allocate one deque per worker. Workers are the only thread that
     // pushes/pops from the back; stealers only pop from the front, so
@@ -203,35 +170,41 @@ JobHandle JobSystemP2::submit(JobFunc func,
                               std::span<JobHandle> dependencies) {
     auto counter = std::make_shared<JobHandle::Counter>();
     counter->value.store(1, std::memory_order_release);
+    counter->owner = this;
 
     auto* job = new Job{};
     job->func = std::move(func);
     job->counter = counter;
 
-    // Count unfinished deps and register as a waiter on each. A dep that
-    // is already done is skipped; a dep that is still in flight bumps
-    // pending_deps AND adds `job` to the dep's Counter::waiters list.
-    int32_t unfinished = 0;
-    for (auto& dep : dependencies) {
-        if (!dep.is_done()) {
-            ++unfinished;
-            // Safe raw pointer: `job` cannot be deleted until its
-            // pending_deps hits 0, which requires every dep Counter to
-            // hit 0 first — so any Counter holding `job` in its waiters
-            // list is keeping `job` reachable.
-            std::lock_guard<std::mutex> lk(dep.counter_->mtx);
-            dep.counter_->waiters.push_back(job);
-        }
-    }
-    job->pending_deps.store(unfinished, std::memory_order_release);
-
+    // Keep one pending-dependency slot while registration is in progress.
+    // A dependency may finish while we register later dependencies; without
+    // this guard it could enqueue and run `job` before its full DAG is known.
+    job->pending_deps.store(1, std::memory_order_release);
     total_jobs_.fetch_add(1, std::memory_order_acq_rel);
 
-    if (unfinished == 0) {
-        // No unfinished deps — enqueue immediately.
+    // Register unfinished dependencies while holding each Counter lock. The
+    // value check and waiter insertion must be one critical section: a prior
+    // is_done() check could race with on_counter_zero() and strand the job.
+    for (auto& dep : dependencies) {
+        if (!dep.counter_) continue;
+
+        std::lock_guard<std::mutex> lk(dep.counter_->mtx);
+        if (dep.counter_->value.load(std::memory_order_acquire) == 0) {
+            continue;
+        }
+
+        // Safe raw pointer: `job` retains its registration guard until all
+        // dependency slots are installed, and cannot run/delete itself until
+        // every registered Counter reaches zero.
+        job->pending_deps.fetch_add(1, std::memory_order_acq_rel);
+        dep.counter_->waiters.push_back(job);
+    }
+
+    // Drop the registration guard. If no dependency remains, this is the
+    // single transition that makes the job runnable.
+    if (job->pending_deps.fetch_sub(1, std::memory_order_acq_rel) == 1) {
         enqueue(job);
     }
-    // Else: on_counter_zero() on the last dep will enqueue `job`.
 
     return JobHandle{counter};
 }
@@ -248,6 +221,7 @@ JobHandle JobSystemP2::parallel_for(int32_t count, JobFunc func,
 
     auto counter = std::make_shared<JobHandle::Counter>();
     counter->value.store(num_tiles, std::memory_order_release);
+    counter->owner = this;
     total_jobs_.fetch_add(num_tiles, std::memory_order_acq_rel);
 
     // Pre-capture `func` in a shared_ptr ONCE, outside the loop. Each
@@ -288,6 +262,8 @@ int32_t JobSystemP2::worker_count() const {
 // ---------------------------------------------------------------------------
 
 void JobSystemP2::worker_loop(int32_t thread_index) {
+    g_current_job_system = this;
+    g_current_worker_index = thread_index;
     WorkerQueue& my_queue = *queues_[thread_index];
 
     while (true) {
@@ -332,10 +308,13 @@ void JobSystemP2::worker_loop(int32_t thread_index) {
                     goto next_iter;
                 }
             }
-            return;  // No more work + stopping_ -> exit.
+            break;  // No more work + stopping_ -> exit.
         }
         next_iter:;
     }
+
+    g_current_worker_index = -1;
+    g_current_job_system = nullptr;
 }
 
 void JobSystemP2::enqueue(Job* job) {
@@ -374,6 +353,50 @@ bool JobSystemP2::try_steal(WorkerQueue& q, Job** out) {
     return true;
 }
 
+bool JobSystemP2::try_run_one(int32_t worker_index) {
+    if (worker_index < 0 || worker_index >= worker_count_) return false;
+
+    Job* job = nullptr;
+    if (try_pop_own(*queues_[worker_index], &job)) {
+        run_job(worker_index, job);
+        return true;
+    }
+
+    for (int32_t i = 1; i < worker_count_; ++i) {
+        const int32_t victim = (worker_index + i) % worker_count_;
+        if (try_steal(*queues_[victim], &job)) {
+            run_job(worker_index, job);
+            return true;
+        }
+    }
+    return false;
+}
+
+void JobSystemP2::wait_for_counter(
+    const std::shared_ptr<JobHandle::Counter>& counter) {
+    if (!counter || counter->value.load(std::memory_order_acquire) == 0) {
+        return;
+    }
+
+    if (g_current_job_system == this) {
+        // Nested waits must actively execute available work. In particular,
+        // a one-worker pool would otherwise wait forever for child tiles that
+        // only that same worker can dequeue.
+        while (counter->value.load(std::memory_order_acquire) != 0) {
+            if (!try_run_one(g_current_worker_index)) {
+                std::this_thread::yield();
+            }
+        }
+        return;
+    }
+
+    // Main and foreign-pool threads block rather than reentering this pool.
+    std::unique_lock<std::mutex> lk(counter->mtx);
+    counter->cv.wait(lk, [&counter] {
+        return counter->value.load(std::memory_order_acquire) == 0;
+    });
+}
+
 void JobSystemP2::run_job(int32_t thread_index, Job* job) {
     // Execute the user function. Exceptions are caught and swallowed —
     // propagating across thread boundaries is undefined in std::function.
@@ -400,7 +423,7 @@ void JobSystemP2::run_job(int32_t thread_index, Job* job) {
 }
 
 void JobSystemP2::on_counter_zero(JobHandle::Counter* c) {
-    // Wake main-thread waiters (condvar-blocked in JobHandle::wait()).
+    // Wake non-worker waiters blocked in JobHandle::wait().
     {
         std::lock_guard<std::mutex> lk(c->mtx);
         // Move waiters out so we can enqueue them without holding the

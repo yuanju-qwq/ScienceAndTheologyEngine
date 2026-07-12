@@ -1,7 +1,9 @@
 # Player module: first-person controller, voxel collision, and block ray casts.
 
 add_library(snt_player STATIC
+    collision_snapshot.cpp
     player_controller.cpp
+    player_physics_system.cpp
     ray_cast.cpp
     voxel_collision.cpp
 )
@@ -11,6 +13,7 @@ target_link_libraries(snt_player PUBLIC
     snt_core
     snt_ecs
     snt_input
+    snt_data_defs
     snt_data_world
     snt_voxel
 )

@@ -16,6 +16,7 @@
 #include "data/world/chunk_registry.h"
 #include "ecs/components.h"
 #include "ecs/event_bus.h"
+#include "ecs/system_scheduler.h"
 #include "ecs/world.h"
 #include "input/input_system.h"
 #include "platform/window.h"
@@ -179,8 +180,7 @@ struct Runtime::Impl {
 
     snt::data::ChunkRegistry chunk_registry;
     std::unique_ptr<snt::voxel::ChunkRenderer> chunk_renderer;
-    snt::voxel::ChunkRenderSystem chunk_render_system;
-    snt::voxel::ChunkRenderSystem* runtime_chunk_render_system = nullptr;
+    std::shared_ptr<snt::voxel::ChunkRenderSystem> runtime_chunk_render_system;
 
     std::unique_ptr<snt::ui::MuiRenderer> mui_renderer;
     std::unique_ptr<snt::ui::UiRuntime> ui_runtime;
@@ -194,6 +194,7 @@ struct Runtime::Impl {
     bool mouse_locked = false;
 
     snt::core::JobSystemP2 job_system;
+    std::unique_ptr<snt::ecs::SystemScheduler> system_scheduler;
     std::unique_ptr<RuntimeServices> services;
     std::unique_ptr<WorldSession> world_session;
     std::unique_ptr<IGameSession> session;
@@ -242,6 +243,33 @@ snt::input::InputSystem& WorldSession::input() const noexcept {
     return runtime_->impl_->input_system;
 }
 
+snt::core::Expected<snt::ecs::SystemHandle> WorldSession::register_main_system(
+    std::shared_ptr<snt::ecs::System> system) {
+    if (!runtime_ || !runtime_->impl_ || !runtime_->impl_->system_scheduler) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "WorldSession scheduler is unavailable"};
+    }
+    return runtime_->impl_->system_scheduler->register_main(std::move(system));
+}
+
+snt::core::Expected<snt::ecs::SystemHandle> WorldSession::register_worker_system(
+    std::shared_ptr<snt::ecs::IWorkerSystem> system) {
+    if (!runtime_ || !runtime_->impl_ || !runtime_->impl_->system_scheduler) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "WorldSession scheduler is unavailable"};
+    }
+    return runtime_->impl_->system_scheduler->register_worker(std::move(system));
+}
+
+snt::core::Expected<void> WorldSession::set_system_enabled(
+    snt::ecs::SystemHandle handle, bool enabled) {
+    if (!runtime_ || !runtime_->impl_ || !runtime_->impl_->system_scheduler) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "WorldSession scheduler is unavailable"};
+    }
+    return runtime_->impl_->system_scheduler->set_enabled(handle, enabled);
+}
+
 snt::core::Expected<void> WorldSession::set_active_camera(snt::ecs::EntityGuid guid) {
     return runtime_->set_active_camera(guid);
 }
@@ -288,6 +316,7 @@ snt::core::Expected<void> Runtime::init(const snt::core::RuntimeConfig& config,
     impl_->job_system.init();
     snt::core::set_default_job_system(&impl_->job_system);
     SNT_LOG_INFO("Job system started: %d workers", impl_->job_system.worker_count());
+    impl_->system_scheduler = std::make_unique<snt::ecs::SystemScheduler>(impl_->job_system);
 
     {
         const std::string log_path = resolve_path(impl_->paths.user_root, "logs/engine.log");
@@ -414,15 +443,20 @@ snt::core::Expected<void> Runtime::init(const snt::core::RuntimeConfig& config,
         error.with_context("Runtime::init(chunk_renderer)");
         return error;
     }
-    impl_->chunk_render_system.set_chunk_renderer(impl_->chunk_renderer.get());
-    impl_->chunk_render_system.set_chunk_registry(&impl_->chunk_registry);
-    impl_->chunk_render_system.set_remesh_jobs_per_frame(config.voxel.remesh_jobs_per_frame);
-    impl_->chunk_render_system.set_uploads_per_frame(config.voxel.uploads_per_frame);
-    auto& chunk_system = impl_->world.add_system<snt::voxel::ChunkRenderSystem>(
-        std::move(impl_->chunk_render_system));
-    impl_->runtime_chunk_render_system = &chunk_system;
+    auto chunk_system = std::make_shared<snt::voxel::ChunkRenderSystem>();
+    chunk_system->set_chunk_renderer(impl_->chunk_renderer.get());
+    chunk_system->set_chunk_registry(&impl_->chunk_registry);
+    chunk_system->set_remesh_jobs_per_frame(config.voxel.remesh_jobs_per_frame);
+    chunk_system->set_uploads_per_frame(config.voxel.uploads_per_frame);
+    if (auto result = impl_->system_scheduler->register_main(chunk_system); !result) {
+        auto error = result.error();
+        error.with_context("Runtime::init(register ChunkRenderSystem)");
+        return error;
+    }
+    impl_->runtime_chunk_render_system = std::move(chunk_system);
     impl_->render_system.add_pass_provider(
-        [chunk_system_ptr = &chunk_system](snt::render::RenderPassBuildContext& context) {
+        [chunk_system_ptr = impl_->runtime_chunk_render_system.get()]
+        (snt::render::RenderPassBuildContext& context) {
             auto* pass = context.graph.add_pass("voxel_chunks");
             if (!pass) {
                 SNT_LOG_ERROR("Failed to add voxel_chunks render pass");
@@ -569,12 +603,25 @@ void Runtime::run() {
         impl_->session->frame(frame_context);
 
         constexpr float kFixedDeltaSeconds = TickStats::kTickMs / 1000.0f;
+        if (!impl_->system_scheduler) {
+            SNT_LOG_ERROR("Fixed-tick scheduler is unavailable; ending runtime loop");
+            break;
+        }
+        bool scheduler_failed = false;
         impl_->tick_stats.consume(frame_ms, [&] {
+            if (scheduler_failed) return;
+
             FixedTickContext tick_context(*impl_->services, *impl_->world_session,
                                           kFixedDeltaSeconds, ++impl_->tick_index);
             impl_->session->fixed_tick(tick_context);
-            impl_->world.update(kFixedDeltaSeconds);
+            auto result = impl_->system_scheduler->fixed_tick(impl_->world, kFixedDeltaSeconds);
+            if (!result) {
+                SNT_LOG_ERROR("Fixed-tick scheduler failed; ending runtime loop: %s",
+                              result.error().format().c_str());
+                scheduler_failed = true;
+            }
         });
+        if (scheduler_failed) break;
         impl_->input_system.new_frame();
 
         impl_->ui_draw_data = {};
@@ -621,6 +668,15 @@ void Runtime::shutdown() {
     }
     impl_->session.reset();
 
+    // Event sinks can borrow system instances (for example, player input),
+    // so disconnect them before releasing scheduler-owned systems.
+    impl_->event_bus.clear();
+    if (impl_->system_scheduler) {
+        impl_->system_scheduler->shutdown();
+        impl_->system_scheduler.reset();
+    }
+    impl_->runtime_chunk_render_system.reset();
+
     // Worker tasks can retain immutable chunk snapshots and result queues.
     // Join them before destroying the World or GPU resources they reference.
     snt::core::set_default_job_system(nullptr);
@@ -630,7 +686,6 @@ void Runtime::shutdown() {
     // Sessions own script content, but Runtime owns the process-scoped service
     // lifetime until ScriptManager itself is made instance-owned.
     snt::script::ScriptManager::instance().shutdown();
-    impl_->event_bus.clear();
     impl_->world_session.reset();
     impl_->services.reset();
 

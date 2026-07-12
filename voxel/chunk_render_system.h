@@ -12,7 +12,7 @@
 //   The system reads chunk data directly from ChunkRegistry.
 //
 // Two-phase (keeps the single frame loop in RenderSystem):
-//   1. update(world, dt)  — remesh every dirty chunk: fetch ChunkData from
+//   1. update(world, dt)  — fixed-tick main-thread work: fetch ChunkData from
 //      ChunkRegistry, run greedy mesher, upload via ChunkRenderer, store
 //      the handle in uploaded_meshes_, clear dirty. NO draws, NO frame
 //      acquisition.
@@ -25,8 +25,8 @@
 //   untrack(ChunkKey)     — unload mesh + drop from tracking (chunk removed)
 //
 // Layering: sits in voxel/, depends on data (ChunkRegistry + ChunkData) +
-// voxel_mesh (greedy_mesher) + chunk_renderer. Still subclasses ecs::System
-// so it plugs into World::update() scheduling, but holds no per-chunk
+// voxel_mesh (greedy_mesher) + chunk_renderer. It registers as a main-thread
+// ECS system through Runtime's SystemScheduler, but holds no per-chunk
 // entities. No Vulkan types leak into the header except VkCommandBuffer.
 
 #pragma once
@@ -71,6 +71,18 @@ public:
     void set_remesh_jobs_per_frame(uint32_t n) { remesh_jobs_per_frame_ = n > 0 ? n : 1; }
     void set_uploads_per_frame(uint32_t n) { uploads_per_frame_ = n > 0 ? n : 1; }
 
+    snt::ecs::SystemMetadata metadata() const override {
+        return {
+            "voxel.chunk_render",
+            snt::ecs::SystemThreadAffinity::MainThread,
+            {
+                {"world.chunks", snt::ecs::SystemResourceAccessMode::Read},
+                {"voxel.chunk_meshes", snt::ecs::SystemResourceAccessMode::Write},
+                {"render.gpu_resources", snt::ecs::SystemResourceAccessMode::Write},
+            },
+        };
+    }
+
     // --- External dirty-marking API ---
     // Schedule a chunk for remesh on the next update(). Safe to call for
     // chunks not yet tracked (they will be added). Idempotent.
@@ -80,7 +92,7 @@ public:
     // internal maps. Call when a chunk is unloaded from ChunkRegistry.
     void untrack(const snt::data::ChunkKey& key);
 
-    // ECS update: remesh dirty chunks (phase 1).
+    // Fixed-tick main-thread update: remesh dirty chunks (phase 1).
     void update(snt::ecs::World& world, float dt) override;
 
     // Render phase (phase 2). Called by RenderSystem inside the forward

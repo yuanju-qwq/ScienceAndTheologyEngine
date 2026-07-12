@@ -31,7 +31,7 @@ bool nearly_equal(float a, float b) {
 }  // namespace
 
 RayCastResult ray_cast_voxels_dda(
-        const CollisionWorldView& world,
+        const IVoxelCollisionWorld& world,
         Vec3 origin,
         Vec3 direction,
         float max_distance) {

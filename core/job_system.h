@@ -31,6 +31,7 @@
 #include <memory>
 #include <mutex>
 #include <span>
+#include <thread>
 #include <vector>
 
 namespace snt::core {
@@ -70,6 +71,10 @@ private:
     // enqueued by the JobSystem.
     struct Counter {
         std::atomic<int32_t> value{0};
+        // Set by JobSystemP2 when a handle is created. It lets wait() route
+        // nested worker waits to the pool that owns the queued work instead
+        // of relying on the process-wide default job system.
+        JobSystemP2* owner = nullptr;
         // P2 fields below are unused by the P1 stub; they live here so the
         // Counter layout is identical across implementations (avoids ABI
         // friction when default_job_system() swaps P1 <-> P2 at runtime).
@@ -213,9 +218,9 @@ private:
 //     many deps remain; each dep's Counter::waiters gets a raw Job*.
 //     When a Counter hits 0, every waiter's pending_deps is decremented
 //     under the Counter's mutex; waiters that reach 0 are enqueued.
-//   - wait(): worker threads steal + run jobs while waiting (work-as-wait);
-//     the main thread (identified by thread id) condvar-blocks to avoid
-//     reentrancy into render/ECS code.
+//   - wait(): a worker waiting on this pool executes queued work (work-as-
+//     wait); main and foreign-pool threads condvar-block to avoid reentrancy
+//     into render/ECS code.
 //   - shutdown(): graceful — set stopping_, wake all workers, drain
 //     pending + running jobs, join threads.
 class JobSystemP2 : public JobSystem {
@@ -233,14 +238,9 @@ public:
 
     int32_t worker_count() const override;
 
-    // True if the calling thread is the one that called init() (i.e. the
-    // main / engine thread). JobHandle::wait() uses this to decide between
-    // condvar-blocking (main thread) and work-as-wait (worker threads).
-    bool is_main_thread() const {
-        return std::this_thread::get_id() == main_thread_id_;
-    }
-
 private:
+    friend class JobHandle;
+
     // Per-worker state: a deque + mutex. Owner pushes/pops back (LIFO);
     // stealers try_pop front. Work-stealing lets an idle worker help a
     // busy one, balancing load across the pool.
@@ -253,6 +253,8 @@ private:
     void enqueue(Job* job);                 // round-robin onto workers
     bool try_pop_own(WorkerQueue& q, Job** out);  // LIFO pop back (owner)
     bool try_steal(WorkerQueue& q, Job** out);    // FIFO pop front (stealer)
+    bool try_run_one(int32_t worker_index);
+    void wait_for_counter(const std::shared_ptr<JobHandle::Counter>& counter);
     void run_job(int32_t thread_index, Job* job);
     void on_counter_zero(JobHandle::Counter* c);  // wake dependents + waiters
 
@@ -268,7 +270,6 @@ private:
     std::atomic<int32_t> total_jobs_{0};    // outstanding (running+pending)
 
     int32_t worker_count_ = 0;
-    std::thread::id main_thread_id_;        // main thread = caller of init()
 };
 
 // Global default job system instance (defined in job_system.cpp).

@@ -186,6 +186,44 @@ TEST_F(JobSystemP2Test, ParallelFor_LargeBatchReducesTileCount) {
     EXPECT_EQ(sum.load(), (long long)kCount * (kCount - 1) / 2);
 }
 
+TEST(JobSystemP2StandaloneTest, NestedParallelForOnSingleWorkerCompletes) {
+    // A worker task waits for child tiles on the same pool. This must make
+    // progress even with one worker, otherwise nested ECS sharding deadlocks.
+    JobSystemP2 js;
+    js.init(1);
+
+    constexpr int32_t kCount = 64;
+    std::atomic<int32_t> completed{0};
+    JobHandle parent = js.submit([&](int32_t, int32_t) {
+        JobHandle children = js.parallel_for(kCount, [&](int32_t, int32_t) {
+            completed.fetch_add(1, std::memory_order_relaxed);
+        }, /*batch_size=*/8);
+        children.wait();
+    });
+
+    parent.wait();
+    EXPECT_EQ(completed.load(), kCount);
+    js.shutdown();
+}
+
+TEST_F(JobSystemP2Test, NestedParallelForUsesBothWorkers) {
+    constexpr int32_t kCount = 32;
+    std::atomic<uint32_t> worker_mask{0};
+    JobHandle parent = js_.submit([&](int32_t, int32_t) {
+        JobHandle children = js_.parallel_for(kCount, [&](int32_t worker_index, int32_t) {
+            worker_mask.fetch_or(1u << static_cast<uint32_t>(worker_index),
+                                 std::memory_order_relaxed);
+            // Keep tiles live long enough for the idle worker to dequeue its
+            // own tile, rather than only verifying that jobs were submitted.
+            std::this_thread::sleep_for(1ms);
+        });
+        children.wait();
+    });
+
+    parent.wait();
+    EXPECT_EQ(worker_mask.load() & 0x3u, 0x3u);
+}
+
 // ===========================================================================
 // Future<T> — submit_future returns the value
 // ===========================================================================

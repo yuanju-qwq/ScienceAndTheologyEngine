@@ -16,8 +16,9 @@
 // This is the canonical ECS hot-path benchmark.
 
 #include "ecs/components.h"
-#include "ecs/world.h"
 #include "ecs/system.h"
+#include "ecs/system_scheduler.h"
+#include "ecs/world.h"
 
 // Data-layer includes for data_test subcommand.
 #include "data/defs/chunk_data.h"
@@ -31,6 +32,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <string>
 
 using namespace snt::ecs;
@@ -45,6 +47,17 @@ using Clock = std::chrono::high_resolution_clock;
 // ---------------------------------------------------------------------------
 class MovementSystem : public System {
 public:
+    SystemMetadata metadata() const override {
+        return {
+            "tool.movement",
+            SystemThreadAffinity::MainThread,
+            {
+                {"ecs.position", SystemResourceAccessMode::Write},
+                {"ecs.velocity", SystemResourceAccessMode::Read},
+            },
+        };
+    }
+
     void update(World& world, float dt) override {
         auto view = world.registry().view<Position, Velocity>();
         for (auto [entity, pos, vel] : view.each()) {
@@ -66,11 +79,13 @@ static int run_ecs_test(int entity_count, int frame_count) {
     std::cout << std::endl;
 
     World world;
+    entt::entity first_entity = entt::null;
 
     // --- Phase 1: entity + component creation ---
     auto t0 = Clock::now();
     for (int i = 0; i < entity_count; ++i) {
         auto e = world.create_entity();
+        if (i == 0) first_entity = e;
         world.registry().emplace<Position>(e, Position{i, 0, 0});
         world.registry().emplace<Velocity>(e, Velocity{1.0f, 0.5f, 0.25f});
         world.registry().emplace<Health>(e, Health{100.0f, 100.0f});
@@ -81,14 +96,25 @@ static int run_ecs_test(int entity_count, int frame_count) {
     std::cout << "Entity creation: " << create_ms << " ms ("
               << (create_ms / entity_count) << " ms/entity)" << std::endl;
 
-    // --- Phase 2: system registration ---
-    world.add_system<MovementSystem>();
+    // --- Phase 2: scheduler registration ---
+    snt::core::JobSystem jobs;
+    SystemScheduler scheduler(jobs);
+    auto movement = std::make_shared<MovementSystem>();
+    if (auto result = scheduler.register_main(std::move(movement)); !result) {
+        std::cerr << "Failed to register MovementSystem: "
+                  << result.error().format() << std::endl;
+        return 1;
+    }
 
-    // --- Phase 3: system update loop ---
+    // --- Phase 3: fixed-tick update loop ---
     const float dt = 1.0f / 60.0f;
     auto t2 = Clock::now();
     for (int f = 0; f < frame_count; ++f) {
-        world.update(dt);
+        if (auto result = scheduler.fixed_tick(world, dt); !result) {
+            std::cerr << "Movement fixed tick failed: "
+                      << result.error().format() << std::endl;
+            return 1;
+        }
     }
     auto t3 = Clock::now();
     double update_ms = std::chrono::duration<double, std::milli>(t3 - t2).count();
@@ -101,14 +127,13 @@ static int run_ecs_test(int entity_count, int frame_count) {
     double total_ms = create_ms + update_ms;
     std::cout << "Total:           " << total_ms << " ms" << std::endl;
 
-    // Sanity check: first entity should have moved.
-    auto view = world.registry().view<Position>();
-    if (entity_count > 0) {
-        auto first = *view.begin();
-        auto& pos = world.registry().get<Position>(first);
+    // Sanity check: the first created entity starts at x=0 and moves one
+    // unit per fixed tick. Do not use a registry view's unspecified order.
+    if (first_entity != entt::null) {
+        auto& pos = world.registry().get<Position>(first_entity);
         std::cout << "Sanity: entity[0] Position = ("
                   << pos.x << ", " << pos.y << ", " << pos.z << ")"
-                  << " (expected x ~= " << entity_count + frame_count << ")"
+                  << " (expected x = " << frame_count << ")"
                   << std::endl;
     }
 

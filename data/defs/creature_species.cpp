@@ -3,7 +3,7 @@
 // Ported from src/core/simulation/creature_species.cpp.
 // Namespace: science_and_theology -> snt::data.
 
-#include "defs/creature_species.h"
+#include "data/defs/creature_species.h"
 
 namespace snt::data {
 

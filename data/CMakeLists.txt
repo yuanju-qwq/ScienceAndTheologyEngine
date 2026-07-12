@@ -12,7 +12,6 @@ add_library(snt_data_defs STATIC
     defs/block_entity_registry.cpp
     defs/machine_collision_overlay.cpp
 )
-target_include_directories(snt_data_defs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(snt_data_defs PUBLIC snt_engine_settings)
 
 # P2 task 2: world generation algorithms (noise + config + terrain generator).

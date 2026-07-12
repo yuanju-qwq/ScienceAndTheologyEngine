@@ -10,6 +10,6 @@ add_library(snt_input STATIC
     input_system.cpp
 )
 target_include_directories(snt_input PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(snt_input PUBLIC snt_engine_settings)
+target_link_libraries(snt_input PUBLIC snt_engine_settings snt_core)
 # SDL3 for SDL_Event / SDL_GetKeyboardState types used in the public API.
 target_link_libraries(snt_input PRIVATE snt_third_party)

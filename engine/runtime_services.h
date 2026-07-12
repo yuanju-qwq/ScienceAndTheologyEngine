@@ -10,9 +10,11 @@
 #include "core/runtime_config.h"
 #include "ecs/entity_guid.h"
 #include "ecs/event_bus.h"
+#include "ecs/system_scheduler.h"
 #include "input/input_state.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -80,6 +82,17 @@ public:
     snt::voxel::ChunkRenderSystem& chunk_render_system() const noexcept;
     snt::ecs::EventBus& events() const noexcept;
     snt::input::InputSystem& input() const noexcept;
+
+    // Runtime owns the scheduler; sessions compose their systems through
+    // these registration APIs instead of attaching them to World directly.
+    // Registration is main-thread-only and returns the stable handle used to
+    // enable or disable a system later in the session lifetime.
+    [[nodiscard]] snt::core::Expected<snt::ecs::SystemHandle> register_main_system(
+        std::shared_ptr<snt::ecs::System> system);
+    [[nodiscard]] snt::core::Expected<snt::ecs::SystemHandle> register_worker_system(
+        std::shared_ptr<snt::ecs::IWorkerSystem> system);
+    [[nodiscard]] snt::core::Expected<void> set_system_enabled(
+        snt::ecs::SystemHandle handle, bool enabled);
 
     snt::core::Expected<void> set_active_camera(snt::ecs::EntityGuid guid);
     void set_mouse_locked(bool locked);

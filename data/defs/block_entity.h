@@ -14,11 +14,11 @@
 #include <string>
 #include <vector>
 
-#include "defs/entity_data.h"
-#include "defs/creature_species.h"
-#include "defs/pipe_types.h"
-#include "defs/gt_values.h"
-#include "defs/crop_species_def.h"
+#include "data/defs/entity_data.h"
+#include "data/defs/creature_species.h"
+#include "data/defs/pipe_types.h"
+#include "data/defs/gt_values.h"
+#include "data/defs/crop_species_def.h"
 
 namespace snt::data {
 

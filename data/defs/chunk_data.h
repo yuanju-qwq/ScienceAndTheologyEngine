@@ -14,11 +14,11 @@
 #include <utility>
 #include <vector>
 
-#include "defs/terrain_data.h"
-#include "defs/entity_data.h"
-#include "defs/block_entity.h"
-#include "defs/population_cell.h"
-#include "defs/captive_creature.h"
+#include "data/defs/terrain_data.h"
+#include "data/defs/entity_data.h"
+#include "data/defs/block_entity.h"
+#include "data/defs/population_cell.h"
+#include "data/defs/captive_creature.h"
 
 namespace snt::data {
 

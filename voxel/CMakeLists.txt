@@ -25,9 +25,11 @@ target_include_directories(snt_voxel PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(snt_voxel PUBLIC
     snt_engine_settings
     snt_voxel_mesh
+    snt_core
     snt_assets
     snt_render_backend
     snt_ecs
+    snt_data_defs
     snt_data_world
     snt_third_party            # glm
 )

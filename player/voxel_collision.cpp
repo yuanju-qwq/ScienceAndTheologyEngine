@@ -15,7 +15,7 @@ namespace {
 constexpr float kEpsilon = 0.0001f;
 constexpr int32_t kChunkSize = snt::data::ChunkData::kChunkSize;
 
-bool range_has_solid(const CollisionWorldView& world,
+bool range_has_solid(const IVoxelCollisionWorld& world,
                      int32_t min_x, int32_t max_x,
                      int32_t min_y, int32_t max_y,
                      int32_t min_z, int32_t max_z) {
@@ -85,7 +85,7 @@ Aabb translate_aabb(const Aabb& box, const Vec3& delta) {
     };
 }
 
-bool aabb_overlaps_solid_voxels(const CollisionWorldView& world, const Aabb& box) {
+bool aabb_overlaps_solid_voxels(const IVoxelCollisionWorld& world, const Aabb& box) {
     const int32_t min_x = floor_to_i32(box.min.x);
     const int32_t min_y = floor_to_i32(box.min.y);
     const int32_t min_z = floor_to_i32(box.min.z);
@@ -97,7 +97,7 @@ bool aabb_overlaps_solid_voxels(const CollisionWorldView& world, const Aabb& box
 }
 
 CollisionMoveResult move_aabb_collide_voxels(
-        const CollisionWorldView& world,
+        const IVoxelCollisionWorld& world,
         const Aabb& start_box,
         const Vec3& desired_delta) {
     CollisionMoveResult result;

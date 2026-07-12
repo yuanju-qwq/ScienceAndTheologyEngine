@@ -1,11 +1,13 @@
+// PlayerControllerSystem main-thread input and interaction implementation.
+
 #define SNT_LOG_CHANNEL "player"
 #include "core/log.h"
 
 #include "player/player_controller.h"
+#include "player/player_physics_system.h"
 
 #include "data/defs/terrain_data.h"
 #include "data/world/chunk_registry.h"
-#include "ecs/components.h"
 #include "ecs/world.h"
 #include "input/input_system.h"
 #include "player/ray_cast.h"
@@ -16,6 +18,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <memory>
+#include <utility>
 
 namespace snt::player {
 namespace {
@@ -58,83 +62,65 @@ Vec3 add_scaled(Vec3 base, Vec3 offset, float scale) {
     return base;
 }
 
+Vec3 eye_position(const PlayerControllerState& state,
+                  const PlayerControllerTuning& tuning) {
+    return {
+        state.feet_position.x,
+        state.feet_position.y + tuning.eye_height,
+        state.feet_position.z,
+    };
+}
+
+Vec3 look_direction(const PlayerControllerState& state) {
+    const float yaw = degrees_to_radians(state.yaw);
+    const float pitch = degrees_to_radians(state.pitch);
+    const float cos_pitch = std::cos(pitch);
+    return {
+        std::cos(yaw) * cos_pitch,
+        std::sin(pitch),
+        std::sin(yaw) * cos_pitch,
+    };
+}
+
 }  // namespace
 
 void PlayerControllerSystem::set_initial_look(float yaw, float pitch) {
-    state_.yaw = yaw;
-    state_.pitch = std::clamp(pitch, -89.0f, 89.0f);
+    initial_state_.yaw = yaw;
+    initial_state_.pitch = std::clamp(pitch, -89.0f, 89.0f);
 }
 
-Aabb PlayerControllerSystem::current_body_aabb() const {
-    const float half_width = tuning_.width * 0.5f;
-    return Aabb{
-        .min = {
-            state_.feet_position.x - half_width,
-            state_.feet_position.y,
-            state_.feet_position.z - half_width,
-        },
-        .max = {
-            state_.feet_position.x + half_width,
-            state_.feet_position.y + tuning_.height,
-            state_.feet_position.z + half_width,
-        },
-    };
+std::shared_ptr<PlayerPhysicsSystem> PlayerControllerSystem::make_physics_system() const {
+    return std::make_shared<PlayerPhysicsSystem>(
+        chunk_registry_, camera_entity_, dimension_id_, tuning_);
 }
 
-Vec3 PlayerControllerSystem::eye_position() const {
-    return Vec3{
-        state_.feet_position.x,
-        state_.feet_position.y + tuning_.eye_height,
-        state_.feet_position.z,
-    };
-}
-
-Vec3 PlayerControllerSystem::look_direction() const {
-    const float yaw = degrees_to_radians(state_.yaw);
-    const float pitch = degrees_to_radians(state_.pitch);
-    const float cp = std::cos(pitch);
-    return Vec3{
-        std::cos(yaw) * cp,
-        std::sin(pitch),
-        std::sin(yaw) * cp,
-    };
-}
-
-void PlayerControllerSystem::sync_camera_transform(snt::ecs::World& world) {
+PlayerControllerState* PlayerControllerSystem::ensure_state(snt::ecs::World& world) {
     if (camera_entity_ == entt::null) {
-        return;
-    }
-    auto& registry = world.registry();
-    if (!registry.all_of<snt::ecs::Transform>(camera_entity_)) {
-        return;
+        return nullptr;
     }
 
-    auto& transform = registry.get<snt::ecs::Transform>(camera_entity_);
-    const Vec3 eye = eye_position();
-    transform.position[0] = eye.x;
-    transform.position[1] = eye.y;
-    transform.position[2] = eye.z;
-    transform.rotation[0] = state_.pitch;
-    transform.rotation[1] = state_.yaw;
-    transform.rotation[2] = 0.0f;
+    auto& registry = world.registry();
+    if (!registry.valid(camera_entity_)) {
+        return nullptr;
+    }
+    if (!registry.all_of<PlayerControllerState>(camera_entity_)) {
+        registry.emplace<PlayerControllerState>(camera_entity_, initial_state_);
+    }
+    return &registry.get<PlayerControllerState>(camera_entity_);
 }
 
-void PlayerControllerSystem::try_break_target_block() {
+void PlayerControllerSystem::try_break_target_block(const PlayerControllerState& state) {
     if (!chunk_registry_ || !chunk_render_system_) {
         return;
     }
 
-    CollisionWorldView world_view{
-        .chunks = chunk_registry_,
-        .dimension_id = dimension_id_,
-        .missing_chunks_are_solid = false,
-    };
-    const Vec3 origin = eye_position();
-    const Vec3 forward = look_direction();
+    const CollisionWorldView world_view(chunk_registry_, dimension_id_, false);
+    const Vec3 origin = eye_position(state, tuning_);
+    const Vec3 forward = look_direction(state);
     RayCastResult hit =
         ray_cast_voxels_dda(world_view, origin, forward, tuning_.reach_distance);
     if (!hit.hit) {
-        const float yaw = degrees_to_radians(state_.yaw);
+        const float yaw = degrees_to_radians(state.yaw);
         const Vec3 right{-std::sin(yaw), 0.0f, std::cos(yaw)};
         const Vec3 up = normalize_3d({
             right.y * forward.z - right.z * forward.y,
@@ -210,24 +196,24 @@ void PlayerControllerSystem::try_break_target_block() {
 }
 
 void PlayerControllerSystem::update(snt::ecs::World& world, float dt) {
-    if (!input_ || !chunk_registry_) {
-        sync_camera_transform(world);
+    PlayerControllerState* player_state = ensure_state(world);
+    if (!player_state || !input_ || !chunk_registry_) {
         return;
     }
 
     const auto& input = input_->state();
 
     if (mouse_locked_) {
-        state_.yaw += input.mouse_dx * tuning_.look_speed;
-        state_.pitch -= input.mouse_dy * tuning_.look_speed;
-        state_.pitch = std::clamp(state_.pitch, -89.0f, 89.0f);
+        player_state->yaw += input.mouse_dx * tuning_.look_speed;
+        player_state->pitch -= input.mouse_dy * tuning_.look_speed;
+        player_state->pitch = std::clamp(player_state->pitch, -89.0f, 89.0f);
 
         if (input.mouse_pressed[0]) {
-            try_break_target_block();
+            try_break_target_block(*player_state);
         }
     }
 
-    const float yaw = degrees_to_radians(state_.yaw);
+    const float yaw = degrees_to_radians(player_state->yaw);
     const Vec3 forward{std::cos(yaw), 0.0f, std::sin(yaw)};
     const Vec3 right{-std::sin(yaw), 0.0f, std::cos(yaw)};
 
@@ -255,52 +241,18 @@ void PlayerControllerSystem::update(snt::ecs::World& world, float dt) {
     if (input.key_held[SDL_SCANCODE_LSHIFT]) {
         speed *= tuning_.sprint_multiplier;
     }
-    state_.velocity.x = move_x * speed;
-    state_.velocity.z = move_z * speed;
+    player_state->velocity.x = move_x * speed;
+    player_state->velocity.z = move_z * speed;
 
-    if (state_.grounded && input.key_pressed[SDL_SCANCODE_SPACE]) {
-        state_.velocity.y = tuning_.jump_speed;
-        state_.grounded = false;
+    if (player_state->grounded && input.key_pressed[SDL_SCANCODE_SPACE]) {
+        player_state->velocity.y = tuning_.jump_speed;
+        player_state->grounded = false;
     }
 
-    state_.velocity.y -= tuning_.gravity * dt;
-    if (state_.velocity.y < -tuning_.terminal_velocity) {
-        state_.velocity.y = -tuning_.terminal_velocity;
+    player_state->velocity.y -= tuning_.gravity * dt;
+    if (player_state->velocity.y < -tuning_.terminal_velocity) {
+        player_state->velocity.y = -tuning_.terminal_velocity;
     }
-
-    CollisionWorldView world_view{
-        .chunks = chunk_registry_,
-        .dimension_id = dimension_id_,
-        .missing_chunks_are_solid = false,
-    };
-    const Vec3 desired_delta{
-        state_.velocity.x * dt,
-        state_.velocity.y * dt,
-        state_.velocity.z * dt,
-    };
-    const CollisionMoveResult move =
-        move_aabb_collide_voxels(world_view, current_body_aabb(), desired_delta);
-
-    state_.feet_position.x += move.delta.x;
-    state_.feet_position.y += move.delta.y;
-    state_.feet_position.z += move.delta.z;
-
-    if (move.hit_x) {
-        state_.velocity.x = 0.0f;
-    }
-    if (move.hit_z) {
-        state_.velocity.z = 0.0f;
-    }
-    if (move.hit_y) {
-        if (state_.velocity.y < 0.0f) {
-            state_.grounded = true;
-        }
-        state_.velocity.y = 0.0f;
-    } else {
-        state_.grounded = false;
-    }
-
-    sync_camera_transform(world);
 }
 
 }  // namespace snt::player

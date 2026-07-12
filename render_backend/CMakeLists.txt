@@ -26,7 +26,12 @@ target_include_directories(snt_render_backend PUBLIC
 target_include_directories(snt_render_backend PRIVATE
     ${CMAKE_BINARY_DIR}/_deps/tinyobjloader-src
 )
-target_link_libraries(snt_render_backend PUBLIC snt_engine_settings snt_third_party)
+target_link_libraries(snt_render_backend PUBLIC
+    snt_engine_settings
+    snt_third_party
+    snt_core
+)
+target_link_libraries(snt_render_backend PRIVATE snt_platform)
 
 # ============================================================
 # Shader compilation: GLSL -> SPIR-V via glslangValidator

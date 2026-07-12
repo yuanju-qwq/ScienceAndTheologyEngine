@@ -26,6 +26,8 @@ cmake --build build --target snt_engine --config Debug
 
 使用 Visual Studio 生成器时，生成的库位于 `build/engine/Debug/`。`snt_engine` 是静态库，因此该仓库不会生成可运行的游戏程序。
 
+配置阶段会自动审计引擎模块的 `#include "module/..."` 关系。每个内部模块 include 都必须由消费者直接在 `target_link_libraries` 中声明；漏声明会在生成构建文件前失败，而不是依赖最终可执行程序偶然补齐。
+
 从同一构建目录编译 Release：
 
 ```powershell

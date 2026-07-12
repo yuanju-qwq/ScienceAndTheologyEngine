@@ -11,7 +11,7 @@
 #include <string>
 #include <unordered_map>
 
-#include "defs/season_def.h"
+#include "data/defs/season_def.h"
 
 namespace snt::data {
 

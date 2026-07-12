@@ -4,8 +4,8 @@
 // Namespace: science_and_theology -> snt::data.
 // gt sub-namespace merged into snt::data (gt::PipeType -> PipeType, etc.).
 
-#include "defs/block_entity_registry.h"
-#include "defs/chunk_data.h"
+#include "data/defs/block_entity_registry.h"
+#include "data/defs/chunk_data.h"
 
 #include <algorithm>
 #include <cmath>

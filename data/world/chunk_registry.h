@@ -19,7 +19,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "defs/chunk_data.h"
+#include "data/defs/chunk_data.h"
 
 namespace snt::data {
 

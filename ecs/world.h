@@ -1,10 +1,13 @@
-// World — owns the ECS registry and manages systems.
+// World -- owns ECS entity/component data and stable EntityGuid mappings.
 //
 // Wraps entt::registry, providing:
 //   - entity creation + component attachment
-//   - system registration + per-frame update
 //   - view/group access for systems to query entities
 //   - stable EntityGuid <-> entt::entity mapping for serialization
+//
+// System lifetime and fixed-tick execution belong to SystemScheduler, which
+// is owned by Runtime. Keeping scheduling outside World prevents callers from
+// bypassing resource declarations, worker barriers, and shutdown tracking.
 //
 // EntityGuid mapping (Phase 1):
 //   - create_entity() issues a fresh Guid via the generator and attaches
@@ -16,8 +19,8 @@
 //     without any caller-side bookkeeping.
 //   - find_entity_by_guid(guid) returns entt::null if not found.
 //
-// P1.5: basic entity + system management.
-// P2+: system scheduling (dependencies, parallel update via JobSystem).
+// P1.5: entity + component management.
+// P2+: SystemScheduler owns system registration and fixed-tick execution.
 
 #pragma once
 
@@ -26,10 +29,9 @@
 #include "ecs/entt_config.h"
 
 #include "ecs/entity_guid.h"
-#include "ecs/system.h"  // System::update() called inline in World::update()
 
-#include <memory>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace snt::ecs {
@@ -88,25 +90,6 @@ public:
         return registry_.get<Component>(e);
     }
 
-    // --- System management ---
-
-    // Register a system. World takes ownership.
-    template<typename SystemType, typename... Args>
-    SystemType& add_system(Args&&... args) {
-        auto sys = std::make_unique<SystemType>(std::forward<Args>(args)...);
-        auto& ref = *sys;
-        systems_.push_back(std::move(sys));
-        return ref;
-    }
-
-    // --- Per-frame update ---
-    // Calls update(dt) on all registered systems in registration order.
-    void update(float dt) {
-        for (auto& sys : systems_) {
-            sys->update(*this, dt);
-        }
-    }
-
     // --- Registry access (for systems to query entities) ---
     entt::registry& registry() { return registry_; }
     const entt::registry& registry() const { return registry_; }
@@ -119,7 +102,6 @@ public:
 
 private:
     entt::registry registry_;
-    std::vector<std::unique_ptr<System>> systems_;
 
     // Monotonic Guid issuer. Lives in World so all entities created
     // through this World share a single counter space.

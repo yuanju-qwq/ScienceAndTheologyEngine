@@ -37,9 +37,6 @@ endif()
 # /Zc:__cplusplus being pushed into their ASM compile step.
 add_library(snt_engine_settings INTERFACE)
 target_compile_features(snt_engine_settings INTERFACE cxx_std_20)
-target_include_directories(snt_engine_settings INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-)
 if(MSVC)
     target_compile_options(snt_engine_settings INTERFACE
         /permissive-
@@ -48,6 +45,12 @@ if(MSVC)
         /FS
     )
 endif()
+
+# Module targets own their source-root include visibility. Keeping this out of
+# snt_engine_settings prevents compiler configuration from silently granting
+# every target access to every engine header. The audit registers each module
+# after target creation and validates direct #include -> link relationships.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/module_dependency_audit.cmake)
 
 # ============================================================
 # Third-party dependencies
@@ -82,6 +85,128 @@ add_subdirectory(voxel)         # P3: voxel meshing + chunk renderer
 add_subdirectory(data)          # P2: data definitions ported from src/core/
 add_subdirectory(player)        # P4: first-person controller + voxel collision/raycast
 add_subdirectory(engine)
+
+# The module/header layout remains stable for source compatibility inside the
+# engine. Registering the ownership map here lets CMake verify the dependency
+# graph without pretending that the facade target supplies downstream headers.
+snt_register_engine_module(
+    TARGET snt_platform
+    INCLUDE_PREFIXES platform
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/platform"
+)
+snt_register_engine_module(
+    TARGET snt_core
+    INCLUDE_PREFIXES core
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/core"
+)
+snt_register_engine_module(
+    TARGET snt_input
+    INCLUDE_PREFIXES input
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/input"
+)
+snt_register_engine_module(
+    TARGET snt_render_backend
+    INCLUDE_PREFIXES render_backend
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/render_backend"
+)
+snt_register_engine_module(
+    TARGET snt_assets
+    INCLUDE_PREFIXES assets
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/assets"
+)
+snt_register_engine_module(
+    TARGET snt_renderer
+    INCLUDE_PREFIXES renderer
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/renderer"
+)
+snt_register_engine_module(
+    TARGET snt_ecs
+    INCLUDE_PREFIXES ecs
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/ecs"
+)
+snt_register_engine_module(
+    TARGET snt_render
+    INCLUDE_PREFIXES render
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/render"
+)
+snt_register_engine_module(
+    TARGET snt_script
+    INCLUDE_PREFIXES script
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/script"
+)
+snt_register_engine_module(
+    TARGET snt_gameplay
+    INCLUDE_PREFIXES gameplay
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/gameplay"
+)
+snt_register_engine_module(
+    INTERFACE
+    TARGET snt_scene
+    INCLUDE_PREFIXES scene
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/scene"
+)
+snt_register_engine_module(
+    TARGET snt_ui
+    INCLUDE_PREFIXES ui
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/ui"
+)
+snt_register_engine_module(
+    TARGET snt_voxel_mesh
+    INCLUDE_PREFIXES voxel/greedy_mesh.h voxel/collision_faces.h voxel/voxel_vertex.h
+    SOURCE_FILES
+        "${SNT_ENGINE_SOURCE_DIR}/voxel/greedy_mesh.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/voxel/greedy_mesh.h"
+        "${SNT_ENGINE_SOURCE_DIR}/voxel/collision_faces.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/voxel/collision_faces.h"
+        "${SNT_ENGINE_SOURCE_DIR}/voxel/voxel_vertex.h"
+)
+snt_register_engine_module(
+    TARGET snt_voxel
+    INCLUDE_PREFIXES voxel/chunk_renderer.h voxel/chunk_render_system.h
+    SOURCE_FILES
+        "${SNT_ENGINE_SOURCE_DIR}/voxel/chunk_renderer.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/voxel/chunk_renderer.h"
+        "${SNT_ENGINE_SOURCE_DIR}/voxel/chunk_render_system.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/voxel/chunk_render_system.h"
+)
+snt_register_engine_module(
+    TARGET snt_data_defs
+    INCLUDE_PREFIXES data/defs
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/data/defs"
+)
+snt_register_engine_module(
+    TARGET snt_data_worldgen
+    INCLUDE_PREFIXES data/world_gen
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/data/world_gen"
+)
+snt_register_engine_module(
+    TARGET snt_data_save
+    INCLUDE_PREFIXES data/save
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/data/save"
+)
+snt_register_engine_module(
+    TARGET snt_data_mobile
+    INCLUDE_PREFIXES data/mobile_structure
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/data/mobile_structure"
+)
+snt_register_engine_module(
+    INTERFACE
+    TARGET snt_data_world
+    INCLUDE_PREFIXES data/world
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/data/world"
+)
+snt_register_engine_module(
+    TARGET snt_player
+    INCLUDE_PREFIXES player
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/player"
+)
+snt_register_engine_module(
+    TARGET snt_engine
+    INCLUDE_PREFIXES engine
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/engine"
+)
+snt_verify_engine_module_dependencies()
+
 add_subdirectory(tools)         # NEW: standalone dev tools (gen_default_scene, ...)
 
 # Tests are optional: gated by SNT_BUILD_TESTS (default ON). CI can

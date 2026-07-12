@@ -20,8 +20,8 @@
 #include <vector>
 #include <functional>
 
-#include "defs/entity_data.h"
-#include "defs/block_entity.h"
+#include "data/defs/entity_data.h"
+#include "data/defs/block_entity.h"
 
 namespace snt::data {
 

@@ -1,9 +1,9 @@
-// Unit tests for ECS components, World, and SystemScheduler (P2 tasks 5-6).
+// Unit tests for ECS components, World, and SystemScheduler.
 //
 // Validates:
 //   - Standard gameplay components (Position/Velocity/Health/Inventory).
 //   - World entity creation + component assignment + query.
-//   - SystemScheduler registration and frequency-based dispatch.
+//   - SystemScheduler metadata, fixed-tick barrier, and command ordering.
 //   - Tag components (PlayerMarker/CreatureMarker/StaticMarker).
 
 #include "ecs/components.h"
@@ -14,13 +14,16 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <memory>
+#include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 using namespace snt::ecs;
 using snt::core::JobSystem;
 using snt::core::JobSystemP2;
-using snt::core::default_job_system;
 
 // ===========================================================================
 // Standard gameplay components
@@ -136,107 +139,285 @@ TEST(WorldComponentTest, TagComponents) {
 // SystemScheduler
 // ===========================================================================
 
-// A test system that increments a counter when updated.
-class CountingSystem : public System {
+namespace {
+
+SystemMetadata main_metadata(
+    std::string name,
+    std::vector<SystemResourceAccess> resources = {}) {
+    return SystemMetadata{
+        std::move(name),
+        SystemThreadAffinity::MainThread,
+        std::move(resources),
+    };
+}
+
+SystemMetadata worker_metadata(
+    std::string name,
+    std::vector<SystemResourceAccess> resources = {}) {
+    return SystemMetadata{
+        std::move(name),
+        SystemThreadAffinity::Worker,
+        std::move(resources),
+    };
+}
+
+// Test-only main-thread system with explicit scheduler metadata.
+class CountingSystem final : public System {
 public:
+    explicit CountingSystem(SystemMetadata metadata)
+        : metadata_(std::move(metadata)) {}
+
+    SystemMetadata metadata() const override { return metadata_; }
+
     void update(World& world, float dt) override {
         (void)world;
         (void)dt;
         ++count;
     }
+
     std::atomic<int> count{0};
+
+private:
+    SystemMetadata metadata_;
 };
 
-TEST(SystemSchedulerTest, RegisterAndTickMainThreadSystem) {
-    SystemScheduler sched(nullptr);
-    auto sys = std::make_shared<CountingSystem>();
-    sched.add_main_thread(sys, "counter", 60);
+// Adapts concise lambdas to the production worker contracts. The task itself
+// receives only WorkerCommandContext, which prevents it from retaining World.
+class FunctionWorkerTask final : public IWorkerTask {
+public:
+    using ExecuteFunction = std::function<void(WorkerCommandContext&)>;
 
-    World world;
-    sched.update(world, 1.0f / 60.0f);  // one frame at 60Hz
+    explicit FunctionWorkerTask(ExecuteFunction execute)
+        : execute_(std::move(execute)) {}
 
-    EXPECT_EQ(sys->count.load(), 1);
+    void execute(WorkerCommandContext& commands) override {
+        execute_(commands);
+    }
+
+private:
+    ExecuteFunction execute_;
+};
+
+class FunctionWorkerSystem final : public IWorkerSystem {
+public:
+    using CaptureFunction = std::function<std::unique_ptr<IWorkerTask>(
+        const World&, float)>;
+
+    FunctionWorkerSystem(SystemMetadata metadata, CaptureFunction capture)
+        : metadata_(std::move(metadata)), capture_(std::move(capture)) {}
+
+    SystemMetadata metadata() const override { return metadata_; }
+
+    std::unique_ptr<IWorkerTask> capture(const World& world, float dt) override {
+        return capture_(world, dt);
+    }
+
+private:
+    SystemMetadata metadata_;
+    CaptureFunction capture_;
+};
+
+}  // namespace
+
+TEST(SystemSchedulerTest, RejectsInvalidMetadata) {
+    JobSystem jobs;
+    SystemScheduler scheduler(jobs);
+
+    EXPECT_FALSE(scheduler.register_main(
+        std::make_shared<CountingSystem>(main_metadata(""))));
+    EXPECT_FALSE(scheduler.register_main(std::make_shared<CountingSystem>(
+        main_metadata("blank-resource", {
+            SystemResourceAccess{"", SystemResourceAccessMode::Read},
+        }))));
+    EXPECT_FALSE(scheduler.register_main(std::make_shared<CountingSystem>(
+        worker_metadata("worker-on-main"))));
+
+    auto valid_main = scheduler.register_main(
+        std::make_shared<CountingSystem>(main_metadata("main")));
+    ASSERT_TRUE(valid_main);
+
+    EXPECT_FALSE(scheduler.register_main(
+        std::make_shared<CountingSystem>(main_metadata("main"))));
+    EXPECT_FALSE(scheduler.register_worker(std::make_shared<FunctionWorkerSystem>(
+        main_metadata("main-affinity-worker"),
+        [](const World&, float) -> std::unique_ptr<IWorkerTask> {
+            return nullptr;
+        })));
 }
 
-TEST(SystemSchedulerTest, FrequencyControlSkipsExcessFrames) {
-    SystemScheduler sched(nullptr);
-    auto sys = std::make_shared<CountingSystem>();
-    // 10Hz system: should only tick once per 100ms.
-    sched.add_main_thread(sys, "slow", 10);
+TEST(SystemSchedulerTest, RegisteredMainSystemTicksInRegistrationOrder) {
+    JobSystem jobs;
+    SystemScheduler scheduler(jobs);
+    auto system = std::make_shared<CountingSystem>(main_metadata("counter"));
+    auto registered = scheduler.register_main(system);
+    ASSERT_TRUE(registered);
+    EXPECT_EQ(*registered, 0u);
 
     World world;
-    // Simulate 5 frames at 60Hz (83ms total) — should NOT tick yet
-    // because 83ms < 100ms.
-    for (int i = 0; i < 5; ++i) {
-        sched.update(world, 1.0f / 60.0f);
-    }
-    EXPECT_EQ(sys->count.load(), 0);
+    ASSERT_TRUE(scheduler.fixed_tick(world, 1.0f / 20.0f));
 
-    // One more frame (~100ms total) — should tick once.
-    sched.update(world, 1.0f / 60.0f);
-    EXPECT_EQ(sys->count.load(), 1);
+    EXPECT_EQ(system->count.load(), 1);
+    EXPECT_EQ(scheduler.diagnostics().fixed_ticks, 1u);
+    EXPECT_EQ(scheduler.diagnostics().main_system_updates, 1u);
+
+    const auto systems = scheduler.systems();
+    ASSERT_EQ(systems.size(), 1u);
+    EXPECT_EQ(systems.front().metadata.name, "counter");
+    EXPECT_FALSE(systems.front().worker);
 }
 
 TEST(SystemSchedulerTest, DisabledSystemDoesNotTick) {
-    SystemScheduler sched(nullptr);
-    auto sys = std::make_shared<CountingSystem>();
-    sched.add_main_thread(sys, "counter", 60);
-
-    // Disable the system via the systems() vector.
-    sched.systems()[0].enabled = false;
-
-    World world;
-    sched.update(world, 1.0f / 60.0f);
-    EXPECT_EQ(sys->count.load(), 0);
-}
-
-TEST(SystemSchedulerTest, WorkerPoolDispatchesViaJobSystem) {
-    // Use the real P2 Job System so the worker-pool path is exercised.
-    JobSystemP2 js;
-    js.init(2);
-
-    SystemScheduler sched(&js);
-    auto sys = std::make_shared<CountingSystem>();
-    sched.add_worker(sys, "worker_counter", 60);
+    JobSystem jobs;
+    SystemScheduler scheduler(jobs);
+    auto system = std::make_shared<CountingSystem>(main_metadata("counter"));
+    auto registered = scheduler.register_main(system);
+    ASSERT_TRUE(registered);
+    ASSERT_TRUE(scheduler.set_enabled(*registered, false));
 
     World world;
-    sched.update(world, 1.0f / 60.0f);
-
-    // Wait for the worker to complete by draining the job system.
-    // The scheduler is fire-and-forget, so we sleep briefly to let the
-    // worker thread run. This is a best-effort synchronization for tests.
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    EXPECT_GE(sys->count.load(), 1);
-
-    js.shutdown();
+    ASSERT_TRUE(scheduler.fixed_tick(world, 1.0f / 20.0f));
+    EXPECT_EQ(system->count.load(), 0);
 }
 
-TEST(SystemSchedulerTest, AsyncSystemDoesNotTickOnUpdate) {
-    SystemScheduler sched(nullptr);
-    auto sys = std::make_shared<CountingSystem>();
-    sched.add_async(sys, "async_counter");
+TEST(SystemSchedulerTest, WorkerUsesCapturedSnapshotAndAppliesCommandAtBarrier) {
+    JobSystemP2 jobs;
+    jobs.init(2);
+    {
+        SystemScheduler scheduler(jobs);
+        World world;
+        const auto entity = world.create_entity();
+        world.add_component<Position>(entity, Position{4, 0, 0});
+
+        std::atomic<int> captures{0};
+        std::atomic<int> executions{0};
+        auto worker = std::make_shared<FunctionWorkerSystem>(
+            worker_metadata("snapshot", {
+                SystemResourceAccess{"position", SystemResourceAccessMode::Write},
+            }),
+            [entity, &captures, &executions](const World& captured_world,
+                                             float) -> std::unique_ptr<IWorkerTask> {
+                const int32_t snapshot =
+                    captured_world.get_component<Position>(entity).x;
+                ++captures;
+                return std::make_unique<FunctionWorkerTask>(
+                    [entity, snapshot, &executions](WorkerCommandContext& commands) {
+                        ++executions;
+                        commands.enqueue([entity, snapshot](World& command_world) {
+                            command_world.get_component<Position>(entity).x = snapshot + 1;
+                        });
+                    });
+            });
+        ASSERT_TRUE(scheduler.register_worker(worker));
+
+        ASSERT_TRUE(scheduler.fixed_tick(world, 1.0f / 20.0f));
+        EXPECT_EQ(captures.load(), 1);
+        EXPECT_EQ(executions.load(), 1);
+        EXPECT_EQ(world.get_component<Position>(entity).x, 5);
+        EXPECT_EQ(scheduler.diagnostics().worker_tasks_submitted, 1u);
+        EXPECT_EQ(scheduler.diagnostics().commands_applied, 1u);
+    }
+    jobs.shutdown();
+}
+
+TEST(SystemSchedulerTest, ConflictingWorkerResourcesCreateDependency) {
+    JobSystemP2 jobs;
+    jobs.init(2);
+    {
+        SystemScheduler scheduler(jobs);
+        std::atomic<bool> first_completed{false};
+        std::atomic<bool> second_observed_completion{false};
+
+        auto first = std::make_shared<FunctionWorkerSystem>(
+            worker_metadata("first", {
+                SystemResourceAccess{"simulation.position", SystemResourceAccessMode::Write},
+            }),
+            [&first_completed](const World&, float) -> std::unique_ptr<IWorkerTask> {
+                return std::make_unique<FunctionWorkerTask>(
+                    [&first_completed](WorkerCommandContext&) {
+                        first_completed.store(true);
+                    });
+            });
+        auto second = std::make_shared<FunctionWorkerSystem>(
+            worker_metadata("second", {
+                SystemResourceAccess{"simulation.position", SystemResourceAccessMode::Read},
+            }),
+            [&first_completed, &second_observed_completion](const World&,
+                                                              float) -> std::unique_ptr<IWorkerTask> {
+                return std::make_unique<FunctionWorkerTask>(
+                    [&first_completed, &second_observed_completion](WorkerCommandContext&) {
+                        second_observed_completion.store(first_completed.load());
+                    });
+            });
+        ASSERT_TRUE(scheduler.register_worker(first));
+        ASSERT_TRUE(scheduler.register_worker(second));
+
+        World world;
+        ASSERT_TRUE(scheduler.fixed_tick(world, 1.0f / 20.0f));
+        EXPECT_TRUE(first_completed.load());
+        EXPECT_TRUE(second_observed_completion.load());
+        EXPECT_EQ(scheduler.diagnostics().conflict_edges, 1u);
+    }
+    jobs.shutdown();
+}
+
+TEST(SystemSchedulerTest, WorkerCommandsApplyInRegistrationOrder) {
+    JobSystemP2 jobs;
+    jobs.init(2);
+    {
+        SystemScheduler scheduler(jobs);
+        std::vector<int> application_order;
+
+        auto first = std::make_shared<FunctionWorkerSystem>(
+            worker_metadata("first", {
+                SystemResourceAccess{"resource.first", SystemResourceAccessMode::Write},
+            }),
+            [&application_order](const World&, float) -> std::unique_ptr<IWorkerTask> {
+                return std::make_unique<FunctionWorkerTask>(
+                    [&application_order](WorkerCommandContext& commands) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                        commands.enqueue([&application_order](World&) {
+                            application_order.push_back(1);
+                        });
+                    });
+            });
+        auto second = std::make_shared<FunctionWorkerSystem>(
+            worker_metadata("second", {
+                SystemResourceAccess{"resource.second", SystemResourceAccessMode::Write},
+            }),
+            [&application_order](const World&, float) -> std::unique_ptr<IWorkerTask> {
+                return std::make_unique<FunctionWorkerTask>(
+                    [&application_order](WorkerCommandContext& commands) {
+                        commands.enqueue([&application_order](World&) {
+                            application_order.push_back(2);
+                        });
+                    });
+            });
+        ASSERT_TRUE(scheduler.register_worker(first));
+        ASSERT_TRUE(scheduler.register_worker(second));
+
+        World world;
+        ASSERT_TRUE(scheduler.fixed_tick(world, 1.0f / 20.0f));
+        ASSERT_EQ(application_order.size(), 2u);
+        EXPECT_EQ(application_order[0], 1);
+        EXPECT_EQ(application_order[1], 2);
+        EXPECT_EQ(scheduler.diagnostics().conflict_edges, 0u);
+    }
+    jobs.shutdown();
+}
+
+TEST(SystemSchedulerTest, ShutdownRejectsFurtherScheduling) {
+    JobSystem jobs;
+    SystemScheduler scheduler(jobs);
+    auto system = std::make_shared<CountingSystem>(main_metadata("counter"));
+    auto registered = scheduler.register_main(system);
+    ASSERT_TRUE(registered);
+
+    scheduler.shutdown();
+    EXPECT_TRUE(scheduler.is_shutdown());
+    EXPECT_FALSE(scheduler.set_enabled(*registered, false));
 
     World world;
-    sched.update(world, 1.0f / 60.0f);
-    EXPECT_EQ(sys->count.load(), 0);
-}
-
-TEST(SystemSchedulerTest, TriggerAsyncRunsSystem) {
-    SystemScheduler sched(nullptr);
-    auto sys = std::make_shared<CountingSystem>();
-    sched.add_async(sys, "async_counter");
-
-    World world;
-    sched.trigger_async(world, "async_counter");
-    EXPECT_EQ(sys->count.load(), 1);
-}
-
-TEST(SystemSchedulerTest, SystemCount) {
-    SystemScheduler sched(nullptr);
-    sched.add_main_thread(std::make_shared<CountingSystem>(), "a", 60);
-    sched.add_worker(std::make_shared<CountingSystem>(), "b", 20);
-    sched.add_async(std::make_shared<CountingSystem>(), "c");
-
-    EXPECT_EQ(sched.system_count(), 3u);
+    EXPECT_FALSE(scheduler.fixed_tick(world, 1.0f / 20.0f));
+    EXPECT_FALSE(scheduler.register_main(
+        std::make_shared<CountingSystem>(main_metadata("after-shutdown"))));
 }

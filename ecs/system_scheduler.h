@@ -1,108 +1,101 @@
-// SystemScheduler — schedules ECS systems onto the Job System.
+// SystemScheduler -- fixed-tick ECS orchestration with safe worker tasks.
 //
-// P2 task 6: wraps snt::core::JobSystem to provide frequency-based scheduling.
-//
-// System groups:
-//   - MAIN_THREAD (60Hz): render, input, camera. Must run on the engine
-//     thread because they touch Vulkan/GDI/window handles.
-//   - WORKER_POOL (20Hz/10Hz): AI, physics, ecosystem. Run on worker threads
-//     via the Job System; frequency is controlled by tick accumulation.
-//   - ASYNC (event-driven): resource loading, mesh baking. Triggered by
-//     events, not polled.
-//
-// Usage:
-//   SystemScheduler sched(&job_system);
-//   sched.add_mainThread(std::make_shared<RenderSystem>());
-//   sched.add_worker(std::make_shared<PhysicsSystem>(), 20);  // 20Hz
-//   sched.update(world, dt);   // call once per frame
-//
-// Thread safety: single-threaded (main thread). The scheduler dispatches
-// work to the Job System but the scheduler itself is only touched by the
-// main thread.
+// Main systems update World directly in deterministic registration order.
+// Worker systems first capture immutable input on the main thread, then run
+// task objects without a World reference. Resource conflicts produce DAG
+// dependencies, every task reaches a barrier before the next tick, and queued
+// commands are applied on the main thread in deterministic producer order.
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
-#include <string>
+#include <thread>
 #include <vector>
 
+#include "core/expected.h"
 #include "core/job_system.h"
 #include "ecs/system.h"
 #include "ecs/world.h"
+#include "ecs/world_command_queue.h"
 
 namespace snt::ecs {
 
-// Update frequency group. Controls how often a system is ticked.
-enum class ScheduleGroup : uint8_t {
-    MAIN_THREAD   = 0,  // 60Hz, runs on the engine thread
-    WORKER_POOL   = 1,  // 20Hz or 10Hz, runs on worker threads
-    ASYNC         = 2,  // event-driven, not polled
-};
+using SystemHandle = uint32_t;
 
-// A system entry in the scheduler. Tracks the target frequency and
-// accumulated time since the last tick.
 struct ScheduledSystem {
-    std::shared_ptr<System> system;
-    std::string name;
-    ScheduleGroup group = ScheduleGroup::MAIN_THREAD;
-    int32_t target_hz = 60;          // ticks per second
-    double accumulator_sec = 0.0;    // accumulated time since last tick
+    SystemHandle handle = 0;
+    SystemMetadata metadata;
+    bool worker = false;
     bool enabled = true;
 };
 
-// SystemScheduler — drives system updates based on frequency and group.
+struct SchedulerDiagnostics {
+    uint64_t fixed_ticks = 0;
+    uint64_t main_system_updates = 0;
+    uint64_t worker_tasks_submitted = 0;
+    uint64_t worker_parallel_for_calls = 0;
+    uint64_t worker_parallel_for_items = 0;
+    uint64_t conflict_edges = 0;
+    uint64_t commands_applied = 0;
+    uint64_t slow_barriers = 0;
+    uint64_t suppressed_slow_barrier_warnings = 0;
+};
+
 class SystemScheduler {
 public:
-    explicit SystemScheduler(snt::core::JobSystem* job_system = nullptr);
-    ~SystemScheduler() = default;
+    explicit SystemScheduler(snt::core::JobSystem& job_system);
+    ~SystemScheduler();
 
-    // Disallow copy.
     SystemScheduler(const SystemScheduler&) = delete;
     SystemScheduler& operator=(const SystemScheduler&) = delete;
 
-    // --- Registration ---
+    [[nodiscard]] snt::core::Expected<SystemHandle> register_main(
+        std::shared_ptr<System> system);
+    [[nodiscard]] snt::core::Expected<SystemHandle> register_worker(
+        std::shared_ptr<IWorkerSystem> system);
+    [[nodiscard]] snt::core::Expected<void> set_enabled(SystemHandle handle,
+                                                         bool enabled);
 
-    // Add a system that must run on the main thread (render, input, etc.).
-    void add_main_thread(std::shared_ptr<System> system,
-                         std::string name = "",
-                         int32_t target_hz = 60);
+    // Main-thread only. All worker work completes and all queued World
+    // commands apply before this method returns, so no task crosses a tick.
+    [[nodiscard]] snt::core::Expected<void> fixed_tick(World& world, float dt);
 
-    // Add a system that runs on the worker pool at a target frequency.
-    // Common values: 20 (AI), 10 (ecosystem), 30 (physics).
-    void add_worker(std::shared_ptr<System> system,
-                    std::string name = "",
-                    int32_t target_hz = 20);
+    // Main-thread only. Idempotent; waits for any tracked task before queued
+    // commands are discarded, so no worker retains scheduler-owned state.
+    void shutdown() noexcept;
 
-    // Add an async (event-driven) system. It is not ticked by update();
-    // callers invoke trigger_async() manually when the event fires.
-    void add_async(std::shared_ptr<System> system,
-                   std::string name = "");
-
-    // --- Update loop ---
-
-    // Advance the scheduler by dt seconds. Dispatches main-thread systems
-    // inline, and submits worker-pool systems to the Job System.
-    void update(World& world, float dt);
-
-    // Trigger an async system by name. Submits it to the Job System.
-    void trigger_async(World& world, const std::string& name, float dt = 0.0f);
-
-    // --- Introspection ---
-
-    size_t system_count() const { return systems_.size(); }
-
-    // Returns a snapshot of all scheduled systems (for debugging/UI).
-    const std::vector<ScheduledSystem>& systems() const { return systems_; }
-    std::vector<ScheduledSystem>& systems() { return systems_; }
+    [[nodiscard]] size_t system_count() const { return systems_.size(); }
+    [[nodiscard]] std::vector<ScheduledSystem> systems() const;
+    [[nodiscard]] SchedulerDiagnostics diagnostics() const { return diagnostics_; }
+    [[nodiscard]] bool is_shutdown() const { return shutdown_requested_; }
 
 private:
-    // Resolve the job system to use: the one passed at construction, or
-    // the global default. nullptr only if called before JobSystem init.
-    snt::core::JobSystem* resolve_job_system() const;
+    struct SystemEntry {
+        ScheduledSystem scheduled;
+        std::shared_ptr<System> main_system;
+        std::shared_ptr<IWorkerSystem> worker_system;
+    };
 
-    snt::core::JobSystem* job_system_;
-    std::vector<ScheduledSystem> systems_;
+    [[nodiscard]] snt::core::Expected<void> validate_metadata(
+        const SystemMetadata& metadata,
+        SystemThreadAffinity expected_affinity) const;
+    [[nodiscard]] snt::core::Expected<void> validate_main_thread() const;
+    static bool resources_conflict(const SystemMetadata& lhs,
+                                   const SystemMetadata& rhs);
+    void log_slow_barrier(std::chrono::steady_clock::duration elapsed,
+                          size_t worker_task_count,
+                          size_t command_count);
+
+    snt::core::JobSystem& job_system_;
+    std::thread::id main_thread_id_;
+    std::vector<SystemEntry> systems_;
+    std::vector<snt::core::JobHandle> in_flight_;
+    WorldCommandQueue command_queue_;
+    SchedulerDiagnostics diagnostics_;
+    std::chrono::steady_clock::time_point last_slow_barrier_log_{};
+    bool shutdown_requested_ = false;
 };
 
 }  // namespace snt::ecs

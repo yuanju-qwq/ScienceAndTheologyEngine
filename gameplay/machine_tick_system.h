@@ -5,10 +5,14 @@
 // snapshot even if the script module is hot-reloaded in the meantime.
 // Future UI, save, and replication modules subscribe through
 // IMachineTickEventSink rather than reaching into machine state directly.
+// MachineTickSystem captures RegistryHub and World data on the main thread,
+// computes a self-contained patch on a worker, and publishes events only
+// while its command is applied back on the main thread.
 
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -92,22 +96,27 @@ public:
     virtual void on_machine_tick_event(const MachineTickEvent& event) = 0;
 };
 
-class MachineTickSystem final : public snt::ecs::System {
+class MachineTickSystem final : public snt::ecs::IWorkerSystem {
 public:
     explicit MachineTickSystem(snt::script::RegistryHub& registries,
                                IMachineTickEventSink* event_sink = nullptr);
 
-    void update(snt::ecs::World& world, float dt) override;
+    snt::ecs::SystemMetadata metadata() const override {
+        return {
+            "gameplay.machine_tick",
+            snt::ecs::SystemThreadAffinity::Worker,
+            {
+                {"ecs.machine_runtime", snt::ecs::SystemResourceAccessMode::Write},
+                {"script.registry", snt::ecs::SystemResourceAccessMode::Read},
+                {"gameplay.machine_events", snt::ecs::SystemResourceAccessMode::Write},
+            },
+        };
+    }
+
+    std::unique_ptr<snt::ecs::IWorkerTask> capture(
+        const snt::ecs::World& world, float dt) override;
 
 private:
-    void transition(snt::ecs::EntityGuid entity_guid,
-                    MachineRuntimeComponent& machine,
-                    MachineRunState state,
-                    const std::string& recipe_id);
-    void publish_completion(snt::ecs::EntityGuid entity_guid,
-                            const MachineRuntimeComponent& machine,
-                            const std::string& recipe_id);
-
     snt::script::RegistryHub& registries_;
     IMachineTickEventSink* event_sink_ = nullptr;
 };

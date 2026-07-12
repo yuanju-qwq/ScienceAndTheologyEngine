@@ -7,7 +7,7 @@
 
 #include <cstdint>
 
-#include "defs/creature_species.h"
+#include "data/defs/creature_species.h"
 
 namespace snt::data {
 

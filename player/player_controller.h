@@ -1,3 +1,10 @@
+// Player input/interaction module.
+//
+// PlayerControllerSystem owns main-thread input sampling and terrain edits.
+// PlayerPhysicsSystem owns the independent collision worker path. Their
+// shared PlayerControllerState is an ECS component, so the worker writes it
+// only through the fixed-tick WorldCommandQueue barrier.
+
 #pragma once
 
 #include "core/events.h"
@@ -5,6 +12,7 @@
 #include "ecs/system.h"
 #include "player/voxel_collision.h"
 
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -13,6 +21,8 @@ namespace snt::input { class InputSystem; }
 namespace snt::voxel { class ChunkRenderSystem; }
 
 namespace snt::player {
+
+class PlayerPhysicsSystem;
 
 struct PlayerControllerTuning {
     float move_speed = 4.3f;
@@ -27,6 +37,9 @@ struct PlayerControllerTuning {
     float eye_height = 1.62f;
 };
 
+// ECS component for local-player simulation state. It is deliberately kept
+// out of ecs/components.h because player-controller semantics belong to this
+// module, not to the engine-wide render/data component set.
 struct PlayerControllerState {
     Vec3 feet_position{4.0f, 8.0f, 8.0f};
     Vec3 velocity{};
@@ -35,7 +48,7 @@ struct PlayerControllerState {
     bool grounded = false;
 };
 
-class PlayerControllerSystem : public snt::ecs::System {
+class PlayerControllerSystem final : public snt::ecs::System {
 public:
     PlayerControllerSystem() = default;
     ~PlayerControllerSystem() override = default;
@@ -48,10 +61,25 @@ public:
     void set_camera_entity(entt::entity camera) { camera_entity_ = camera; }
     void set_dimension_id(std::string dimension_id) { dimension_id_ = std::move(dimension_id); }
     void set_tuning(const PlayerControllerTuning& tuning) { tuning_ = tuning; }
-    void set_spawn_feet_position(Vec3 p) { state_.feet_position = p; }
+    void set_spawn_feet_position(Vec3 p) { initial_state_.feet_position = p; }
     void set_initial_look(float yaw, float pitch);
 
-    const PlayerControllerState& state() const { return state_; }
+    // Freeze the current controller configuration into its paired worker.
+    // Call after setup and before registering systems with WorldSession.
+    [[nodiscard]] std::shared_ptr<PlayerPhysicsSystem> make_physics_system() const;
+
+    snt::ecs::SystemMetadata metadata() const override {
+        return {
+            "player.controller",
+            snt::ecs::SystemThreadAffinity::MainThread,
+            {
+                {"input.state", snt::ecs::SystemResourceAccessMode::Read},
+                {"player.controller_state", snt::ecs::SystemResourceAccessMode::Write},
+                {"world.chunks", snt::ecs::SystemResourceAccessMode::Write},
+                {"voxel.chunk_render", snt::ecs::SystemResourceAccessMode::Write},
+            },
+        };
+    }
 
     void set_mouse_locked(bool locked) { mouse_locked_ = locked; }
     void on_mouse_lock_changed(const snt::core::MouseLockChanged& evt) {
@@ -61,11 +89,8 @@ public:
     void update(snt::ecs::World& world, float dt) override;
 
 private:
-    Aabb current_body_aabb() const;
-    Vec3 eye_position() const;
-    Vec3 look_direction() const;
-    void sync_camera_transform(snt::ecs::World& world);
-    void try_break_target_block();
+    PlayerControllerState* ensure_state(snt::ecs::World& world);
+    void try_break_target_block(const PlayerControllerState& state);
 
     snt::input::InputSystem* input_ = nullptr;
     snt::data::ChunkRegistry* chunk_registry_ = nullptr;
@@ -74,7 +99,7 @@ private:
 
     std::string dimension_id_ = "overworld";
     PlayerControllerTuning tuning_{};
-    PlayerControllerState state_{};
+    PlayerControllerState initial_state_{};
     bool mouse_locked_ = false;
 };
 

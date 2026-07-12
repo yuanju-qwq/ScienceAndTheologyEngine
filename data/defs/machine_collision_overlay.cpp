@@ -3,7 +3,7 @@
 // Ported from src/core/world/machine_collision_overlay.cpp.
 // Namespace: science_and_theology -> snt::data.
 
-#include "defs/machine_collision_overlay.h"
+#include "data/defs/machine_collision_overlay.h"
 
 #include <algorithm>
 
