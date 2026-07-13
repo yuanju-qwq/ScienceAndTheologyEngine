@@ -3,7 +3,8 @@
 // Design:
 //   - Runtime-owned service. Consumers receive an explicit reference through
 //     RuntimeServices or their constructor/setter dependency boundary.
-//   - init(VulkanDevice*) wires up the built-in caches (currently mesh).
+//   - init(VulkanDevice*, IAssetSource&, AssetCatalog) wires up the built-in
+//     caches (currently mesh) from the Runtime-owned content boundary.
 //     New asset types register here: add a VulkanTextureLoader, an
 //     AssetCache<VulkanTexture>, and a texture_cache() accessor.
 //   - shutdown() releases every cache. Must be called BEFORE the
@@ -17,8 +18,9 @@
 #pragma once
 
 #include "assets/asset_cache.h"
+#include "assets/asset_catalog.h"
 #include "assets/asset_handle.h"
-#include "assets/asset_manifest.h"
+#include "assets/asset_source.h"
 #include "assets/mesh_asset_loader.h"
 #include "core/expected.h"
 
@@ -26,7 +28,6 @@ namespace snt::render_backend {
 class VulkanDevice;
 class VulkanMesh;
 }
-namespace snt::core { class RuntimePathResolver; }
 
 namespace snt::assets {
 
@@ -38,26 +39,19 @@ public:
     AssetManager(const AssetManager&) = delete;
     AssetManager& operator=(const AssetManager&) = delete;
 
-    // Initialize all built-in caches. Must be called before any load(). Both
-    // dependencies are borrowed: the RuntimePathResolver and VulkanDevice
-    // must outlive this manager (call shutdown() before destroying the device).
+    // Initialize all built-in GPU caches from an immutable catalog. All
+    // dependencies are borrowed: Runtime owns the source/catalog and the
+    // VulkanDevice must outlive this manager (call shutdown() before
+    // destroying the device). Each mesh cache miss reads owned source bytes
+    // through source before the legacy VulkanMeshLoader decodes them.
+    //
+    // This is render-thread/device-affine. IAssetSource itself may be called
+    // by workers elsewhere, but this manager invokes it only while creating
+    // or eagerly loading GPU resources on the render thread.
     snt::core::Expected<void> init(
         snt::render_backend::VulkanDevice* device,
-        const snt::core::RuntimePathResolver& paths);
-
-    // Initialize with a manifest: pre-allocate handles in manifest order,
-    // then eagerly load all pre-allocated assets to the GPU. This is the
-    // preferred init path for scenes that reference assets by handle —
-    // the manifest makes those handle references stable across runs.
-    //
-    // `manifest_path` is resolved through the explicitly injected game root.
-    // If the file is missing,
-    // the call still succeeds (returns an empty manifest + falls back
-    // to runtime load()). Only JSON parse errors or duplicate ids abort.
-    snt::core::Expected<void> init_from_manifest(
-        snt::render_backend::VulkanDevice* device,
-        const snt::core::RuntimePathResolver& paths,
-        const std::string& manifest_path);
+        IAssetSource& source,
+        const AssetCatalog& catalog);
 
     // Release all caches. Idempotent. Must be called before the
     // VulkanDevice passed to init() is destroyed.
@@ -70,12 +64,11 @@ public:
     AssetCache<snt::render_backend::VulkanMesh, MeshAssetTag>& mesh_cache() { return mesh_cache_; }
 
 private:
-    // Shared init helper: wires up the mesh loader + cache. Called by
-    // both init() and init_from_manifest() after device_ is set.
+    // Wires up the legacy mesh cache after device_ and source_ are set.
     snt::core::Expected<void> init_mesh_cache();
 
     snt::render_backend::VulkanDevice* device_ = nullptr;
-    const snt::core::RuntimePathResolver* paths_ = nullptr;
+    IAssetSource* source_ = nullptr;
 
     // Built-in loaders (own no heap state beyond the borrowed device ptr).
     VulkanMeshLoader mesh_loader_;

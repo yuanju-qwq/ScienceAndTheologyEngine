@@ -10,8 +10,10 @@
 //   - Every request must be relative to root(). Rooted, traversal, and
 //     resolved symlink escapes are rejected before file bytes are loaded.
 //
-// AssetManager does not use this source yet. It remains a staged catalog/source
-// implementation until GPU residency migrates behind IGpuAssetUploader.
+// Runtime owns this source for its game content root and injects it into both
+// AssetCatalog and AssetManager. AssetManager currently decodes its returned
+// bytes through the legacy mesh cache; device residency still migrates behind
+// IGpuAssetUploader later.
 
 #pragma once
 

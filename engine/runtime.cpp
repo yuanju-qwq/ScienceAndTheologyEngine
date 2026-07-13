@@ -6,7 +6,9 @@
 #include "engine/game_session.h"
 #include "engine/runtime_services.h"
 
+#include "assets/asset_catalog.h"
 #include "assets/asset_manager.h"
+#include "assets/filesystem_asset_source.h"
 #include "core/events.h"
 #include "core/job_system.h"
 #include "core/log.h"
@@ -168,6 +170,8 @@ struct Runtime::Impl {
     snt::render_backend::VulkanDescriptor vk_descriptor;
     snt::render_backend::VulkanPipeline vk_pipeline;
     snt::render_backend::VulkanFrame vk_frame;
+    std::optional<snt::assets::FilesystemAssetSource> asset_source;
+    std::optional<snt::assets::AssetCatalog> asset_catalog;
     snt::assets::AssetManager asset_manager;
     snt::script::ScriptManager script_manager;
 
@@ -204,9 +208,12 @@ RuntimeServices::RuntimeServices(const snt::core::RuntimeConfig& config,
                                  snt::core::Logger& logger,
                                  snt::core::JobSystem& jobs,
                                  snt::assets::AssetManager& assets,
+                                 snt::assets::IAssetSource& asset_source,
+                                 const snt::assets::AssetCatalog& asset_catalog,
                                  snt::script::ScriptManager& scripts)
     : config_(&config), paths_(&paths), clock_(&clock), logger_(&logger), jobs_(&jobs),
-      assets_(&assets), scripts_(&scripts) {}
+      assets_(&assets), asset_source_(&asset_source), asset_catalog_(&asset_catalog),
+      scripts_(&scripts) {}
 
 const snt::core::RuntimeConfig& RuntimeServices::config() const noexcept { return *config_; }
 const snt::core::RuntimePathResolver& RuntimeServices::paths() const noexcept { return *paths_; }
@@ -214,6 +221,12 @@ snt::core::IClock& RuntimeServices::clock() const noexcept { return *clock_; }
 snt::core::Logger& RuntimeServices::logger() const noexcept { return *logger_; }
 snt::core::JobSystem& RuntimeServices::jobs() const noexcept { return *jobs_; }
 snt::assets::AssetManager& RuntimeServices::assets() const noexcept { return *assets_; }
+snt::assets::IAssetSource& RuntimeServices::asset_source() const noexcept {
+    return *asset_source_;
+}
+const snt::assets::AssetCatalog& RuntimeServices::asset_catalog() const noexcept {
+    return *asset_catalog_;
+}
 snt::script::ScriptManager& RuntimeServices::scripts() const noexcept { return *scripts_; }
 
 snt::ecs::World& WorldSession::world() const noexcept { return runtime_->impl_->world; }
@@ -317,6 +330,25 @@ snt::core::Expected<void> Runtime::init(const snt::core::RuntimeConfig& config,
         }
     }
 
+    auto asset_source = snt::assets::FilesystemAssetSource::create(
+        std::filesystem::path(impl_->paths->roots().game_root));
+    if (!asset_source) {
+        auto error = asset_source.error();
+        error.with_context("Runtime::init(FilesystemAssetSource)");
+        return error;
+    }
+    impl_->asset_source.emplace(std::move(*asset_source));
+
+    auto asset_catalog = snt::assets::AssetCatalog::load(
+        *impl_->asset_source,
+        snt::assets::AssetSourceRequest{.requested_path = config.assets.manifest_path});
+    if (!asset_catalog) {
+        auto error = asset_catalog.error();
+        error.with_context("Runtime::init(AssetCatalog)");
+        return error;
+    }
+    impl_->asset_catalog.emplace(std::move(*asset_catalog));
+
     if (auto result = impl_->window.create(WindowDesc{
             .title = config.window.title,
             .width = config.window.width,
@@ -358,7 +390,8 @@ snt::core::Expected<void> Runtime::init(const snt::core::RuntimeConfig& config,
         error.with_context("Runtime::init(vk_device)");
         return error;
     }
-    if (auto result = impl_->asset_manager.init(&impl_->vk_device, *impl_->paths); !result) {
+    if (auto result = impl_->asset_manager.init(
+            &impl_->vk_device, *impl_->asset_source, *impl_->asset_catalog); !result) {
         auto error = result.error();
         error.with_context("Runtime::init(AssetManager)");
         return error;
@@ -544,6 +577,7 @@ snt::core::Expected<void> Runtime::init(const snt::core::RuntimeConfig& config,
     impl_->services = std::unique_ptr<RuntimeServices>(new RuntimeServices(
         impl_->config, *impl_->paths, *impl_->clock, snt::core::Logger::instance(),
         impl_->job_system, impl_->asset_manager,
+        *impl_->asset_source, *impl_->asset_catalog,
         impl_->script_manager));
     impl_->world_session = std::unique_ptr<WorldSession>(new WorldSession(*this));
     impl_->session = std::move(session);
@@ -691,6 +725,8 @@ void Runtime::shutdown() {
     impl_->vk_depth.destroy();
     impl_->vk_swapchain.destroy();
     impl_->asset_manager.shutdown();
+    impl_->asset_catalog.reset();
+    impl_->asset_source.reset();
 
     impl_->vk_device.destroy();
     if (impl_->vk_surface != VK_NULL_HANDLE) {

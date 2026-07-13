@@ -5,7 +5,8 @@
 # Owns canonical handles, source/catalog parsing, and the Runtime-injected
 # AssetManager service. FilesystemAssetSource + AssetCatalog implement the
 # Vulkan-free content layer. IGpuAssetUploader remains declaration-only; the
-# current AssetManager still owns the Vulkan mesh-cache path.
+# Runtime injects the source/catalog into AssetManager, which still owns the
+# transitional Vulkan mesh-cache residency path.
 #
 # Layering rule (top -> bottom, never reverse):
 #   host application -> engine -> assets -> render_backend -> core

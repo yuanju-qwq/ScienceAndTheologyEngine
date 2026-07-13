@@ -10,7 +10,9 @@
 #include <volk.h>
 #include <tiny_obj_loader.h>
 
-#include <cstring>
+#include <sstream>
+#include <string>
+#include <utility>
 
 namespace snt::render_backend {
 
@@ -22,22 +24,35 @@ VulkanMesh::~VulkanMesh() {
     destroy();
 }
 
-snt::core::Expected<void> VulkanMesh::load_obj(VulkanDevice& device, const std::string& path,
-                                              const float default_color[3]) {
+snt::core::Expected<void> VulkanMesh::load_obj(
+    VulkanDevice& device,
+    std::string_view source_identity,
+    std::span<const uint8_t> bytes,
+    const float default_color[3]) {
     device_ = &device;
 
-    // --- Load .obj via tinyobjloader ---
+    const std::string source_label = source_identity.empty()
+        ? "<unnamed source>"
+        : std::string(source_identity);
+    const std::string source_text = bytes.empty()
+        ? std::string{}
+        : std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    std::istringstream input(source_text);
+
+    // --- Decode .obj via tinyobjloader ---
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> materials;
     std::string warn, err;
 
-    if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, path.c_str())) {
+    if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, &input)) {
+        std::string message = "Failed to decode .obj '" + source_label + "'";
+        if (!err.empty()) message += ": " + err;
         return snt::core::Error{snt::core::ErrorCode::kVulkanMeshLoadFailed,
-                                "Failed to load .obj"};
+                                std::move(message)};
     }
     if (!warn.empty()) {
-        SNT_LOG_WARN(".obj warning: %s", warn.c_str());
+        SNT_LOG_WARN(".obj warning in '%s': %s", source_label.c_str(), warn.c_str());
     }
 
     // --- Build vertex + index arrays ---
@@ -55,8 +70,6 @@ snt::core::Expected<void> VulkanMesh::load_obj(VulkanDevice& device, const std::
 
     std::vector<MeshVertex> vertices;
     std::vector<uint32_t> indices;
-
-    uint32_t vertex_index_in_face = 0;  // 0..5, resets each face
 
     // DIAGNOSTIC: log face index distribution.
     SNT_LOG_DEBUG("mesh load: %zu shapes, %zu total indices",
@@ -104,7 +117,7 @@ snt::core::Expected<void> VulkanMesh::load_obj(VulkanDevice& device, const std::
     index_count_ = static_cast<uint32_t>(indices.size());
 
     SNT_LOG_INFO("Mesh loaded: %s (%u verts, %u indices)",
-                 path.c_str(), vertex_count_, index_count_);
+                 source_label.c_str(), vertex_count_, index_count_);
 
     // DIAGNOSTIC: print first 4 vertices to verify position data.
     for (uint32_t i = 0; i < vertex_count_ && i < 4; ++i) {

@@ -1,7 +1,7 @@
 // VulkanMesh asset loader: bridges the asset system to VulkanMesh.
 //
 // Used by AssetManager to wire AssetCache<VulkanMesh>:
-//   - load(path)   -> new VulkanMesh + load_obj()
+//   - load(source) -> new VulkanMesh + in-memory load_obj()
 //   - destroy(m)   -> m->destroy() + delete m
 //
 // Default color is applied to all vertices (P1.5 behavior; P3 will
@@ -9,9 +9,9 @@
 
 #pragma once
 
+#include "assets/asset_source.h"
 #include "core/expected.h"
 
-#include <string>
 
 namespace snt::render_backend {
 class VulkanDevice;
@@ -32,9 +32,12 @@ public:
     // must outlive the loader.
     void init(snt::render_backend::VulkanDevice* device) { device_ = device; }
 
-    // Load a .obj file. Returns a heap-owned VulkanMesh* on success
-    // (caller takes ownership) or an Error on failure.
-    snt::core::Expected<snt::render_backend::VulkanMesh*> load(const std::string& path) const;
+    // Decode one owned .obj source payload and create its GPU buffers.
+    // `canonical_path` remains diagnostic identity only; bytes are the
+    // content authority, so package and non-filesystem sources need not be
+    // reopened through an ambient path resolver.
+    snt::core::Expected<snt::render_backend::VulkanMesh*> load(
+        AssetSourceData source) const;
 
     // Release a previously-loaded mesh (calls mesh->destroy() + delete).
     // Safe to call with nullptr (no-op).

@@ -27,6 +27,7 @@ TEST(RuntimeConfig, MissingFileReturnsDefaults) {
     EXPECT_EQ(result->window.width, 1280);
     EXPECT_EQ(result->window.height, 720);
     EXPECT_EQ(result->render.max_entities, 256u);
+    EXPECT_EQ(result->assets.manifest_path, "config/default_manifest.json");
     EXPECT_EQ(result->voxel.max_chunks, 1024u);
 }
 
@@ -34,6 +35,7 @@ TEST(RuntimeConfig, OverridesRuntimeFieldsAndIgnoresGameFields) {
     const auto path = write_temp_json("snt_runtime_config_overrides.json", R"({
         "window": { "width": 1920, "height": 1080, "title": "Test" },
         "render": { "max_entities": 512 },
+        "assets": { "manifest_path": "content/main_assets.json" },
         "voxel": { "max_chunks": 2048 },
         "scene": { "path": "scenes/game.bin" },
         "scripts": { "enabled": false }
@@ -45,6 +47,7 @@ TEST(RuntimeConfig, OverridesRuntimeFieldsAndIgnoresGameFields) {
     EXPECT_EQ(result->window.height, 1080);
     EXPECT_EQ(result->window.title, "Test");
     EXPECT_EQ(result->render.max_entities, 512u);
+    EXPECT_EQ(result->assets.manifest_path, "content/main_assets.json");
     EXPECT_EQ(result->voxel.max_chunks, 2048u);
     EXPECT_TRUE(result->window.resizable);
 }

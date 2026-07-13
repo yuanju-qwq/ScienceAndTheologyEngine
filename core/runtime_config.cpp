@@ -41,6 +41,11 @@ void from_json(const json& object, RenderConfig& value) {
     read_optional(object, "max_frames_in_flight", value.max_frames_in_flight);
 }
 
+void from_json(const json& object, AssetConfig& value) {
+    value = AssetConfig{};
+    read_optional(object, "manifest_path", value.manifest_path);
+}
+
 void from_json(const json& object, VoxelConfig& value) {
     value = VoxelConfig{};
     read_optional(object, "max_chunks", value.max_chunks);
@@ -59,6 +64,7 @@ void from_json(const json& object, RuntimeConfig& value) {
     value = RuntimeConfig{};
     if (object.contains("window")) value.window = object["window"].get<WindowConfig>();
     if (object.contains("render")) value.render = object["render"].get<RenderConfig>();
+    if (object.contains("assets")) value.assets = object["assets"].get<AssetConfig>();
     if (object.contains("voxel")) value.voxel = object["voxel"].get<VoxelConfig>();
     if (object.contains("ui")) value.ui = object["ui"].get<UiConfig>();
 }

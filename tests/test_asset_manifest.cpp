@@ -10,14 +10,14 @@
 
 #include <gtest/gtest.h>
 
-#include <fstream>
-#include <filesystem>
+#include <string>
+#include <string_view>
 
 using snt::assets::AssetCache;
 using snt::assets::AssetHandle;
 using snt::assets::AssetManifest;
 using snt::assets::AssetManifestEntry;
-using snt::assets::load_manifest;
+using snt::assets::parse_manifest;
 using snt::core::Expected;
 
 namespace {
@@ -27,50 +27,35 @@ struct ManifestFakeAsset {
     int value = 0;
 };
 
-// Helper: write a temporary JSON file and return its path.
-std::string write_temp_json(const std::string& name, const std::string& contents) {
-    const auto path = std::filesystem::temp_directory_path() / name;
-    std::ofstream ofs(path);
-    ofs << contents;
-    ofs.close();
-    return path.string();
+snt::core::Expected<AssetManifest> parse_test_manifest(
+    std::string_view source_identity,
+    const std::string& contents) {
+    return parse_manifest(source_identity, contents);
 }
 
 }  // namespace
 
 // ===========================================================================
-// load_manifest
+// parse_manifest
 // ===========================================================================
-
-TEST(ManifestTest, MissingFileReturnsEmptyManifest) {
-    auto result = load_manifest("definitely_does_not_exist_manifest.json");
-    ASSERT_TRUE(result.has_value());
-    EXPECT_TRUE(result->entries.empty());
-}
 
 TEST(ManifestTest, ParseErrorReturnsError) {
     const std::string bad_json = "{ this is not valid json ";
-    const auto path = write_temp_json("snt_test_manifest_bad.json", bad_json);
-
-    auto result = load_manifest(path);
+    auto result = parse_test_manifest("snt_test_manifest_bad.json", bad_json);
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().message().find("parse"), std::string::npos);
 }
 
 TEST(ManifestTest, EmptyAssetsArrayIsAccepted) {
     const std::string json = R"({ "assets": [] })";
-    const auto path = write_temp_json("snt_test_manifest_empty.json", json);
-
-    auto result = load_manifest(path);
+    auto result = parse_test_manifest("snt_test_manifest_empty.json", json);
     ASSERT_TRUE(result.has_value());
     EXPECT_TRUE(result->entries.empty());
 }
 
 TEST(ManifestTest, MissingAssetsArrayReturnsError) {
     const std::string json = R"({ "not_assets": [] })";
-    const auto path = write_temp_json("snt_test_manifest_no_array.json", json);
-
-    auto result = load_manifest(path);
+    auto result = parse_test_manifest("snt_test_manifest_no_array.json", json);
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().message().find("assets"), std::string::npos);
 }
@@ -83,9 +68,7 @@ TEST(ManifestTest, ParsesEntriesInOrder) {
             { "id": "pyramid", "path": "assets/pyramid.obj" }
         ]
     })";
-    const auto path = write_temp_json("snt_test_manifest_ok.json", json);
-
-    auto result = load_manifest(path);
+    auto result = parse_test_manifest("snt_test_manifest_ok.json", json);
     ASSERT_TRUE(result.has_value());
     ASSERT_EQ(result->entries.size(), 3u);
     EXPECT_EQ(result->entries[0].id, "cube");
@@ -102,9 +85,7 @@ TEST(ManifestTest, EntryMissingIdReturnsError) {
             { "path": "assets/cube.obj" }
         ]
     })";
-    const auto path = write_temp_json("snt_test_manifest_no_id.json", json);
-
-    auto result = load_manifest(path);
+    auto result = parse_test_manifest("snt_test_manifest_no_id.json", json);
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().message().find("id"), std::string::npos);
 }
@@ -115,9 +96,7 @@ TEST(ManifestTest, EntryMissingPathReturnsError) {
             { "id": "cube" }
         ]
     })";
-    const auto path = write_temp_json("snt_test_manifest_no_path.json", json);
-
-    auto result = load_manifest(path);
+    auto result = parse_test_manifest("snt_test_manifest_no_path.json", json);
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().message().find("path"), std::string::npos);
 }
@@ -129,25 +108,21 @@ TEST(ManifestTest, DuplicateIdsReturnError) {
             { "id": "cube", "path": "assets/other.obj" }
         ]
     })";
-    const auto path = write_temp_json("snt_test_manifest_dup.json", json);
-
-    auto result = load_manifest(path);
+    auto result = parse_test_manifest("snt_test_manifest_dup.json", json);
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().message().find("duplicate"), std::string::npos);
 }
 
 TEST(ManifestTest, DuplicatePathsAreAllowed) {
-    // Two ids pointing to the same file is valid (aliasing). They get
-    // different handles but load the same data.
+    // Two ids pointing to the same request remain valid catalog aliases.
+    // GPU cache de-duplication is independent from catalog identity.
     const std::string json = R"({
         "assets": [
             { "id": "cube",         "path": "assets/cube.obj" },
             { "id": "default_mesh", "path": "assets/cube.obj" }
         ]
     })";
-    const auto path = write_temp_json("snt_test_manifest_alias.json", json);
-
-    auto result = load_manifest(path);
+    auto result = parse_test_manifest("snt_test_manifest_alias.json", json);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->entries.size(), 2u);
 }
@@ -280,8 +255,7 @@ TEST(PreallocatedCacheTest, ManifestRegistrationProducesStableHandles) {
             { "id": "sphere",  "path": "assets/sphere.obj" }
         ]
     })";
-    const auto path = write_temp_json("snt_test_manifest_stable.json", json);
-    auto manifest_result = load_manifest(path);
+    auto manifest_result = parse_test_manifest("snt_test_manifest_stable.json", json);
     ASSERT_TRUE(manifest_result.has_value());
     const AssetManifest& manifest = *manifest_result;
 

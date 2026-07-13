@@ -1,14 +1,9 @@
 // AssetManifest JSON loader implementation.
 
-#define SNT_LOG_CHANNEL "assets"
-#include "core/log.h"
-
 #include "assets/asset_manifest.h"
 
 #include <nlohmann/json.hpp>
 
-#include <fstream>
-#include <sstream>
 #include <unordered_set>
 
 namespace snt::assets {
@@ -86,29 +81,6 @@ snt::core::Expected<AssetManifest> parse_manifest(
         manifest.entries.push_back(*entry);
     }
 
-    return manifest;
-}
-
-snt::core::Expected<AssetManifest> load_manifest(const std::string& path) {
-    std::ifstream ifs(path);
-    if (!ifs.is_open()) {
-        // Missing manifest is non-fatal: return an empty manifest so
-        // the engine runs without pre-allocated assets.
-        SNT_LOG_INFO("Asset manifest '%s' not found; skipping pre-allocation",
-                     path.c_str());
-        return AssetManifest{};
-    }
-
-    std::stringstream ss;
-    ss << ifs.rdbuf();
-    const std::string text = ss.str();
-    auto manifest = parse_manifest(path, text);
-    if (!manifest) {
-        return manifest.error();
-    }
-
-    SNT_LOG_INFO("Asset manifest loaded from '%s' (%zu entries)",
-                 path.c_str(), manifest->entries.size());
     return manifest;
 }
 

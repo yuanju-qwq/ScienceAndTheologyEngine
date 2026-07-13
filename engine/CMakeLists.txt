@@ -1,7 +1,8 @@
 # Runtime module: game-agnostic lifecycle and presentation orchestration.
 #
-# Runtime owns platform, shared services, ECS infrastructure, and generic
-# voxel/UI presentation. Game content enters only through IGameSession.
+# Runtime owns platform, shared services, ECS infrastructure, game-content
+# source/catalog bootstrap, and generic voxel/UI presentation. Game content
+# enters only through IGameSession.
 
 add_library(snt_engine STATIC
     runtime.cpp

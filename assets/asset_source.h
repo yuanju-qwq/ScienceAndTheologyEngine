@@ -9,8 +9,9 @@
 //     call GPU APIs, mutate World, or recover a service through global state.
 //
 // FilesystemAssetSource implements this reusable source boundary. AssetManager
-// still owns the current path-to-VulkanMesh flow until catalog/source migration
-// is scheduled.
+// now consumes owned source bytes through its legacy Vulkan mesh bridge. GPU
+// residency remains a separate render-thread concern until IGpuAssetUploader
+// is implemented.
 
 #pragma once
 

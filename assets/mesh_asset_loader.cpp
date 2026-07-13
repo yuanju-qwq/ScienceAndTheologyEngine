@@ -12,18 +12,24 @@
 
 namespace snt::assets {
 
-snt::core::Expected<snt::render_backend::VulkanMesh*> VulkanMeshLoader::load(const std::string& path) const {
+snt::core::Expected<snt::render_backend::VulkanMesh*> VulkanMeshLoader::load(
+    AssetSourceData source) const {
     if (!device_) {
         return snt::core::Error{snt::core::ErrorCode::kInvalidState,
                                 "VulkanMeshLoader::load: device not set"};
     }
+    if (source.canonical_path.empty()) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
+                                "VulkanMeshLoader::load: source has no canonical identity"};
+    }
     auto* mesh = new snt::render_backend::VulkanMesh();
     // Default color — P3 will replace with material system.
     float default_color[3] = {1.0f, 0.5f, 0.2f};
-    if (auto r = mesh->load_obj(*device_, path, default_color); !r) {
+    if (auto r = mesh->load_obj(*device_, source.canonical_path,
+                                source.bytes, default_color); !r) {
         delete mesh;
         snt::core::Error e = r.error();
-        e.with_context(std::format("VulkanMeshLoader::load('{}')", path));
+        e.with_context(std::format("VulkanMeshLoader::load('{}')", source.canonical_path));
         return e;
     }
     return mesh;

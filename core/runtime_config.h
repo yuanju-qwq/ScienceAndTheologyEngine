@@ -1,8 +1,10 @@
 // Runtime configuration owned by the engine runtime.
 //
-// This module intentionally contains only platform and presentation settings
-// needed before an IGameSession is created. Scene, script, player, and demo
-// world settings belong to the game-owned session configuration.
+// This module intentionally contains only generic runtime settings needed
+// before an IGameSession is created. Scene, script, player, and demo world
+// settings belong to the game-owned session configuration; the generic asset
+// manifest bootstrap remains here because Runtime must publish its catalog
+// before the session creates a World.
 
 #pragma once
 
@@ -30,6 +32,14 @@ struct RenderConfig {
     uint32_t max_frames_in_flight = 2;
 };
 
+// Generic content bootstrap settings needed before IGameSession creates a
+// World. The manifest belongs to the game package, while Runtime owns the
+// source/catalog lifetime and makes the immutable catalog available to the
+// session through RuntimeServices.
+struct AssetConfig {
+    std::string manifest_path = "config/default_manifest.json";
+};
+
 struct VoxelConfig {
     uint32_t max_chunks = 1024;
     uint32_t remesh_jobs_per_frame = 4;
@@ -49,6 +59,7 @@ struct UiConfig {
 struct RuntimeConfig {
     WindowConfig window;
     RenderConfig render;
+    AssetConfig assets;
     VoxelConfig voxel;
     UiConfig ui;
 };

@@ -18,7 +18,11 @@
 #include <string>
 #include <string_view>
 
-namespace snt::assets { class AssetManager; }
+namespace snt::assets {
+class AssetCatalog;
+class AssetManager;
+class IAssetSource;
+}
 namespace snt::core {
 class IClock;
 class JobSystem;
@@ -51,6 +55,17 @@ public:
     snt::core::Logger& logger() const noexcept;
     snt::core::JobSystem& jobs() const noexcept;
     snt::assets::AssetManager& assets() const noexcept;
+
+    // Runtime owns the game-content source. Source reads return owned data
+    // and may be invoked by a loading worker. The borrowed reference stays
+    // valid while RuntimeServices is alive; callers must join worker use
+    // before Runtime shutdown.
+    snt::assets::IAssetSource& asset_source() const noexcept;
+
+    // Immutable source-backed catalog. It is fully loaded before
+    // IGameSession::register_content(), so resolving a stable id does not
+    // perform filesystem or GPU work.
+    const snt::assets::AssetCatalog& asset_catalog() const noexcept;
     snt::script::ScriptManager& scripts() const noexcept;
 
 private:
@@ -62,6 +77,8 @@ private:
                     snt::core::Logger& logger,
                     snt::core::JobSystem& jobs,
                     snt::assets::AssetManager& assets,
+                    snt::assets::IAssetSource& asset_source,
+                    const snt::assets::AssetCatalog& asset_catalog,
                     snt::script::ScriptManager& scripts);
 
     const snt::core::RuntimeConfig* config_ = nullptr;
@@ -70,6 +87,8 @@ private:
     snt::core::Logger* logger_ = nullptr;
     snt::core::JobSystem* jobs_ = nullptr;
     snt::assets::AssetManager* assets_ = nullptr;
+    snt::assets::IAssetSource* asset_source_ = nullptr;
+    const snt::assets::AssetCatalog* asset_catalog_ = nullptr;
     snt::script::ScriptManager* scripts_ = nullptr;
 };
 
