@@ -2,10 +2,10 @@
 #
 # Layering: sits between render_backend (VulkanMesh / VulkanDevice) and
 # the rest of the engine (render/RenderSystem, ecs/components, scripts).
-# Owns the canonical AssetHandle<T> type + Runtime-injected AssetManager service.
-# FilesystemAssetSource implements the Vulkan-free content-reading boundary.
-# IGpuAssetUploader remains declaration-only; AssetManager remains the current
-# Vulkan mesh-cache path until GPU residency migration is explicitly scheduled.
+# Owns canonical handles, source/catalog parsing, and the Runtime-injected
+# AssetManager service. FilesystemAssetSource + AssetCatalog implement the
+# Vulkan-free content layer. IGpuAssetUploader remains declaration-only; the
+# current AssetManager still owns the Vulkan mesh-cache path.
 #
 # Layering rule (top -> bottom, never reverse):
 #   host application -> engine -> assets -> render_backend -> core

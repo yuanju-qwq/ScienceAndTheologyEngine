@@ -25,7 +25,7 @@
 // author controls the order. The id is for humans + future asset
 // refactoring (rename a path without changing the id).
 //
-// Layering: lives in assets/ so it can be loaded by AssetManager.
+// Layering: lives in assets/ and is parsed by AssetCatalog or AssetManager.
 // Uses nlohmann_json (linked via snt_third_party).
 
 #pragma once
@@ -58,7 +58,6 @@ struct AssetManifest {
 [[nodiscard]] snt::core::Expected<AssetManifest> parse_manifest(
     std::string_view source_identity,
     std::string_view text);
-
 
 // Load a manifest from a JSON file.
 //
