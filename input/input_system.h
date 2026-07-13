@@ -5,7 +5,7 @@
 //   2. process_event(evt) x N — called by Window for each SDL event
 //   3. end_frame()             — finalizes state (polls SDL_GetKeyboardState
 //                                for held keys to catch up with repeat/loss)
-//   4. state()                 — CameraSystem etc. read the snapshot
+//   4. state()                 — main-thread systems read the snapshot
 //
 // Held state is sourced from SDL_GetKeyboardState at end_frame() rather
 // than tracked from events, because SDL may coalesce or drop KEY_DOWN

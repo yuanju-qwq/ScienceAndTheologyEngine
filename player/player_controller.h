@@ -38,7 +38,7 @@ struct PlayerControllerTuning {
 };
 
 // ECS component for local-player simulation state. It is deliberately kept
-// out of ecs/components.h because player-controller semantics belong to this
+// out of generic ECS components because player-controller semantics belong to this
 // module, not to the engine-wide render/data component set.
 struct PlayerControllerState {
     Vec3 feet_position{4.0f, 8.0f, 8.0f};

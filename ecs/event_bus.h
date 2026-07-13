@@ -9,7 +9,7 @@
 //
 // Lifecycle:
 //   1. Engine creates an EventBus instance and passes &bus to subsystems
-//      that need to subscribe (InputSystem, CameraSystem, future UI /
+//      that need to subscribe (InputSystem, gameplay input systems, future UI /
 //      script systems).
 //   2. Subscribers call bus.sink<Event>().connect<&Method>(this) during
 //      their init.

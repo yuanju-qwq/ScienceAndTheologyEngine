@@ -6,7 +6,7 @@
 
 #include "ecs/entity_guid.h"
 #include "ecs/world.h"
-#include "ecs/components.h"
+#include "render/render_components.h"
 
 #include <gtest/gtest.h>
 
@@ -14,7 +14,7 @@ using snt::ecs::EntityGuid;
 using snt::ecs::EntityGuidGenerator;
 using snt::ecs::kInvalidEntityGuid;
 using snt::ecs::World;
-using snt::ecs::Transform;
+using snt::render::Transform;
 
 // ===========================================================================
 // EntityGuid

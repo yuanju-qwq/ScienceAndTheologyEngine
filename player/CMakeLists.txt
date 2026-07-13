@@ -17,4 +17,7 @@ target_link_libraries(snt_player PUBLIC
     snt_data_world
     snt_voxel
 )
-target_link_libraries(snt_player PRIVATE snt_third_party)
+target_link_libraries(snt_player PRIVATE
+    snt_render_components
+    snt_third_party
+)

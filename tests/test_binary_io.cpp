@@ -12,7 +12,7 @@
 #include "core/binary_reader.h"
 #include "core/binary_writer.h"
 #include "core/serializer.h"
-#include "ecs/components.h"
+#include "render/render_components.h"
 #include "ecs/entity_guid.h"
 
 #include <gtest/gtest.h>
@@ -25,12 +25,12 @@
 using snt::core::BinaryReader;
 using snt::core::BinaryWriter;
 using snt::core::Serializer;
-using snt::ecs::Camera;
+using snt::render::Camera;
 using snt::ecs::EntityGuid;
 using snt::ecs::kInvalidEntityGuid;
-using snt::ecs::MeshHandle;
-using snt::ecs::MeshRef;
-using snt::ecs::Transform;
+using snt::render::MeshHandle;
+using snt::render::MeshRef;
+using snt::render::Transform;
 
 // ===========================================================================
 // BinaryWriter / BinaryReader primitives

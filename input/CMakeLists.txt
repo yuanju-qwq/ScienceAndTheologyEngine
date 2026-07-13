@@ -1,6 +1,6 @@
 # Input: decoupled input abstraction layer.
 # P2.A1: InputSystem consumes SDL events and exposes an InputState snapshot
-# that ECS systems (CameraSystem etc.) read each frame.
+# that main-thread ECS systems read each frame.
 #
 # Layering: input sits beside platform — it consumes SDL events but does
 # not own the window. platform/window emits raw SDL events via callback;

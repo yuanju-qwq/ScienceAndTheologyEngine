@@ -3,7 +3,7 @@
 #include "player/player_physics_system.h"
 
 #include "data/world/chunk_registry.h"
-#include "ecs/components.h"
+#include "render/render_components.h"
 #include "ecs/world.h"
 #include "ecs/world_command_queue.h"
 #include "player/collision_snapshot.h"
@@ -37,11 +37,11 @@ void sync_camera_transform(snt::ecs::World& world,
                            const PlayerControllerTuning& tuning) {
     auto& registry = world.registry();
     if (!registry.valid(player_entity) ||
-        !registry.all_of<snt::ecs::Transform>(player_entity)) {
+        !registry.all_of<snt::render::Transform>(player_entity)) {
         return;
     }
 
-    auto& transform = registry.get<snt::ecs::Transform>(player_entity);
+    auto& transform = registry.get<snt::render::Transform>(player_entity);
     transform.position[0] = state.feet_position.x;
     transform.position[1] = state.feet_position.y + tuning.eye_height;
     transform.position[2] = state.feet_position.z;

@@ -6,7 +6,7 @@
 //
 // `mouse_dx` / `mouse_dy` accumulate relative motion between frames and
 // are reset by InputSystem::new_frame(). This matches the common pattern
-// where CameraSystem reads delta then lets the next frame clear it.
+// where a main-thread system reads delta then lets the next frame clear it.
 //
 // Design note: arrays indexed by SDL scancode / button id for cache
 // friendliness. Upper layers must not depend on SDL constants directly —

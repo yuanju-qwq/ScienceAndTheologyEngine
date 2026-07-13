@@ -124,6 +124,13 @@ snt_register_engine_module(
     SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/ecs"
 )
 snt_register_engine_module(
+    INTERFACE
+    TARGET snt_render_components
+    INCLUDE_PREFIXES render/render_components.h
+    SOURCE_FILES
+        "${SNT_ENGINE_SOURCE_DIR}/render/render_components.h"
+)
+snt_register_engine_module(
     TARGET snt_render
     INCLUDE_PREFIXES render
     SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/render"

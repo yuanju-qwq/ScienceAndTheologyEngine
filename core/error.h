@@ -83,6 +83,7 @@ enum class ErrorCode : int {
     // Asset / I/O.
     kFileNotFound,
     kFileOpenFailed,
+    kAssetNotFound,
     kAssetLoadFailed,
     // Script (AngelScript integration).
     kScriptEngineInitFailed,
@@ -177,6 +178,7 @@ private:
             case ErrorCode::kPipelineCacheInitFailed:     return "PipelineCacheInitFailed";
             case ErrorCode::kFileNotFound:                return "FileNotFound";
             case ErrorCode::kFileOpenFailed:              return "FileOpenFailed";
+            case ErrorCode::kAssetNotFound:               return "AssetNotFound";
             case ErrorCode::kAssetLoadFailed:             return "AssetLoadFailed";
             case ErrorCode::kScriptEngineInitFailed:      return "ScriptEngineInitFailed";
             case ErrorCode::kScriptCompileFailed:        return "ScriptCompileFailed";

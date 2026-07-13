@@ -26,7 +26,7 @@
 #include "assets/asset_handle.h"
 #include "core/expected.h"
 #include "core/log.h"
-#include "ecs/components.h"
+#include "render/render_components.h"
 #include "ecs/entity_guid.h"
 #include "ecs/world.h"
 #include "scene/scene.h"
@@ -37,10 +37,10 @@
 using snt::assets::AssetCache;
 using snt::assets::MeshAssetTag;
 using snt::core::Expected;
-using snt::ecs::Camera;
+using snt::render::Camera;
 using snt::ecs::EntityGuid;
-using snt::ecs::MeshRef;
-using snt::ecs::Transform;
+using snt::render::MeshRef;
+using snt::render::Transform;
 using snt::ecs::World;
 using snt::scene::save_scene;
 

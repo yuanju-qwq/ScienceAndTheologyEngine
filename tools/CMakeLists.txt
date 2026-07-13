@@ -17,6 +17,7 @@ target_link_libraries(gen_default_scene PRIVATE
     snt_core
     snt_ecs
     snt_assets
+    snt_render_components
 )
 
 # engine_test: standalone benchmark / smoke-test tool.

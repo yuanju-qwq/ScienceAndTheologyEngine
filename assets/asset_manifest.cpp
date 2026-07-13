@@ -44,6 +44,51 @@ snt::core::Expected<AssetManifestEntry> parse_entry(const json& j) {
 
 }  // namespace
 
+snt::core::Expected<AssetManifest> parse_manifest(
+    std::string_view source_identity,
+    std::string_view text) {
+    const std::string source_label = source_identity.empty()
+        ? "<unknown>"
+        : std::string(source_identity);
+
+    json j;
+    try {
+        j = json::parse(text.begin(), text.end());
+    } catch (const std::exception& e) {
+        return snt::core::Error{
+            snt::core::ErrorCode::kInvalidArgument,
+            "manifest JSON parse error in '" + source_label + "': " + e.what()};
+    }
+
+    AssetManifest manifest;
+    if (!j.contains("assets") || !j["assets"].is_array()) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
+                                "manifest '" + source_label + "' missing 'assets' array"};
+    }
+
+    // Track ids to detect duplicates. Paths are allowed to repeat (aliasing).
+    std::unordered_set<std::string> seen_ids;
+
+    for (const auto& entry_json : j["assets"]) {
+        auto entry = parse_entry(entry_json);
+        if (!entry) {
+            snt::core::Error error = entry.error();
+            error.with_context("manifest '" + source_label + "', entry #" +
+                               std::to_string(manifest.entries.size()));
+            return error;
+        }
+        if (!seen_ids.insert(entry->id).second) {
+            return snt::core::Error{
+                snt::core::ErrorCode::kInvalidArgument,
+                "manifest '" + source_label + "' has duplicate id '" +
+                    entry->id + "'"};
+        }
+        manifest.entries.push_back(*entry);
+    }
+
+    return manifest;
+}
+
 snt::core::Expected<AssetManifest> load_manifest(const std::string& path) {
     std::ifstream ifs(path);
     if (!ifs.is_open()) {
@@ -56,41 +101,14 @@ snt::core::Expected<AssetManifest> load_manifest(const std::string& path) {
 
     std::stringstream ss;
     ss << ifs.rdbuf();
-    std::string text = ss.str();
-
-    json j;
-    try {
-        j = json::parse(text);
-    } catch (const std::exception& e) {
-        return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
-                               std::string("manifest JSON parse error: ") + e.what()};
-    }
-
-    AssetManifest manifest;
-    if (!j.contains("assets") || !j["assets"].is_array()) {
-        return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
-                                "manifest missing 'assets' array"};
-    }
-
-    // Track ids to detect duplicates. Paths are allowed to repeat (aliasing).
-    std::unordered_set<std::string> seen_ids;
-
-    for (const auto& entry_json : j["assets"]) {
-        auto r = parse_entry(entry_json);
-        if (!r) {
-            snt::core::Error e = r.error();
-            e.with_context("manifest entry #" + std::to_string(manifest.entries.size()));
-            return e;
-        }
-        if (!seen_ids.insert(r->id).second) {
-            return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
-                                   "manifest has duplicate id '" + r->id + "'"};
-        }
-        manifest.entries.push_back(*r);
+    const std::string text = ss.str();
+    auto manifest = parse_manifest(path, text);
+    if (!manifest) {
+        return manifest.error();
     }
 
     SNT_LOG_INFO("Asset manifest loaded from '%s' (%zu entries)",
-                 path.c_str(), manifest.entries.size());
+                 path.c_str(), manifest->entries.size());
     return manifest;
 }
 

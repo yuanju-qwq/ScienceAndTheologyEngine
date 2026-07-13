@@ -33,6 +33,7 @@
 #include "core/expected.h"
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace snt::assets {
@@ -49,6 +50,15 @@ struct AssetManifestEntry {
 struct AssetManifest {
     std::vector<AssetManifestEntry> entries;
 };
+
+// Parse one manifest from already-owned JSON text. `source_identity` is used
+// only in error context, so this function is independent of filesystem,
+// package, and network transports. It does not log; callers choose the final
+// loading boundary that owns diagnostics.
+[[nodiscard]] snt::core::Expected<AssetManifest> parse_manifest(
+    std::string_view source_identity,
+    std::string_view text);
+
 
 // Load a manifest from a JSON file.
 //

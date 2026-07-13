@@ -1,7 +1,7 @@
 #include "core/job_system.h"
 #include "data/defs/terrain_data.h"
 #include "data/world/chunk_registry.h"
-#include "ecs/components.h"
+#include "render/render_components.h"
 #include "ecs/system_scheduler.h"
 #include "ecs/world.h"
 #include "input/input_system.h"
@@ -88,7 +88,7 @@ TEST(PlayerPhysicsSystemTest, AppliesStateAndCameraAtWorkerBarrier) {
         snt::ecs::SystemScheduler scheduler(jobs);
         snt::ecs::World world;
         const entt::entity player_entity = world.create_entity();
-        world.registry().emplace<snt::ecs::Transform>(player_entity);
+        world.registry().emplace<snt::render::Transform>(player_entity);
 
         snt::data::ChunkRegistry chunks;
         auto chunk = make_empty_chunk();
@@ -118,7 +118,7 @@ TEST(PlayerPhysicsSystemTest, AppliesStateAndCameraAtWorkerBarrier) {
         const auto& player_state =
             world.registry().get<snt::player::PlayerControllerState>(player_entity);
         const auto& transform =
-            world.registry().get<snt::ecs::Transform>(player_entity);
+            world.registry().get<snt::render::Transform>(player_entity);
         EXPECT_TRUE(player_state.grounded);
         EXPECT_FLOAT_EQ(player_state.feet_position.y, 1.0f);
         EXPECT_FLOAT_EQ(player_state.velocity.y, 0.0f);

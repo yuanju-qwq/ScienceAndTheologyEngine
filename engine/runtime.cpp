@@ -14,7 +14,7 @@
 #include "core/path_utils.h"
 #include "core/profiling.h"
 #include "data/world/chunk_registry.h"
-#include "ecs/components.h"
+#include "render/render_components.h"
 #include "ecs/event_bus.h"
 #include "ecs/system_scheduler.h"
 #include "ecs/world.h"
@@ -633,8 +633,8 @@ void Runtime::run() {
                                              static_cast<uint32_t>(new_size.height))) {
                 impl_->vk_depth.recreate(impl_->vk_swapchain);
                 if (impl_->active_camera != entt::null &&
-                    impl_->world.registry().all_of<snt::ecs::Camera>(impl_->active_camera)) {
-                    auto& camera = impl_->world.registry().get<snt::ecs::Camera>(impl_->active_camera);
+                    impl_->world.registry().all_of<snt::render::Camera>(impl_->active_camera)) {
+                    auto& camera = impl_->world.registry().get<snt::render::Camera>(impl_->active_camera);
                     camera.aspect = static_cast<float>(new_size.width) /
                                     static_cast<float>(new_size.height);
                 }
@@ -734,7 +734,7 @@ snt::core::Expected<void> Runtime::set_active_camera(snt::ecs::EntityGuid guid) 
     }
     const entt::entity entity = impl_->world.find_entity_by_guid(guid);
     if (entity == entt::null ||
-        !impl_->world.registry().all_of<snt::ecs::Transform, snt::ecs::Camera>(entity)) {
+        !impl_->world.registry().all_of<snt::render::Transform, snt::render::Camera>(entity)) {
         return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
                                 "Active camera Guid does not identify a camera entity"};
     }

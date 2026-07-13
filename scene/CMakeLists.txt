@@ -5,7 +5,7 @@
 # All implementation lives in scene.h; there is no scene.cpp.
 #
 # Layering: depends on assets/ (AssetCache), core/ (BinaryReader/Writer,
-# Serializer, Expected), ecs/ (World, components). The AssetCache template
+# Serializer, Expected), ecs/ (World), and render/ (presentation components). The AssetCache template
 # parameter means the header includes the asset type, but scene code
 # does NOT call any Vulkan functions.
 #
@@ -18,4 +18,5 @@ target_link_libraries(snt_scene INTERFACE
     snt_core
     snt_ecs
     snt_assets
+    snt_render_components
 )

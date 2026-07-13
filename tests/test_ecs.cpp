@@ -1,12 +1,11 @@
 // Unit tests for ECS components, World, and SystemScheduler.
 //
 // Validates:
-//   - Standard gameplay components (Position/Velocity/Health/Inventory).
+//   - Neutral simulation components (Position/Velocity).
 //   - World entity creation + component assignment + query.
 //   - SystemScheduler metadata, fixed-tick barrier, and command ordering.
-//   - Tag components (PlayerMarker/CreatureMarker/StaticMarker).
 
-#include "ecs/components.h"
+#include "ecs/core_components.h"
 #include "ecs/world.h"
 #include "ecs/system_scheduler.h"
 
@@ -26,7 +25,7 @@ using snt::core::JobSystem;
 using snt::core::JobSystemP2;
 
 // ===========================================================================
-// Standard gameplay components
+// Core simulation components
 // ===========================================================================
 
 TEST(StandardComponentsTest, PositionDefault) {
@@ -43,27 +42,6 @@ TEST(StandardComponentsTest, VelocityDefault) {
     EXPECT_FLOAT_EQ(v.vz, 0.0f);
 }
 
-TEST(StandardComponentsTest, HealthDefaultAndHelpers) {
-    Health h;
-    EXPECT_FLOAT_EQ(h.current, 1.0f);
-    EXPECT_FLOAT_EQ(h.maximum, 1.0f);
-    EXPECT_FALSE(h.is_dead());
-    EXPECT_FLOAT_EQ(h.fraction(), 1.0f);
-
-    h.current = 0.0f;
-    EXPECT_TRUE(h.is_dead());
-
-    h.current = 0.5f;
-    h.maximum = 2.0f;
-    EXPECT_FLOAT_EQ(h.fraction(), 0.25f);
-}
-
-TEST(StandardComponentsTest, InventoryDefault) {
-    Inventory inv;
-    EXPECT_TRUE(inv.slots.empty());
-    EXPECT_EQ(inv.max_slots, 16);
-}
-
 // ===========================================================================
 // World entity/component management
 // ===========================================================================
@@ -77,17 +55,6 @@ TEST(WorldComponentTest, CreateEntityWithPosition) {
     EXPECT_EQ(pos.x, 10);
     EXPECT_EQ(pos.y, 20);
     EXPECT_EQ(pos.z, 30);
-}
-
-TEST(WorldComponentTest, CreateEntityWithHealth) {
-    World world;
-    auto e = world.create_entity();
-    world.add_component<Health>(e, Health{50.0f, 100.0f});
-
-    auto& hp = world.get_component<Health>(e);
-    EXPECT_FLOAT_EQ(hp.current, 50.0f);
-    EXPECT_FLOAT_EQ(hp.maximum, 100.0f);
-    EXPECT_FALSE(hp.is_dead());
 }
 
 TEST(WorldComponentTest, CreateEntityWithVelocityAndPosition) {
@@ -115,24 +82,6 @@ TEST(WorldComponentTest, DestroyEntityRemovesComponents) {
     world.destroy_entity(e);
     // Entity destroyed; querying via registry view would return no match.
     EXPECT_FALSE(world.registry().valid(e));
-}
-
-TEST(WorldComponentTest, TagComponents) {
-    World world;
-    auto player = world.create_entity();
-    world.registry().emplace<PlayerMarker>(player);
-
-    auto creature = world.create_entity();
-    world.registry().emplace<CreatureMarker>(creature);
-
-    auto machine = world.create_entity();
-    world.registry().emplace<StaticMarker>(machine);
-
-    // Tags are present on their owners and absent from others.
-    EXPECT_TRUE(world.registry().all_of<PlayerMarker>(player));
-    EXPECT_TRUE(world.registry().all_of<CreatureMarker>(creature));
-    EXPECT_TRUE(world.registry().all_of<StaticMarker>(machine));
-    EXPECT_FALSE(world.registry().all_of<CreatureMarker>(player));
 }
 
 // ===========================================================================

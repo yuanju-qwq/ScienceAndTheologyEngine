@@ -2,7 +2,10 @@
 #
 # Layering: sits between render_backend (VulkanMesh / VulkanDevice) and
 # the rest of the engine (render/RenderSystem, ecs/components, scripts).
-# Owns the canonical AssetHandle<T> type + AssetManager singleton.
+# Owns the canonical AssetHandle<T> type + Runtime-injected AssetManager service.
+# FilesystemAssetSource implements the Vulkan-free content-reading boundary.
+# IGpuAssetUploader remains declaration-only; AssetManager remains the current
+# Vulkan mesh-cache path until GPU residency migration is explicitly scheduled.
 #
 # Layering rule (top -> bottom, never reverse):
 #   host application -> engine -> assets -> render_backend -> core
@@ -10,8 +13,10 @@
 
 add_library(snt_assets STATIC
     asset_manager.cpp
+    asset_catalog.cpp
     asset_manifest.cpp
     font_atlas.cpp
+    filesystem_asset_source.cpp
     loader.cpp
     material_atlas.cpp
     mesh_asset_loader.cpp

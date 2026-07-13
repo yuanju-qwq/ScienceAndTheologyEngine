@@ -26,7 +26,7 @@
 
 #include "assets/asset_manager.h"
 #include "core/profiling.h"
-#include "ecs/components.h"
+#include "render/render_components.h"
 #include "ecs/world.h"
 #include "render_backend/command_context.h"
 #include "render_backend/vulkan_depth.h"
@@ -54,7 +54,7 @@ namespace snt::render {
 namespace {
 
 // Build a model matrix from a Transform component.
-glm::mat4 build_model_matrix(const snt::ecs::Transform& t) {
+glm::mat4 build_model_matrix(const snt::render::Transform& t) {
     using namespace glm;
     mat4 m = translate(mat4(1.0f), vec3(t.position[0], t.position[1], t.position[2]));
     m = rotate(m, radians(t.rotation[2]), vec3(0, 0, 1));  // roll
@@ -65,7 +65,7 @@ glm::mat4 build_model_matrix(const snt::ecs::Transform& t) {
 }
 
 // Build a view matrix from a camera Transform (position + yaw/pitch).
-glm::mat4 build_view_matrix(const snt::ecs::Transform& cam) {
+glm::mat4 build_view_matrix(const snt::render::Transform& cam) {
     using namespace glm;
     float yaw_rad = radians(cam.rotation[1]);
     float pitch_rad = radians(cam.rotation[0]);
@@ -115,12 +115,12 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
     if (active_camera_ == entt::null) return;
 
     auto& registry = world.registry();
-    if (!registry.all_of<snt::ecs::Transform, snt::ecs::Camera>(active_camera_)) {
+    if (!registry.all_of<snt::render::Transform, snt::render::Camera>(active_camera_)) {
         return;
     }
 
-    auto& cam_transform = registry.get<snt::ecs::Transform>(active_camera_);
-    auto& cam_comp      = registry.get<snt::ecs::Camera>(active_camera_);
+    auto& cam_transform = registry.get<snt::render::Transform>(active_camera_);
+    auto& cam_comp      = registry.get<snt::render::Camera>(active_camera_);
 
     // Build view + projection from camera.
     glm::mat4 view = build_view_matrix(cam_transform);
@@ -146,7 +146,7 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
     draws.reserve(32);
 
     uint32_t entity_index = 0;
-    auto view_group = registry.view<snt::ecs::Transform, snt::ecs::MeshRef>();
+    auto view_group = registry.view<snt::render::Transform, snt::render::MeshRef>();
     const uint32_t max_entities = descriptor_ ? descriptor_->max_entities() : 0;
     for (auto e : view_group) {
         if (entity_index >= max_entities) {
@@ -154,8 +154,8 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
             break;
         }
 
-        auto& transform = registry.get<snt::ecs::Transform>(e);
-        auto& mesh_ref  = registry.get<snt::ecs::MeshRef>(e);
+        auto& transform = registry.get<snt::render::Transform>(e);
+        auto& mesh_ref  = registry.get<snt::render::MeshRef>(e);
 
         // Resolve the mesh handle to a VulkanMesh via the AssetManager.
         auto* mesh = assets_->mesh_cache().get(mesh_ref.handle.id);

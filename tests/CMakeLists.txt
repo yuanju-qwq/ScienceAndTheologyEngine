@@ -19,6 +19,9 @@ add_executable(snt_tests
     test_path_utils.cpp
     test_asset_cache.cpp
     test_asset_pipeline.cpp
+    test_asset_boundary.cpp   # staged source / GPU residency contract
+    test_asset_catalog.cpp
+    test_filesystem_asset_source.cpp
     test_script_engine.cpp
     test_script_loader.cpp
     test_entity_guid.cpp       # Phase 1: EntityGuid + World mapping
@@ -40,6 +43,7 @@ target_link_libraries(snt_tests PRIVATE
     snt_core
     snt_ecs
     snt_assets
+    snt_render_components
     snt_ui
     snt_script
     snt_engine_settings

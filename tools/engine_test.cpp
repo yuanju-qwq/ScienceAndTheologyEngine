@@ -7,7 +7,7 @@
 //   engine_test data_test           # generate chunk (0,0,0), report non-air cells
 //
 // Measures:
-//   1. Entity + component creation time (1000 entities x 3 components).
+//   1. Entity + component creation time (1000 entities x 2 components).
 //   2. System update time (MovementSystem integrates Velocity into Position).
 //   3. TerrainGenerator smoke test (chunk (0,0,0) non-air cell count).
 //
@@ -15,7 +15,7 @@
 // Position + Velocity and integrates velocity into position each tick.
 // This is the canonical ECS hot-path benchmark.
 
-#include "ecs/components.h"
+#include "ecs/core_components.h"
 #include "ecs/system.h"
 #include "ecs/system_scheduler.h"
 #include "ecs/world.h"
@@ -69,13 +69,13 @@ public:
 };
 
 // ---------------------------------------------------------------------------
-// ecs_test: create N entities with Position+Velocity+Health, run frames.
+// ecs_test: create N entities with Position+Velocity, run frames.
 // ---------------------------------------------------------------------------
 static int run_ecs_test(int entity_count, int frame_count) {
     std::cout << "=== ECS Benchmark ===" << std::endl;
     std::cout << "Entities: " << entity_count << std::endl;
     std::cout << "Frames:   " << frame_count << std::endl;
-    std::cout << "Components per entity: Position + Velocity + Health" << std::endl;
+    std::cout << "Components per entity: Position + Velocity" << std::endl;
     std::cout << std::endl;
 
     World world;
@@ -88,7 +88,6 @@ static int run_ecs_test(int entity_count, int frame_count) {
         if (i == 0) first_entity = e;
         world.registry().emplace<Position>(e, Position{i, 0, 0});
         world.registry().emplace<Velocity>(e, Velocity{1.0f, 0.5f, 0.25f});
-        world.registry().emplace<Health>(e, Health{100.0f, 100.0f});
     }
     auto t1 = Clock::now();
     double create_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();

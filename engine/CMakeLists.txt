@@ -21,4 +21,7 @@ target_link_libraries(snt_engine PUBLIC
     snt_voxel
     snt_data_world
 )
-target_link_libraries(snt_engine PRIVATE snt_script)
+target_link_libraries(snt_engine PRIVATE
+    snt_render_components
+    snt_script
+)

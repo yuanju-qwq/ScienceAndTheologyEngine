@@ -47,7 +47,7 @@ struct SdlEventFired {
 };
 
 // Fired by Engine when the mouse-lock state (SDL relative mode) changes.
-// CameraSystem subscribes to skip mouse-look while unlocked.
+// Gameplay input systems subscribe to skip mouse-look while unlocked.
 struct MouseLockChanged {
     bool locked = false;
 };

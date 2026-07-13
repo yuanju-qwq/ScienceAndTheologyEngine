@@ -35,7 +35,7 @@
 //   Production code passes AssetCache<VulkanMesh, ...>.
 //
 // Layering: depends on assets/ (AssetCache), core/ (BinaryReader/Writer,
-// Serializer, Expected), ecs/ (World, components). The AssetCache template
+// Serializer, Expected), ecs/ (World), and render/ (presentation components). The AssetCache template
 // parameter means the header includes the asset type, but scene code
 // does NOT call any Vulkan functions.
 
@@ -57,7 +57,7 @@
 #include "core/expected.h"
 #include "core/log.h"               // SNT_LOG_ERROR/WARN in detail
 #include "core/serializer.h"
-#include "ecs/components.h"           // Transform/MeshRef/Camera + their Serializers
+#include "render/render_components.h"  // Transform/MeshRef/Camera + their serializers
 #include "ecs/entity_guid.h"
 #include "ecs/world.h"
 
@@ -104,10 +104,10 @@ namespace detail {
 using snt::core::BinaryReader;
 using snt::core::BinaryWriter;
 using snt::core::Serializer;
-using snt::ecs::Camera;
+using snt::render::Camera;
 using snt::ecs::EntityGuid;
-using snt::ecs::MeshRef;
-using snt::ecs::Transform;
+using snt::render::MeshRef;
+using snt::render::Transform;
 
 // Write the file header (magic + version + entity count).
 inline void write_header(BinaryWriter& w, uint32_t entity_count) {

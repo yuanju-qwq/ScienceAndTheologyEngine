@@ -8,7 +8,7 @@
 //     value across module boundaries.
 //
 // Rationale: replaces the previously duplicated `MeshHandle` types in
-// ecs/components.h and render/mesh_cache.h. One canonical handle type
+// render/render_components.h and render/mesh_cache.h. One canonical handle type
 // eliminates the layout-duplication bridge between layers.
 
 #pragma once
