@@ -86,3 +86,16 @@ target_link_libraries(snt_simulation_runtime_tests PRIVATE
     GTest::gtest_main
 )
 gtest_discover_tests(snt_simulation_runtime_tests DISCOVERY_MODE PRE_TEST)
+
+# Replication tests intentionally link only the core/network closure. They
+# exercise localhost TCP+UDP and the Steam backend adapter without SDL,
+# Vulkan, platform windows, or game code.
+add_executable(snt_network_tests
+    test_network.cpp
+)
+target_link_libraries(snt_network_tests PRIVATE
+    snt_engine_settings
+    snt_network
+    GTest::gtest_main
+)
+gtest_discover_tests(snt_network_tests DISCOVERY_MODE PRE_TEST)

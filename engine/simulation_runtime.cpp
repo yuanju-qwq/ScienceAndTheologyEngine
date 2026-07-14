@@ -300,11 +300,20 @@ snt::core::Expected<void> SimulationRuntime::run_one_fixed_tick() {
     constexpr float kFixedDeltaSeconds = TickStats::kTickMs / 1000.0f;
     FixedTickContext context(*this, *impl_->services, *impl_->world_session,
                              kFixedDeltaSeconds, ++impl_->tick_index);
-    impl_->session->fixed_tick(context);
+    if (auto result = impl_->session->fixed_tick(context); !result) {
+        auto error = result.error();
+        error.with_context("SimulationRuntime::run_one_fixed_tick(session pre-tick)");
+        return error;
+    }
     if (auto result = impl_->system_scheduler->fixed_tick(impl_->world, kFixedDeltaSeconds);
         !result) {
         auto error = result.error();
         error.with_context("SimulationRuntime::run_one_fixed_tick(SystemScheduler)");
+        return error;
+    }
+    if (auto result = impl_->session->after_fixed_tick(context); !result) {
+        auto error = result.error();
+        error.with_context("SimulationRuntime::run_one_fixed_tick(session post-tick)");
         return error;
     }
     return {};

@@ -84,6 +84,10 @@ enum class ErrorCode : int {
     kFileOpenFailed,
     kAssetNotFound,
     kAssetLoadFailed,
+    // Networking / replication.
+    kNetworkInitFailed,
+    kNetworkIoFailed,
+    kProtocolError,
     // Script (AngelScript integration).
     kScriptEngineInitFailed,
     kScriptCompileFailed,
@@ -178,6 +182,9 @@ private:
             case ErrorCode::kFileOpenFailed:              return "FileOpenFailed";
             case ErrorCode::kAssetNotFound:               return "AssetNotFound";
             case ErrorCode::kAssetLoadFailed:             return "AssetLoadFailed";
+            case ErrorCode::kNetworkInitFailed:           return "NetworkInitFailed";
+            case ErrorCode::kNetworkIoFailed:             return "NetworkIoFailed";
+            case ErrorCode::kProtocolError:               return "ProtocolError";
             case ErrorCode::kScriptEngineInitFailed:      return "ScriptEngineInitFailed";
             case ErrorCode::kScriptCompileFailed:        return "ScriptCompileFailed";
             case ErrorCode::kScriptExecuteFailed:        return "ScriptExecuteFailed";
