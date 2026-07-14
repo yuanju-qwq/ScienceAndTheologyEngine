@@ -2,12 +2,10 @@
 //
 // Phase 4: validates that a World with entities + components can be
 // saved to a binary file and loaded back into a fresh World with
-// identical state. Uses a stub asset cache (no real VulkanMesh) so the
-// test runs without a GPU.
+// identical state. Uses a source-free mesh reference registry, so the test
+// runs without a GPU.
 
-#include "assets/asset_cache.h"
-#include "assets/asset_handle.h"
-#include "core/expected.h"
+#include "assets/mesh_asset_reference_registry.h"
 #include "render/render_components.h"
 #include "ecs/entity_guid.h"
 #include "ecs/world.h"
@@ -18,10 +16,7 @@
 #include <filesystem>
 #include <string>
 
-using snt::assets::AssetCache;
-using snt::assets::AssetHandle;
-using snt::assets::MeshAssetTag;
-using snt::core::Expected;
+using snt::assets::MeshAssetReferenceRegistry;
 using snt::render::Camera;
 using snt::ecs::EntityGuid;
 using snt::render::MeshRef;
@@ -32,24 +27,8 @@ using snt::scene::save_scene;
 
 namespace {
 
-// Stub asset type — replaces VulkanMesh so the test doesn't need a GPU.
-// The cache stores pointers to these; the loader just news one up per
-// unique path.
-struct StubMesh {
-    std::string loaded_from;
-};
-
-// Helper: build a cache wired with a stub loader that records paths.
-struct TestCache {
-    AssetCache<StubMesh, MeshAssetTag> cache;
-
-    TestCache() {
-        cache.init(
-            [](const std::string& path) -> Expected<StubMesh*> {
-                return new StubMesh{path};
-            },
-            [](StubMesh* m) { delete m; });
-    }
+struct TestMeshReferences {
+    MeshAssetReferenceRegistry registry;
 };
 
 // Write a binary scene to a temp file + return its path.
@@ -67,14 +46,14 @@ std::string temp_scene_path(const char* suffix) {
 
 TEST(SceneTest, EmptyWorldRoundTrips) {
     World src;
-    TestCache tc;
+    TestMeshReferences tc;
 
     const auto path = temp_scene_path("empty");
-    auto sr = save_scene(src, tc.cache, path);
+    auto sr = save_scene(src, tc.registry, path);
     ASSERT_TRUE(sr.has_value()) << sr.error().format();
 
     World dst;
-    auto lr = load_scene(dst, tc.cache, path);
+    auto lr = load_scene(dst, tc.registry, path);
     ASSERT_TRUE(lr.has_value()) << lr.error().format();
 
     // Empty world saves 0 entities; dst should also have 0 entities
@@ -86,7 +65,7 @@ TEST(SceneTest, EmptyWorldRoundTrips) {
 
 TEST(SceneTest, SingleEntityWithTransformRoundTrips) {
     World src;
-    TestCache tc;
+    TestMeshReferences tc;
 
     // Create one entity with a known Guid + Transform.
     EntityGuid guid{0x1111111111111111ull};
@@ -104,13 +83,13 @@ TEST(SceneTest, SingleEntityWithTransformRoundTrips) {
     t.scale[2] = 3.0f;
 
     const auto path = temp_scene_path("one_entity");
-    auto sr = save_scene(src, tc.cache, path);
+    auto sr = save_scene(src, tc.registry, path);
     ASSERT_TRUE(sr.has_value()) << sr.error().format();
 
     // Load into a fresh World.
     World dst;
-    TestCache tc2;
-    auto lr = load_scene(dst, tc2.cache, path);
+    TestMeshReferences tc2;
+    auto lr = load_scene(dst, tc2.registry, path);
     ASSERT_TRUE(lr.has_value()) << lr.error().format();
 
     // The entity should be findable by its Guid.
@@ -132,7 +111,7 @@ TEST(SceneTest, SingleEntityWithTransformRoundTrips) {
 
 TEST(SceneTest, MultipleEntitiesRoundTrip) {
     World src;
-    TestCache tc;
+    TestMeshReferences tc;
 
     // Camera entity.
     EntityGuid cam_guid{0xCCCCCCCCCCCCCCCCull};
@@ -153,11 +132,11 @@ TEST(SceneTest, MultipleEntitiesRoundTrip) {
     cube_t.rotation[1] = 35.0f;
 
     const auto path = temp_scene_path("multi");
-    ASSERT_TRUE(save_scene(src, tc.cache, path).has_value());
+    ASSERT_TRUE(save_scene(src, tc.registry, path).has_value());
 
     World dst;
-    TestCache tc2;
-    ASSERT_TRUE(load_scene(dst, tc2.cache, path).has_value());
+    TestMeshReferences tc2;
+    ASSERT_TRUE(load_scene(dst, tc2.registry, path).has_value());
 
     // Verify camera entity.
     entt::entity loaded_cam = dst.find_entity_by_guid(cam_guid);
@@ -181,33 +160,30 @@ TEST(SceneTest, MultipleEntitiesRoundTrip) {
 // ===========================================================================
 
 TEST(SceneTest, MeshRefPathRoundTrips) {
-    // MeshRef is serialized as the mesh PATH (resolved via cache.path_of),
-    // not the runtime handle. On load, the loader calls cache.load(path)
-    // to get a fresh handle. So a save with handle H1 + a load that gives
-    // handle H2 (different number) still works because the path is the
-    // stable identity.
+    // MeshRef is serialized as a PATH, not a runtime handle. On load, the
+    // reference resolver resolves that path to a handle. A fresh resolver may
+    // assign a different numeric value, but the path remains the stable
+    // identity.
     World src;
-    TestCache tc;
+    TestMeshReferences tc;
 
-    // Pre-allocate a mesh handle by loading a fake path.
-    auto load_r = tc.cache.load("fake/cube.obj");
+    // Resolve a fake path to obtain a stable scene-facing handle.
+    auto load_r = tc.registry.resolve_mesh("fake/cube.obj");
     ASSERT_TRUE(load_r.has_value());
-    AssetHandle<MeshAssetTag> src_handle = *load_r;
+    const auto src_handle = *load_r;
 
     EntityGuid guid{0x2222222222222222ull};
     entt::entity e = src.create_entity_with_guid(guid);
     src.add_component<MeshRef>(e, MeshRef{src_handle});
 
     const auto path = temp_scene_path("meshref");
-    ASSERT_TRUE(save_scene(src, tc.cache, path).has_value());
+    ASSERT_TRUE(save_scene(src, tc.registry, path).has_value());
 
-    // Load into a fresh world + cache. The new cache assigns its own
-    // handles (likely the same id since both caches start empty, but
-    // we don't rely on that — we verify the MeshRef points to a valid
-    // asset that was loaded from the same path).
+    // Load into a fresh world + reference registry. The new registry assigns
+    // handles in its own order; scene identity is preserved through the path.
     World dst;
-    TestCache tc2;
-    ASSERT_TRUE(load_scene(dst, tc2.cache, path).has_value());
+    TestMeshReferences tc2;
+    ASSERT_TRUE(load_scene(dst, tc2.registry, path).has_value());
 
     entt::entity loaded = dst.find_entity_by_guid(guid);
     ASSERT_TRUE(loaded != entt::null);
@@ -215,10 +191,7 @@ TEST(SceneTest, MeshRefPathRoundTrips) {
     const auto& loaded_ref = dst.registry().get<MeshRef>(loaded);
     EXPECT_EQ(loaded_ref.handle.id, 0u);  // first asset in tc2
 
-    // The loaded handle must resolve to a real asset via tc2.cache.get.
-    StubMesh* mesh = tc2.cache.get(loaded_ref.handle);
-    ASSERT_NE(mesh, nullptr);
-    EXPECT_EQ(mesh->loaded_from, "fake/cube.obj");
+    EXPECT_EQ(tc2.registry.mesh_path(loaded_ref.handle), "fake/cube.obj");
 }
 
 // ===========================================================================
@@ -227,8 +200,8 @@ TEST(SceneTest, MeshRefPathRoundTrips) {
 
 TEST(SceneErrorTest, LoadMissingFileReturnsError) {
     World dst;
-    TestCache tc;
-    auto r = load_scene(dst, tc.cache, "does/not/exist.bin");
+    TestMeshReferences tc;
+    auto r = load_scene(dst, tc.registry, "does/not/exist.bin");
     ASSERT_FALSE(r.has_value());
     // Just check we got an error; specific code/message may vary.
 }
@@ -241,8 +214,8 @@ TEST(SceneErrorTest, LoadTruncatedFileReturnsError) {
         ofs.write("SNTS", 4);  // magic only, nothing else
     }
     World dst;
-    TestCache tc;
-    auto r = load_scene(dst, tc.cache, path);
+    TestMeshReferences tc;
+    auto r = load_scene(dst, tc.registry, path);
     ASSERT_FALSE(r.has_value());
 }
 
@@ -253,8 +226,8 @@ TEST(SceneErrorTest, LoadBadMagicReturnsError) {
         ofs.write("XXXX", 4);  // wrong magic
     }
     World dst;
-    TestCache tc;
-    auto r = load_scene(dst, tc.cache, path);
+    TestMeshReferences tc;
+    auto r = load_scene(dst, tc.registry, path);
     ASSERT_FALSE(r.has_value());
 }
 
@@ -267,8 +240,8 @@ TEST(SceneErrorTest, LoadUnsupportedVersionReturnsError) {
         ofs.write(reinterpret_cast<const char*>(&v), 4);
     }
     World dst;
-    TestCache tc;
-    auto r = load_scene(dst, tc.cache, path);
+    TestMeshReferences tc;
+    auto r = load_scene(dst, tc.registry, path);
     ASSERT_FALSE(r.has_value());
 }
 
@@ -281,7 +254,7 @@ TEST(SceneGuidTest, EntityGuidsSurviveRoundTrip) {
     // every entity's Guid must be identical to its pre-save value.
     // This is what makes scene files portable across runs.
     World src;
-    TestCache tc;
+    TestMeshReferences tc;
 
     std::vector<EntityGuid> src_guids;
     for (int i = 0; i < 10; ++i) {
@@ -292,11 +265,11 @@ TEST(SceneGuidTest, EntityGuidsSurviveRoundTrip) {
     }
 
     const auto path = temp_scene_path("guids");
-    ASSERT_TRUE(save_scene(src, tc.cache, path).has_value());
+    ASSERT_TRUE(save_scene(src, tc.registry, path).has_value());
 
     World dst;
-    TestCache tc2;
-    ASSERT_TRUE(load_scene(dst, tc2.cache, path).has_value());
+    TestMeshReferences tc2;
+    ASSERT_TRUE(load_scene(dst, tc2.registry, path).has_value());
 
     // Every original Guid must resolve to a live entity in dst.
     for (const EntityGuid& g : src_guids) {

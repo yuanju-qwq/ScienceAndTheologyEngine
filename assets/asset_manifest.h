@@ -1,10 +1,10 @@
 // AssetManifest: stable, declarative mapping of asset id -> path.
 //
 // Why a manifest?
-//   - Runtime AssetCache assigns handle ids in load order, so the same
-//     asset can get a different handle across runs (e.g. if a save file
-//     references handle 3 but a new asset was added before it in the
-//     load order, handle 3 now points to a different asset).
+//   - AssetManager resolves catalog entries in declared order, so a stable
+//     manifest keeps distinct source requests deterministically ordered across
+//     runs. Aliases may share one source request and therefore one mesh
+//     reference without requiring duplicate GPU residency.
 //   - AssetCatalog owns source-backed manifest loading and preserves its
 //     declared order. Runtime injects that immutable catalog into
 //     AssetManager before a game session creates its World.
@@ -45,8 +45,8 @@ struct AssetManifestEntry {
     std::string path;
 };
 
-// Parsed manifest. The order of `entries` is significant: entry N gets
-// handle N when registered with AssetCache::register_preallocated().
+// Parsed manifest. The order of `entries` is significant because AssetManager
+// resolves it deterministically before a scene is loaded.
 struct AssetManifest {
     std::vector<AssetManifestEntry> entries;
 };

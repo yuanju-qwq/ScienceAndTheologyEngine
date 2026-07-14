@@ -9,8 +9,8 @@
 //   - The catalog exposes only value requests. It cannot mutate World, access
 //     a render device, or recover services from process-global state.
 //
-// This is the catalog/source half of the asset boundary. AssetManager now
-// consumes it before game content registration and owns the Vulkan mesh cache.
+// This is the catalog/source half of the asset boundary. AssetManager consumes
+// it before game content registration and creates uploader-backed mesh residency.
 
 #pragma once
 

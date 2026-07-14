@@ -1,13 +1,12 @@
 # Scene module: binary scene serialization + loading.
 #
-# Header-only: save_scene/load_scene are function templates (parameterized
-# on the mesh asset type so tests can use a StubMesh instead of VulkanMesh).
-# All implementation lives in scene.h; there is no scene.cpp.
+# Header-only: save_scene/load_scene depend on the Vulkan-free
+# IMeshAssetReferenceResolver contract. All implementation lives in scene.h;
+# there is no scene.cpp.
 #
-# Layering: depends on assets/ (AssetCache), core/ (BinaryReader/Writer,
-# Serializer, Expected), ecs/ (World), and render/ (presentation components). The AssetCache template
-# parameter means the header includes the asset type, but scene code
-# does NOT call any Vulkan functions.
+# Layering: depends on assets/ (mesh references), core/ (BinaryReader/Writer,
+# Serializer, Expected), ecs/ (World), and render/ (presentation components).
+# Scene code does NOT call Vulkan functions.
 #
 # This is an INTERFACE library (header-only) — no sources to compile.
 

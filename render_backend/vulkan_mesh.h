@@ -3,7 +3,8 @@
 // P1.5: decodes .obj bytes via tinyobjloader, creates VMA-backed vertex +
 // index buffers, and provides draw() to bind + draw.
 //
-// P2+ will add: mesh caching, async loading via JobSystem, instanced rendering.
+// GPU residency is owned by assets/VulkanGpuAssetUploader. Future work here
+// includes asynchronous decoding via JobSystem and instanced rendering.
 
 #pragma once
 

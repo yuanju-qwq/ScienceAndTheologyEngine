@@ -1,4 +1,4 @@
-// Type-safe handle for assets in the AssetCache.
+// Type-safe handles for asset reference registries.
 //
 // Design:
 //   - Wraps a uint32_t ID; 0xFFFFFFFF is the invalid sentinel.
@@ -7,9 +7,9 @@
 //   - Trivially copyable — safe to store in ECS components and pass by
 //     value across module boundaries.
 //
-// Rationale: replaces the previously duplicated `MeshHandle` types in
-// render/render_components.h and render/mesh_cache.h. One canonical handle type
-// eliminates the layout-duplication bridge between layers.
+// Rationale: replaces previously duplicated mesh-handle layouts with one
+// canonical value type shared by render components, scene references, and
+// AssetManager's GPU-residency map.
 
 #pragma once
 
@@ -36,8 +36,8 @@ struct AssetHandle {
 // Phantom tags for built-in asset types
 // ---------------------------------------------------------------------------
 // Add new tags here as new resource kinds land (Texture, Material, Shader,
-// Audio, ...). Each tag pairs with an AssetCache<T> registered in
-// AssetManager.
+// Audio, ...). Each tag receives a scene/reference registry and GPU-residency
+// policy when its uploader support is implemented.
 struct MeshAssetTag {};
 struct TextureAssetTag {};    // reserved for P3
 struct MaterialAssetTag {};   // reserved for P3

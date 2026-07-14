@@ -4,9 +4,9 @@
 // Why a separate tool:
 //   - The scene file is "data" — it should be generated once and checked
 //     into the repo, not regenerated at every engine startup.
-//   - Using a stub mesh (StubMesh) avoids needing a VulkanDevice just to
-//     write the scene; save_scene only reads mesh_cache.path_of() to
-//     resolve MeshRef handles to paths, so no real mesh data is needed.
+//   - MeshAssetReferenceRegistry avoids needing a VulkanDevice: scene writing
+//     needs only stable MeshHandle/path identity, not real mesh data or GPU
+//     residency.
 //   - Future: this tool is the seed for a scene editor (add flags to
 //     list/edit/import scenes).
 //
@@ -22,9 +22,7 @@
 
 #define SNT_LOG_CHANNEL "gen_scene"
 
-#include "assets/asset_cache.h"
-#include "assets/asset_handle.h"
-#include "core/expected.h"
+#include "assets/mesh_asset_reference_registry.h"
 #include "core/log.h"
 #include "render/render_components.h"
 #include "ecs/entity_guid.h"
@@ -34,9 +32,7 @@
 #include <cstdio>
 #include <string>
 
-using snt::assets::AssetCache;
-using snt::assets::MeshAssetTag;
-using snt::core::Expected;
+using snt::assets::MeshAssetReferenceRegistry;
 using snt::render::Camera;
 using snt::ecs::EntityGuid;
 using snt::render::MeshRef;
@@ -44,42 +40,17 @@ using snt::render::Transform;
 using snt::ecs::World;
 using snt::scene::save_scene;
 
-namespace {
-
-// Stub mesh type — only the path matters for scene serialization.
-// save_scene calls mesh_cache.path_of(handle) to resolve MeshRef to a
-// path string; the actual mesh data is never touched.
-struct StubMesh {
-    std::string loaded_from;
-};
-
-// Wire up a cache with a stub loader. The loader records the path
-// so path_of() can return it later. Caller owns the cache; this just
-// calls init() on it.
-void init_stub_cache(AssetCache<StubMesh, MeshAssetTag>& cache) {
-    cache.init(
-        [](const std::string& path) -> Expected<StubMesh*> {
-            return new StubMesh{path};
-        },
-        [](StubMesh* m) { delete m; });
-}
-
-}  // namespace
-
 int main(int argc, char* argv[]) {
     const std::string output_path =
         (argc > 1) ? argv[1] : "default_scene.bin";
 
     World world;
-    AssetCache<StubMesh, MeshAssetTag> cache;
-    init_stub_cache(cache);
+    MeshAssetReferenceRegistry mesh_references;
 
-    // Pre-load the cube mesh path so we get a stable handle to reference.
-    // The handle value doesn't matter — save_scene resolves it back to the
-    // path string in the scene file.
-    auto mesh_result = cache.load("assets/dev/cube.obj");
+    // Register the cube path so the scene receives a stable mesh handle.
+    auto mesh_result = mesh_references.resolve_mesh("assets/dev/cube.obj");
     if (!mesh_result) {
-        SNT_LOG_ERROR("Failed to load stub mesh: %s",
+        SNT_LOG_ERROR("Failed to register scene mesh reference: %s",
                       mesh_result.error().format().c_str());
         return 1;
     }
@@ -125,7 +96,7 @@ int main(int argc, char* argv[]) {
         world.add_component<MeshRef>(e, MeshRef{mesh_handle});
     }
 
-    auto result = save_scene(world, cache, output_path);
+    auto result = save_scene(world, mesh_references, output_path);
     if (!result) {
         SNT_LOG_ERROR("Failed to save scene: %s",
                       result.error().format().c_str());

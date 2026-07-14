@@ -11,9 +11,9 @@
 //     resolved symlink escapes are rejected before file bytes are loaded.
 //
 // Runtime owns this source for its game content root and injects it into both
-// AssetCatalog and AssetManager. AssetManager currently decodes its returned
-// bytes through the legacy mesh cache; device residency still migrates behind
-// IGpuAssetUploader later.
+// AssetCatalog and AssetManager. AssetManager forwards returned owned bytes to
+// its IGpuAssetUploader implementation; this source remains independent from
+// render-device residency.
 
 #pragma once
 

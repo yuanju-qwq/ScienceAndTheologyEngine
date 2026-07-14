@@ -11,9 +11,10 @@
 //     an EntityGuid + a component list. Components are self-describing
 //     (type-id + payload) so the loader can skip unknown component
 //     types (forward compatibility) instead of failing the whole load.
-//   - MeshRef handles are stored as a u32 id. The scene loader resolves
-//     the id to a path via AssetCache::path_of() when saving, and back
-//     to a handle via AssetCache (manifest-pre-allocated) when loading.
+//   - MeshRef handles are stored as a u32 id. The scene loader resolves the
+//     id to a source request through IMeshAssetReferenceResolver when saving,
+//     and asks the same resolver for a stable handle when loading. Runtime
+//     resolution may also ensure the referenced mesh is GPU-resident.
 //
 // File layout (all little-endian):
 //   [header]
@@ -28,16 +29,14 @@
 //       u32 payload_size        (bytes of payload that follow)
 //       [payload]               (payload_size bytes; format per type)
 //
-// Template parameter MeshT:
-//   save_scene/load_scene are templates on the mesh asset type so unit
-//   tests can pass AssetCache<StubMesh, ...> instead of the real
-//   AssetCache<VulkanMesh, ...> (which would need a VulkanDevice).
-//   Production code passes AssetCache<VulkanMesh, ...>.
+// Mesh reference boundary:
+//   save_scene/load_scene depend only on IMeshAssetReferenceResolver, so scene
+//   code remains independent of Vulkan and offline tools can use the
+//   source-free MeshAssetReferenceRegistry.
 //
-// Layering: depends on assets/ (AssetCache), core/ (BinaryReader/Writer,
-// Serializer, Expected), ecs/ (World), and render/ (presentation components). The AssetCache template
-// parameter means the header includes the asset type, but scene code
-// does NOT call any Vulkan functions.
+// Layering: depends on assets/ (mesh reference boundary), core/
+// (BinaryReader/Writer, Serializer, Expected), ecs/ (World), and render/
+// (presentation components). Scene code does not call Vulkan functions.
 
 // Logging channel for scene save/load diagnostics. Defined before
 // core/log.h is included so the SNT_LOG_* macros pick up "scene".
@@ -50,8 +49,7 @@
 
 #pragma once
 
-#include "assets/asset_cache.h"      // AssetCache for MeshRef resolution
-#include "assets/asset_handle.h"     // MeshAssetTag
+#include "assets/mesh_asset_reference_registry.h"
 #include "core/binary_reader.h"
 #include "core/binary_writer.h"
 #include "core/expected.h"
@@ -97,7 +95,7 @@ struct SceneFileHeader {
 };
 
 // ---------------------------------------------------------------------------
-// Implementation (header-only because save_scene/load_scene are templates)
+// Implementation (header-only scene serialization)
 // ---------------------------------------------------------------------------
 namespace detail {
 
@@ -120,11 +118,11 @@ inline void write_header(BinaryWriter& w, uint32_t entity_count) {
 // followed by (type_id, payload_size, payload) triples for each
 // component the entity has. Unknown components are silently skipped
 // (the save format only knows Transform/MeshRef/Camera for now).
-template <typename MeshT>
-void write_entity(BinaryWriter& w,
-                  const snt::ecs::World& world,
-                  entt::entity e,
-                  const snt::assets::AssetCache<MeshT, snt::assets::MeshAssetTag>& mesh_cache) {
+inline void write_entity(
+    BinaryWriter& w,
+    const snt::ecs::World& world,
+    entt::entity e,
+    const snt::assets::IMeshAssetReferenceResolver& mesh_references) {
     const EntityGuid guid = world.guid_of(e);
     Serializer<EntityGuid>::write(w, guid);
 
@@ -153,7 +151,7 @@ void write_entity(BinaryWriter& w,
         // MeshRef payload is the mesh PATH (string), not the runtime
         // handle — handles are unstable across runs, so we resolve to
         // the path here and back to a handle on load.
-        const std::string mesh_path = mesh_cache.path_of(m.handle);
+        const std::string mesh_path = mesh_references.mesh_path(m.handle);
         BinaryWriter payload;
         payload.write_string(mesh_path);
         w.write_u32(static_cast<uint32_t>(payload.size()));
@@ -202,11 +200,11 @@ inline bool read_header(BinaryReader& r, uint32_t& out_entity_count) {
 // Read one entity record + attach its components to `e`.
 // Returns false on any parse failure (truncation / unknown component
 // type with no skip path). Leaves the world partially modified on failure.
-template <typename MeshT>
-bool read_entity(BinaryReader& r,
-                 snt::ecs::World& world,
-                 entt::entity e,
-                 snt::assets::AssetCache<MeshT, snt::assets::MeshAssetTag>& mesh_cache) {
+inline bool read_entity(
+    BinaryReader& r,
+    snt::ecs::World& world,
+    entt::entity e,
+    snt::assets::IMeshAssetReferenceResolver& mesh_references) {
     uint32_t component_count = 0;
     if (!r.read_u32(component_count)) {
         SNT_LOG_ERROR("load_scene: truncated entity (component_count)");
@@ -256,13 +254,12 @@ bool read_entity(BinaryReader& r,
                     SNT_LOG_ERROR("load_scene: MeshRef payload parse failed");
                     return false;
                 }
-                // Resolve the path to a handle. If the manifest pre-allocated
-                // it, we get the existing stable handle; otherwise load on
-                // demand (handle is runtime-stable only within this run).
-                auto load_result = mesh_cache.load(mesh_path);
+                // Runtime resolution returns a preloaded manifest handle when
+                // available and otherwise uploads the explicitly requested mesh.
+                auto load_result = mesh_references.resolve_mesh(mesh_path);
                 if (!load_result) {
                     snt::core::Error err = load_result.error();
-                    err.with_context("load_scene (mesh_cache.load '" + mesh_path + "')");
+                    err.with_context("load_scene (resolve_mesh '" + mesh_path + "')");
                     SNT_LOG_ERROR("%s", err.format().c_str());
                     return false;
                 }
@@ -312,14 +309,12 @@ inline bool read_file(const std::string& path, std::vector<uint8_t>& out) {
 }  // namespace detail
 
 // ---------------------------------------------------------------------------
-// Public API (templates — definitions live here so they instantiate
-// correctly for each MeshT)
+// Public API
 // ---------------------------------------------------------------------------
 
-template <typename MeshT>
-snt::core::Expected<void> save_scene(
+inline snt::core::Expected<void> save_scene(
     const snt::ecs::World& world,
-    const snt::assets::AssetCache<MeshT, snt::assets::MeshAssetTag>& mesh_cache,
+    const snt::assets::IMeshAssetReferenceResolver& mesh_references,
     const std::string& path) {
     // Collect entities with an EntityGuid component — those are the ones
     // that can be stably re-loaded.
@@ -331,7 +326,7 @@ snt::core::Expected<void> save_scene(
     snt::core::BinaryWriter w;
     detail::write_header(w, static_cast<uint32_t>(entities.size()));
     for (entt::entity e : entities) {
-        detail::write_entity(w, world, e, mesh_cache);
+        detail::write_entity(w, world, e, mesh_references);
     }
 
     // `path` is used verbatim — callers that need game-root resolution
@@ -352,10 +347,9 @@ snt::core::Expected<void> save_scene(
     return {};
 }
 
-template <typename MeshT>
-snt::core::Expected<void> load_scene(
+inline snt::core::Expected<void> load_scene(
     snt::ecs::World& world,
-    snt::assets::AssetCache<MeshT, snt::assets::MeshAssetTag>& mesh_cache,
+    snt::assets::IMeshAssetReferenceResolver& mesh_references,
     const std::string& path) {
     // `path` is used verbatim (see save_scene comment for rationale).
     std::vector<uint8_t> buffer;
@@ -382,7 +376,7 @@ snt::core::Expected<void> load_scene(
             return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
                                     "load_scene: duplicate or invalid guid in scene"};
         }
-        if (!detail::read_entity(r, world, e, mesh_cache)) {
+        if (!detail::read_entity(r, world, e, mesh_references)) {
             return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
                                     "load_scene: corrupt entity record"};
         }

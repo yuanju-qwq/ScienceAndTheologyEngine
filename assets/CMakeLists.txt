@@ -1,12 +1,12 @@
-# Assets module: central asset cache + loaders.
+# Assets module: source/catalog identity plus render-thread GPU residency.
 #
 # Layering: sits between render_backend (VulkanMesh / VulkanDevice) and
 # the rest of the engine (render/RenderSystem, ecs/components, scripts).
-# Owns canonical handles, source/catalog parsing, and the Runtime-injected
-# AssetManager service. FilesystemAssetSource + AssetCatalog implement the
-# Vulkan-free content layer. IGpuAssetUploader remains declaration-only; the
-# Runtime injects the source/catalog into AssetManager, which still owns the
-# transitional Vulkan mesh-cache residency path.
+# FilesystemAssetSource + AssetCatalog implement the Vulkan-free content layer.
+# MeshAssetReferenceRegistry owns scene-facing path/handle identity, while
+# VulkanGpuAssetUploader implements IGpuAssetUploader token residency for
+# AssetManager. The legacy Vulkan mesh cache and loader are intentionally not
+# part of this module's production path.
 #
 # Layering rule (top -> bottom, never reverse):
 #   host application -> engine -> assets -> render_backend -> core
@@ -20,9 +20,10 @@ add_library(snt_assets STATIC
     filesystem_asset_source.cpp
     loader.cpp
     material_atlas.cpp
-    mesh_asset_loader.cpp
+    mesh_asset_reference_registry.cpp
     shader_cache.cpp
     texture_cache.cpp
+    vulkan_gpu_asset_uploader.cpp
 )
 target_include_directories(snt_assets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(snt_assets PUBLIC

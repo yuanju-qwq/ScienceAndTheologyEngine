@@ -1,11 +1,13 @@
 // Contract tests for the staged asset source / GPU residency boundary.
 //
 // These fakes deliberately contain no filesystem, Vulkan, World, or runtime
-// singleton. They verify that the public interfaces preserve owned data and
-// value-based handoff before AssetManager is migrated to use them.
+// singleton. They verify that the public interfaces preserve owned data,
+// stable scene references, and value-based GPU handoff.
 
 #include "assets/asset_source.h"
 #include "assets/gpu_asset_uploader.h"
+#include "assets/mesh_asset_reference_registry.h"
+#include "assets/vulkan_gpu_asset_uploader.h"
 #include "core/error.h"
 
 #include <gtest/gtest.h>
@@ -25,6 +27,8 @@ using snt::assets::GpuAssetResidencyToken;
 using snt::assets::GpuAssetUploadRequest;
 using snt::assets::IAssetSource;
 using snt::assets::IGpuAssetUploader;
+using snt::assets::MeshAssetReferenceRegistry;
+using snt::assets::VulkanGpuAssetUploader;
 
 class InMemoryAssetSource final : public IAssetSource {
 public:
@@ -86,6 +90,7 @@ private:
 using UploadSignature = snt::core::Expected<GpuAssetResidencyToken> (
     IGpuAssetUploader::*)(GpuAssetUploadRequest);
 static_assert(std::is_same_v<decltype(&IGpuAssetUploader::upload), UploadSignature>);
+static_assert(std::is_base_of_v<IGpuAssetUploader, VulkanGpuAssetUploader>);
 
 }  // namespace
 
@@ -128,4 +133,46 @@ TEST(AssetBoundaryTest, UploaderTakesValueRequestAndReclaimsReleasedTokens) {
     auto evicted = uploader.evict_unused();
     ASSERT_TRUE(evicted.has_value()) << evicted.error().format();
     EXPECT_EQ(*evicted, 1u);
+
+}
+TEST(AssetBoundaryTest, MeshReferenceRegistryDeduplicatesStablePaths) {
+    MeshAssetReferenceRegistry registry;
+
+    auto cube = registry.resolve_mesh("assets/dev/cube.obj");
+    ASSERT_TRUE(cube.has_value()) << cube.error().format();
+    EXPECT_TRUE(cube->valid());
+    EXPECT_EQ(cube->id, 0u);
+    EXPECT_EQ(registry.mesh_path(*cube), "assets/dev/cube.obj");
+
+    auto same_cube = registry.resolve_mesh("assets/dev/cube.obj");
+    ASSERT_TRUE(same_cube.has_value()) << same_cube.error().format();
+    EXPECT_EQ(*same_cube, *cube);
+    EXPECT_EQ(registry.size(), 1u);
+
+    auto invalid = registry.resolve_mesh("");
+    ASSERT_FALSE(invalid.has_value());
+    EXPECT_EQ(invalid.error().code(), snt::core::ErrorCode::kInvalidArgument);
+
+    registry.clear();
+    EXPECT_EQ(registry.size(), 0u);
+    EXPECT_TRUE(registry.mesh_path(*cube).empty());
+}
+
+TEST(AssetBoundaryTest, VulkanUploaderRejectsUseBeforeDeviceInitialization) {
+    VulkanGpuAssetUploader uploader;
+    GpuAssetUploadRequest request;
+    request.kind = GpuAssetKind::kMesh;
+    request.source.canonical_path = "game://assets/dev/cube.obj";
+
+    auto upload = uploader.upload(std::move(request));
+    ASSERT_FALSE(upload.has_value());
+    EXPECT_EQ(upload.error().code(), snt::core::ErrorCode::kInvalidState);
+
+    auto init = uploader.init(nullptr);
+    ASSERT_FALSE(init.has_value());
+    EXPECT_EQ(init.error().code(), snt::core::ErrorCode::kInvalidArgument);
+
+    auto evicted = uploader.evict_unused();
+    ASSERT_FALSE(evicted.has_value());
+    EXPECT_EQ(evicted.error().code(), snt::core::ErrorCode::kInvalidState);
 }

@@ -14,10 +14,8 @@
 //     without writing a custom hash functor each time.
 //
 // Use cases:
-//   - AssetCache: primary lookup key for path -> AssetHandle (replaces
-//     std::string comparisons with O(1) uint64_t probes).
-//   - AssetManifest: stable id hashing for cross-run references.
-//   - Future: network asset GUIDs, shader cache keys, content-addressable
+//   - Script loader: stable source/module lookup keys.
+//   - Future: network asset GUIDs, shader cache keys, and content-addressable
 //     resource lookup.
 //
 // NOT a cryptographic hash. FNV-1a is fast and well-distributed for

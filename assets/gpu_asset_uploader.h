@@ -8,8 +8,8 @@
 //   - This interface receives no World and provides no global-service access;
 //     simulation and loading workers communicate through explicit values only.
 //
-// This declaration deliberately contains no Vulkan type. The current
-// AssetManager/VulkanMeshLoader implementation is not yet migrated here.
+// This declaration deliberately contains no Vulkan type. Backend-specific
+// implementations expose resource access through their owning asset manager.
 
 #pragma once
 
@@ -40,8 +40,10 @@ struct GpuAssetUploadRequest {
     AssetSourceData source;
 };
 
-// Opaque, uploader-local residency identity. It carries no Vulkan handle and
-// must only be supplied back to the uploader that created it.
+// Opaque, uploader-local logical residency lease. It carries no Vulkan handle
+// and must only be supplied back to the uploader that created it. Each
+// successful upload owns one lease, even when several uploads share the same
+// underlying device resource; release() consumes that lease exactly once.
 struct GpuAssetResidencyToken {
     static constexpr std::uint64_t kInvalidValue =
         std::numeric_limits<std::uint64_t>::max();

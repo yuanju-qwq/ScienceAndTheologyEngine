@@ -17,7 +17,7 @@ add_executable(snt_tests
     test_runtime_config.cpp
     test_clock.cpp
     test_path_utils.cpp
-    test_asset_cache.cpp
+    test_asset_handle.cpp
     test_asset_pipeline.cpp
     test_asset_boundary.cpp   # staged source / GPU residency contract
     test_asset_catalog.cpp
@@ -25,7 +25,7 @@ add_executable(snt_tests
     test_script_engine.cpp
     test_script_loader.cpp
     test_entity_guid.cpp       # Phase 1: EntityGuid + World mapping
-    test_asset_manifest.cpp    # Phase 2: asset manifest + pre-allocated handles
+    test_asset_manifest.cpp    # Asset manifest + mesh-reference identity
     test_binary_io.cpp         # Phase 3: BinaryWriter/Reader + Serializer<T>
     test_scene_serialize.cpp   # Phase 4: Scene binary save/load round-trip
     test_job_system.cpp        # P2: work-stealing Job System

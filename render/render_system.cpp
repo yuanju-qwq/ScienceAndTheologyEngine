@@ -102,8 +102,8 @@ void RenderSystem::destroy_render_graph() {
         graph_.destroy();
         graph_initialized_ = false;
     }
-    // P2.F: MeshCache is now owned by AssetManager; released via
-    // AssetManager::shutdown() is called from Runtime::shutdown().
+    // GPU mesh residency is owned by AssetManager and released through its
+    // uploader lifecycle during Runtime::shutdown().
 }
 
 void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
@@ -158,7 +158,7 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
         auto& mesh_ref  = registry.get<snt::render::MeshRef>(e);
 
         // Resolve the mesh handle to a VulkanMesh via the AssetManager.
-        auto* mesh = assets_->mesh_cache().get(mesh_ref.handle.id);
+        auto* mesh = assets_->mesh(mesh_ref.handle);
         if (!mesh) {
             SNT_LOG_ERROR("entity %u: invalid mesh handle",
                           static_cast<unsigned>(e));

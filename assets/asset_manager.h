@@ -1,28 +1,31 @@
-// AssetManager: central registry for asset caches.
+// AssetManager: runtime-facing mesh identity and GPU residency service.
 //
 // Design:
-//   - Runtime-owned service. Consumers receive an explicit reference through
-//     RuntimeServices or their constructor/setter dependency boundary.
-//   - init(VulkanDevice*, IAssetSource&, AssetCatalog) wires up the built-in
-//     caches (currently mesh) from the Runtime-owned content boundary.
-//     New asset types register here: add a VulkanTextureLoader, an
-//     AssetCache<VulkanTexture>, and a texture_cache() accessor.
-//   - shutdown() releases every cache. Must be called BEFORE the
-//     VulkanDevice it was initialized with is destroyed.
+//   - Runtime owns this service and injects it through RuntimeServices.
+//   - MeshHandle/path identity is kept separate from Vulkan residency:
+//     MeshAssetReferenceRegistry owns the former, VulkanGpuAssetUploader owns
+//     the latter through IGpuAssetUploader token leases.
+//   - init() and resolve_mesh() are render-thread/device-affine because they
+//     may upload resources. IAssetSource itself remains worker-capable.
+//   - shutdown() releases every lease, evicts released resources, and runs
+//     before the borrowed VulkanDevice is destroyed.
 //
 // Future:
-//   - Hot-reload: a watch thread on asset dirs triggers reload(handle).
-//   - Async loading: load_async() submits a JobSystem task + returns
-//     Future<Handle>.
+//   - Texture/shader uploaders use the same IGpuAssetUploader contract.
+//   - Hot reload can replace a token after GPU synchronization while retaining
+//     the stable scene-facing MeshHandle.
 
 #pragma once
 
-#include "assets/asset_cache.h"
 #include "assets/asset_catalog.h"
-#include "assets/asset_handle.h"
 #include "assets/asset_source.h"
-#include "assets/mesh_asset_loader.h"
+#include "assets/mesh_asset_reference_registry.h"
+#include "assets/vulkan_gpu_asset_uploader.h"
 #include "core/expected.h"
+
+#include <cstddef>
+#include <string>
+#include <vector>
 
 namespace snt::render_backend {
 class VulkanDevice;
@@ -31,7 +34,7 @@ class VulkanMesh;
 
 namespace snt::assets {
 
-class AssetManager {
+class AssetManager final : public IMeshAssetReferenceResolver {
 public:
     AssetManager() = default;
     ~AssetManager() { shutdown(); }
@@ -39,42 +42,37 @@ public:
     AssetManager(const AssetManager&) = delete;
     AssetManager& operator=(const AssetManager&) = delete;
 
-    // Initialize all built-in GPU caches from an immutable catalog. All
-    // dependencies are borrowed: Runtime owns the source/catalog and the
-    // VulkanDevice must outlive this manager (call shutdown() before
-    // destroying the device). Each mesh cache miss reads owned source bytes
-    // through source before the legacy VulkanMeshLoader decodes them.
-    //
-    // This is render-thread/device-affine. IAssetSource itself may be called
-    // by workers elsewhere, but this manager invokes it only while creating
-    // or eagerly loading GPU resources on the render thread.
-    snt::core::Expected<void> init(
+    // Initialize mesh residency from an immutable source-backed catalog. The
+    // source and device are borrowed and must outlive this manager; catalog
+    // entries are eagerly uploaded in manifest order before the first frame.
+    [[nodiscard]] snt::core::Expected<void> init(
         snt::render_backend::VulkanDevice* device,
         IAssetSource& source,
         const AssetCatalog& catalog);
 
-    // Release all caches. Idempotent. Must be called before the
-    // VulkanDevice passed to init() is destroyed.
+    // Resolve a source-relative scene mesh request. A new request is read from
+    // IAssetSource and handed by value to IGpuAssetUploader; an existing one
+    // returns its stable handle without duplicate GPU allocation.
+    [[nodiscard]] snt::core::Expected<MeshHandle> resolve_mesh(
+        std::string requested_path) override;
+    [[nodiscard]] std::string mesh_path(MeshHandle handle) const override;
+
+    // Resolve a stable handle to its currently resident Vulkan mesh. The
+    // returned pointer is borrowed and valid until shutdown() or future reload.
+    [[nodiscard]] snt::render_backend::VulkanMesh* mesh(
+        MeshHandle handle) const noexcept;
+    [[nodiscard]] std::size_t mesh_count() const noexcept;
+
+    // Idempotently release every token and GPU residency. Must be called before
+    // the VulkanDevice passed to init() is destroyed.
     void shutdown();
 
-    // Access the mesh cache. Engine loads via this; RenderSystem resolves
-    // handles via this. Returns a reference valid until shutdown().
-    // Uses MeshAssetTag so handles are AssetHandle<MeshAssetTag> (= MeshHandle),
-    // decoupled from the VulkanMesh type.
-    AssetCache<snt::render_backend::VulkanMesh, MeshAssetTag>& mesh_cache() { return mesh_cache_; }
-
 private:
-    // Wires up the legacy mesh cache after device_ and source_ are set.
-    snt::core::Expected<void> init_mesh_cache();
-
     snt::render_backend::VulkanDevice* device_ = nullptr;
     IAssetSource* source_ = nullptr;
-
-    // Built-in loaders (own no heap state beyond the borrowed device ptr).
-    VulkanMeshLoader mesh_loader_;
-
-    // Built-in caches.
-    AssetCache<snt::render_backend::VulkanMesh, MeshAssetTag> mesh_cache_;
+    MeshAssetReferenceRegistry mesh_references_;
+    std::vector<GpuAssetResidencyToken> mesh_tokens_;
+    VulkanGpuAssetUploader uploader_;
 };
 
 }  // namespace snt::assets
