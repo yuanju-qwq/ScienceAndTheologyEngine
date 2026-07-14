@@ -16,9 +16,11 @@
 #include <string>
 #include <utility>
 
-namespace snt::data { class ChunkRegistry; }
 namespace snt::input { class InputSystem; }
-namespace snt::voxel { class ChunkRenderSystem; }
+namespace snt::voxel {
+class ChunkRegistry;
+class ChunkRenderSystem;
+}
 
 namespace snt::player {
 
@@ -54,7 +56,7 @@ public:
     ~PlayerControllerSystem() override = default;
 
     void set_input(snt::input::InputSystem* input) { input_ = input; }
-    void set_chunk_registry(snt::data::ChunkRegistry* registry) { chunk_registry_ = registry; }
+    void set_chunk_registry(snt::voxel::ChunkRegistry* registry) { chunk_registry_ = registry; }
     void set_chunk_render_system(snt::voxel::ChunkRenderSystem* system) {
         chunk_render_system_ = system;
     }
@@ -93,7 +95,7 @@ private:
     void try_break_target_block(const PlayerControllerState& state);
 
     snt::input::InputSystem* input_ = nullptr;
-    snt::data::ChunkRegistry* chunk_registry_ = nullptr;
+    snt::voxel::ChunkRegistry* chunk_registry_ = nullptr;
     snt::voxel::ChunkRenderSystem* chunk_render_system_ = nullptr;
     entt::entity camera_entity_ = entt::null;
 

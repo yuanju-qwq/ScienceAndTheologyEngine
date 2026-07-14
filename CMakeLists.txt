@@ -68,7 +68,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/fetch_third_party.cmake)
 #   host application -> engine -> {ui, render, voxel, physics, script, audio, network}
 #                         -> renderer -> render_backend -> platform
 #                         -> ecs -> input -> core
-#                         -> data -> core
+#                         -> voxel data/storage -> core
 add_subdirectory(platform)
 add_subdirectory(core)
 add_subdirectory(input)
@@ -80,9 +80,8 @@ add_subdirectory(render)
 add_subdirectory(script)        # NEW: AngelScript integration (depends on core)
 add_subdirectory(scene)         # NEW: binary scene serialization (depends on ecs + assets)
 add_subdirectory(ui)
-add_subdirectory(voxel)         # P3: voxel meshing + chunk renderer
-add_subdirectory(data)          # P2: data definitions ported from src/core/
-add_subdirectory(player)        # P4: first-person controller + voxel collision/raycast
+add_subdirectory(voxel)         # Voxel meshing and chunk renderer
+add_subdirectory(player)        # First-person control, collision, and raycast
 add_subdirectory(engine)
 
 # The module/header layout remains stable for source compatibility inside the
@@ -152,6 +151,17 @@ snt_register_engine_module(
     SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/ui"
 )
 snt_register_engine_module(
+    INTERFACE
+    TARGET snt_voxel_data
+    INCLUDE_PREFIXES voxel/data
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/voxel/data"
+)
+snt_register_engine_module(
+    TARGET snt_voxel_storage
+    INCLUDE_PREFIXES voxel/storage
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/voxel/storage"
+)
+snt_register_engine_module(
     TARGET snt_voxel_mesh
     INCLUDE_PREFIXES voxel/greedy_mesh.h voxel/collision_faces.h voxel/voxel_vertex.h
     SOURCE_FILES
@@ -169,32 +179,6 @@ snt_register_engine_module(
         "${SNT_ENGINE_SOURCE_DIR}/voxel/chunk_renderer.h"
         "${SNT_ENGINE_SOURCE_DIR}/voxel/chunk_render_system.cpp"
         "${SNT_ENGINE_SOURCE_DIR}/voxel/chunk_render_system.h"
-)
-snt_register_engine_module(
-    TARGET snt_data_defs
-    INCLUDE_PREFIXES data/defs
-    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/data/defs"
-)
-snt_register_engine_module(
-    TARGET snt_data_worldgen
-    INCLUDE_PREFIXES data/world_gen
-    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/data/world_gen"
-)
-snt_register_engine_module(
-    TARGET snt_data_save
-    INCLUDE_PREFIXES data/save
-    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/data/save"
-)
-snt_register_engine_module(
-    TARGET snt_data_mobile
-    INCLUDE_PREFIXES data/mobile_structure
-    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/data/mobile_structure"
-)
-snt_register_engine_module(
-    INTERFACE
-    TARGET snt_data_world
-    INCLUDE_PREFIXES data/world
-    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/data/world"
 )
 snt_register_engine_module(
     TARGET snt_player

@@ -1,6 +1,6 @@
 #include "core/job_system.h"
-#include "data/defs/terrain_data.h"
-#include "data/world/chunk_registry.h"
+#include "voxel/data/terrain_data.h"
+#include "voxel/data/chunk_registry.h"
 #include "render/render_components.h"
 #include "ecs/system_scheduler.h"
 #include "ecs/world.h"
@@ -18,23 +18,23 @@
 
 namespace {
 
-snt::data::ChunkData make_empty_chunk() {
-    snt::data::ChunkData chunk;
+snt::voxel::VoxelChunk make_empty_chunk() {
+    snt::voxel::VoxelChunk chunk;
     chunk.terrain.resize(
-        snt::data::ChunkData::kChunkSize,
-        snt::data::ChunkData::kChunkSize,
-        snt::data::ChunkData::kChunkSize);
+        snt::voxel::VoxelChunk::kChunkSize,
+        snt::voxel::VoxelChunk::kChunkSize,
+        snt::voxel::VoxelChunk::kChunkSize);
     return chunk;
 }
 
 }  // namespace
 
 TEST(PlayerVoxelCollisionTest, DownwardMoveStopsOnSolidVoxelTop) {
-    snt::data::ChunkRegistry registry;
+    snt::voxel::ChunkRegistry registry;
     auto chunk = make_empty_chunk();
     for (int z = 0; z < chunk.terrain.size_z; ++z) {
         for (int x = 0; x < chunk.terrain.size_x; ++x) {
-            chunk.terrain.set_cell(x, 0, z, 1, snt::data::TF_SOLID);
+            chunk.terrain.set_cell(x, 0, z, 1, snt::voxel::TF_SOLID);
         }
     }
     registry.set_chunk("overworld", 0, 0, 0, std::move(chunk));
@@ -54,11 +54,11 @@ TEST(PlayerVoxelCollisionTest, DownwardMoveStopsOnSolidVoxelTop) {
 }
 
 TEST(PlayerCollisionSnapshotTest, RetainsSweptTerrainAfterRegistryChanges) {
-    snt::data::ChunkRegistry registry;
+    snt::voxel::ChunkRegistry registry;
     auto chunk = make_empty_chunk();
     for (int z = 0; z < chunk.terrain.size_z; ++z) {
         for (int x = 0; x < chunk.terrain.size_x; ++x) {
-            chunk.terrain.set_cell(x, 0, z, 1, snt::data::TF_SOLID);
+            chunk.terrain.set_cell(x, 0, z, 1, snt::voxel::TF_SOLID);
         }
     }
     registry.set_chunk("overworld", 0, 0, 0, std::move(chunk));
@@ -90,11 +90,11 @@ TEST(PlayerPhysicsSystemTest, AppliesStateAndCameraAtWorkerBarrier) {
         const entt::entity player_entity = world.create_entity();
         world.registry().emplace<snt::render::Transform>(player_entity);
 
-        snt::data::ChunkRegistry chunks;
+        snt::voxel::ChunkRegistry chunks;
         auto chunk = make_empty_chunk();
         for (int z = 0; z < chunk.terrain.size_z; ++z) {
             for (int x = 0; x < chunk.terrain.size_x; ++x) {
-                chunk.terrain.set_cell(x, 0, z, 1, snt::data::TF_SOLID);
+                chunk.terrain.set_cell(x, 0, z, 1, snt::voxel::TF_SOLID);
             }
         }
         chunks.set_chunk("overworld", 0, 0, 0, std::move(chunk));
@@ -139,9 +139,9 @@ TEST(PlayerPhysicsSystemTest, AppliesStateAndCameraAtWorkerBarrier) {
 }
 
 TEST(PlayerRayCastTest, DdaHitsExpectedVoxelAndFaceNormal) {
-    snt::data::ChunkRegistry registry;
+    snt::voxel::ChunkRegistry registry;
     auto chunk = make_empty_chunk();
-    chunk.terrain.set_cell(3, 4, 5, 1, snt::data::TF_SOLID);
+    chunk.terrain.set_cell(3, 4, 5, 1, snt::voxel::TF_SOLID);
     registry.set_chunk("overworld", 0, 0, 0, std::move(chunk));
 
     const snt::player::CollisionWorldView world(&registry, "overworld", false);
@@ -164,9 +164,9 @@ TEST(PlayerRayCastTest, DdaHitsExpectedVoxelAndFaceNormal) {
 }
 
 TEST(PlayerRayCastTest, DdaHandlesVoxelEdgeTie) {
-    snt::data::ChunkRegistry registry;
+    snt::voxel::ChunkRegistry registry;
     auto chunk = make_empty_chunk();
-    chunk.terrain.set_cell(2, 4, 2, 1, snt::data::TF_SOLID);
+    chunk.terrain.set_cell(2, 4, 2, 1, snt::voxel::TF_SOLID);
     registry.set_chunk("overworld", 0, 0, 0, std::move(chunk));
 
     const snt::player::CollisionWorldView world(&registry, "overworld", false);

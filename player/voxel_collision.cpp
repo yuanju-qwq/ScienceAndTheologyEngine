@@ -3,8 +3,8 @@
 
 #include "player/voxel_collision.h"
 
-#include "data/defs/terrain_data.h"
-#include "data/world/chunk_registry.h"
+#include "voxel/data/chunk_registry.h"
+#include "voxel/data/terrain_data.h"
 
 #include <algorithm>
 #include <cmath>
@@ -13,7 +13,7 @@ namespace snt::player {
 namespace {
 
 constexpr float kEpsilon = 0.0001f;
-constexpr int32_t kChunkSize = snt::data::ChunkData::kChunkSize;
+constexpr int32_t kChunkSize = snt::voxel::VoxelChunk::kChunkSize;
 
 bool range_has_solid(const IVoxelCollisionWorld& world,
                      int32_t min_x, int32_t max_x,
@@ -66,7 +66,7 @@ bool CollisionWorldView::is_solid_block(int32_t x, int32_t y, int32_t z) const {
     const int32_t ly = positive_mod_i32(y, kChunkSize);
     const int32_t lz = positive_mod_i32(z, kChunkSize);
 
-    const snt::data::ChunkData* chunk =
+    const snt::voxel::VoxelChunk* chunk =
         chunks->get_chunk(dimension_id, cx, cy, cz);
     if (!chunk) {
         return missing_chunks_are_solid;

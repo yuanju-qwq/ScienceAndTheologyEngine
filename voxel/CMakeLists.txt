@@ -8,6 +8,21 @@
 # P3 task 1: snt_voxel_mesh (greedy_mesh + collision_faces).
 # P3 task 4/5: snt_voxel (chunk_renderer + chunk_render_system).
 
+# --- Generic voxel data and raw storage ---
+# These targets deliberately sit below rendering and game content. They expose
+# terrain/chunk primitives plus region blob framing, never gameplay sidecars.
+add_library(snt_voxel_data INTERFACE)
+target_link_libraries(snt_voxel_data INTERFACE snt_engine_settings)
+
+add_library(snt_voxel_storage STATIC
+    storage/region_file.cpp
+    storage/region_compactor.cpp
+)
+target_link_libraries(snt_voxel_storage PUBLIC
+    snt_voxel_data
+    snt_engine_settings
+)
+
 # --- Pure meshing algorithms (no Vulkan, no ECS) ---
 add_library(snt_voxel_mesh STATIC
     greedy_mesh.cpp
@@ -29,7 +44,6 @@ target_link_libraries(snt_voxel PUBLIC
     snt_assets
     snt_render_backend
     snt_ecs
-    snt_data_defs
-    snt_data_world
+    snt_voxel_data
     snt_third_party            # glm
 )

@@ -12,13 +12,13 @@
 #include <memory>
 #include <string>
 
-namespace snt::data { class ChunkRegistry; }
+namespace snt::voxel { class ChunkRegistry; }
 
 namespace snt::player {
 
 class PlayerPhysicsSystem final : public snt::ecs::IWorkerSystem {
 public:
-    PlayerPhysicsSystem(const snt::data::ChunkRegistry* chunk_registry,
+    PlayerPhysicsSystem(const snt::voxel::ChunkRegistry* chunk_registry,
                         entt::entity player_entity,
                         std::string dimension_id,
                         PlayerControllerTuning tuning);
@@ -40,7 +40,7 @@ public:
         const snt::ecs::World& world, float dt) override;
 
 private:
-    const snt::data::ChunkRegistry* chunk_registry_ = nullptr;
+    const snt::voxel::ChunkRegistry* chunk_registry_ = nullptr;
     entt::entity player_entity_ = entt::null;
     std::string dimension_id_;
     PlayerControllerTuning tuning_{};

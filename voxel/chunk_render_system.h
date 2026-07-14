@@ -12,7 +12,7 @@
 //   The system reads chunk data directly from ChunkRegistry.
 //
 // Two-phase (keeps the single frame loop in RenderSystem):
-//   1. update(world, dt)  — fixed-tick main-thread work: fetch ChunkData from
+//   1. update(world, dt)  — fixed-tick main-thread work: fetch VoxelChunk from
 //      ChunkRegistry, run greedy mesher, upload via ChunkRenderer, store
 //      the handle in uploaded_meshes_, clear dirty. NO draws, NO frame
 //      acquisition.
@@ -24,7 +24,7 @@
 //   mark_dirty(ChunkKey)  — schedule a chunk for remesh on next update()
 //   untrack(ChunkKey)     — unload mesh + drop from tracking (chunk removed)
 //
-// Layering: sits in voxel/, depends on data (ChunkRegistry + ChunkData) +
+// Layering: sits in voxel/, depends on voxel data (ChunkRegistry + VoxelChunk) +
 // voxel_mesh (greedy_mesher) + chunk_renderer. It registers as a main-thread
 // ECS system through Runtime's SystemScheduler, but holds no per-chunk
 // entities. No Vulkan types leak into the header except VkCommandBuffer.
@@ -33,7 +33,7 @@
 
 #include "core/expected.h"        // Expected<void>
 #include "core/job_system.h"      // Future for async remesh jobs
-#include "data/defs/chunk_data.h" // ChunkKey
+#include "voxel/data/voxel_chunk.h" // ChunkKey
 #include "ecs/system.h"           // System base
 #include "voxel/chunk_renderer.h" // ChunkRenderer, ChunkDrawCall, ChunkMeshHandle
 #include "voxel/voxel_vertex.h"   // VoxelMeshData (used internally)
@@ -46,9 +46,9 @@
 #include <unordered_set>
 #include <vector>
 
-namespace snt::data { class ChunkRegistry; }
-
 namespace snt::voxel {
+
+class ChunkRegistry;
 
 class ChunkRenderSystem : public snt::ecs::System {
 public:
@@ -62,7 +62,7 @@ public:
     // JobSystem must outlive the system. ChunkRenderer is required for both
     // update + render; ChunkRegistry is required for update (to fetch data).
     void set_chunk_renderer(ChunkRenderer* r) { renderer_ = r; }
-    void set_chunk_registry(snt::data::ChunkRegistry* r) { registry_ = r; }
+    void set_chunk_registry(ChunkRegistry* r) { registry_ = r; }
 
     // Material parameters used by the greedy mesher. Defaults match the
     // TerrainGenerator's conventions (air=0, ladder=255, no transparent
@@ -89,11 +89,11 @@ public:
     // --- External dirty-marking API ---
     // Schedule a chunk for remesh on the next update(). Safe to call for
     // chunks not yet tracked (they will be added). Idempotent.
-    void mark_dirty(const snt::data::ChunkKey& key) { dirty_chunks_.insert(key); }
+    void mark_dirty(const ChunkKey& key) { dirty_chunks_.insert(key); }
 
     // Untrack a chunk: unload its mesh (if uploaded) and remove from all
     // internal maps. Call when a chunk is unloaded from ChunkRegistry.
-    void untrack(const snt::data::ChunkKey& key);
+    void untrack(const ChunkKey& key);
 
     // Fixed-tick main-thread update: remesh dirty chunks (phase 1).
     void update(snt::ecs::World& world, float dt) override;
@@ -106,13 +106,13 @@ public:
 
 private:
     struct RemeshResult {
-        snt::data::ChunkKey key;
+        ChunkKey key;
         VoxelMeshData mesh;
         bool ok = false;
     };
 
     struct PendingRemesh {
-        snt::data::ChunkKey key;
+        ChunkKey key;
         snt::core::Future<RemeshResult> future;
     };
 
@@ -125,7 +125,7 @@ private:
 
     snt::core::JobSystem&       job_system_;
     ChunkRenderer*              renderer_      = nullptr;
-    snt::data::ChunkRegistry*   registry_      = nullptr;
+    ChunkRegistry*              registry_      = nullptr;
 
     // Mesher parameters.
     int32_t             air_material_    = 0;
@@ -133,10 +133,10 @@ private:
     std::vector<uint8_t> transparent_mask_;
 
     // Pure-data chunk tracking (no ECS entities).
-    std::unordered_set<snt::data::ChunkKey>   dirty_chunks_;
-    std::unordered_set<snt::data::ChunkKey>   pending_chunks_;
+    std::unordered_set<ChunkKey>              dirty_chunks_;
+    std::unordered_set<ChunkKey>              pending_chunks_;
     std::vector<PendingRemesh>                pending_remeshes_;
-    std::unordered_map<snt::data::ChunkKey, ChunkMeshHandle> uploaded_meshes_;
+    std::unordered_map<ChunkKey, ChunkMeshHandle> uploaded_meshes_;
 
     uint32_t remesh_jobs_per_frame_ = 4;
     uint32_t uploads_per_frame_ = 2;

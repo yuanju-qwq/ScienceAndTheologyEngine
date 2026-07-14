@@ -13,8 +13,7 @@ target_link_libraries(snt_player PUBLIC
     snt_core
     snt_ecs
     snt_input
-    snt_data_defs
-    snt_data_world
+    snt_voxel_data
     snt_voxel
 )
 target_link_libraries(snt_player PRIVATE

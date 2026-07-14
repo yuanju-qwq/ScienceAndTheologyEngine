@@ -9,8 +9,8 @@
 //     SceneFileHeader + kSceneMagic + kSceneVersion.
 //   - Entities are stored as a flat array of records: each record has
 //     an EntityGuid + a component list. Components are self-describing
-//     (type-id + payload) so the loader can skip unknown component
-//     types (forward compatibility) instead of failing the whole load.
+//     (type-id + payload) so each known payload can be bounds-checked.
+//     This development-format reader rejects unknown component types.
 //   - MeshRef handles are stored as a u32 id. The scene loader resolves the
 //     id to a source request through IMeshAssetReferenceResolver when saving,
 //     and asks the same resolver for a stable handle when loading. Runtime
@@ -76,10 +76,8 @@ constexpr char kSceneMagic[4] = {'S', 'N', 'T', 'S'};
 // readers reject unknown versions instead of attempting partial reads.
 constexpr uint32_t kSceneVersion = 1;
 
-// Component type ids written into the scene file. These are stable across
-// builds (never renumber existing ids); new components get the next free
-// id. The id space is intentionally small + dense so the loader can use
-// a switch instead of a hash table.
+// Component type ids written into the current scene format. Additions require
+// a new scene version because this reader deliberately rejects unknown types.
 enum class ComponentTypeId : uint32_t {
     Transform = 1,
     MeshRef   = 2,
@@ -135,8 +133,7 @@ inline void write_entity(
     w.write_u32(component_count);
 
     // Write each known component as (type_id, payload_size, payload).
-    // payload_size is written BEFORE the payload so a reader that doesn't
-    // know the type can skip forward by payload_size bytes (forward compat).
+    // payload_size establishes a strict parse boundary for that payload.
     if (world.registry().all_of<Transform>(e)) {
         const auto& t = world.registry().get<Transform>(e);
         w.write_u32(static_cast<uint32_t>(ComponentTypeId::Transform));
@@ -279,13 +276,9 @@ inline bool read_entity(
                 break;
             }
             default:
-                // Unknown component type — skip forward by payload_size
-                // so future scene versions with new component types don't
-                // break old readers. This is the forward-compat path.
-                SNT_LOG_WARN("load_scene: unknown component type_id %u; skipping %u bytes",
-                             type_id_raw, payload_size);
-                if (!r.skip(payload_size)) return false;
-                break;
+                SNT_LOG_ERROR("load_scene: unsupported component type_id %u in scene v%u",
+                              type_id_raw, kSceneVersion);
+                return false;
         }
     }
     return true;

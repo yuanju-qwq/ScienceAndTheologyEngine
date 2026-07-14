@@ -28,7 +28,6 @@ class IClock;
 class JobSystem;
 class Logger;
 }
-namespace snt::data { class ChunkRegistry; }
 namespace snt::ecs {
 class World;
 }
@@ -41,7 +40,10 @@ namespace snt::ui {
 class Arc2DCommandBuffer;
 class View;
 }
-namespace snt::voxel { class ChunkRenderSystem; }
+namespace snt::voxel {
+class ChunkRegistry;
+class ChunkRenderSystem;
+}
 
 namespace snt::engine {
 
@@ -95,7 +97,7 @@ private:
 class WorldSession {
 public:
     snt::ecs::World& world() const noexcept;
-    snt::data::ChunkRegistry& chunks() const noexcept;
+    snt::voxel::ChunkRegistry& chunks() const noexcept;
     snt::voxel::ChunkRenderSystem& chunk_render_system() const noexcept;
     snt::ecs::EventBus& events() const noexcept;
     snt::input::InputSystem& input() const noexcept;

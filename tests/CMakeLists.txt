@@ -15,6 +15,7 @@ endif()
 add_executable(snt_tests
     test_main.cpp              # GoogleTest main entry (no TEST()s here)
     test_runtime_config.cpp
+    test_runtime_observer.cpp  # Runtime observer value-snapshot contract
     test_clock.cpp
     test_path_utils.cpp
     test_asset_handle.cpp
@@ -31,7 +32,7 @@ add_executable(snt_tests
     test_job_system.cpp        # P2: work-stealing Job System
     test_hash.cpp              # FNV-1a hash utilities
     test_uuid.cpp              # general-purpose 128-bit Uuid + generator
-    test_data.cpp              # P2: data layer (chunk/registry/save/noise/terrain)
+    test_voxel_data.cpp        # generic voxel chunks and raw region framing
     test_ecs.cpp               # P2: standard components + SystemScheduler
     test_player_physics.cpp    # P4: voxel collision + DDA ray cast
     test_mui_retained.cpp      # P6: retained MUI primitives
@@ -49,10 +50,10 @@ target_link_libraries(snt_tests PRIVATE
     snt_engine_settings
     snt_third_party
     snt_scene                  # Phase 4: scene module under test
-    snt_data_save              # P2: data save layer (ChunkSerializer/RegionFile)
-    snt_data_worldgen          # P2: terrain generator + noise
-    snt_data_world             # P2: ChunkRegistry
+    snt_voxel_data             # generic terrain/chunk ownership boundary
+    snt_voxel_storage          # current raw region framing
     snt_player                 # P4: player collision/raycast/controller
+    snt_engine                 # Runtime observer public contract
     GTest::gtest
 )
 

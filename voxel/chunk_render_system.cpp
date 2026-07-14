@@ -5,10 +5,9 @@
 
 #include "voxel/chunk_render_system.h"
 
-#include "data/defs/chunk_data.h"      // ChunkData
-#include "data/defs/terrain_data.h"    // TerrainData
-#include "data/world/chunk_registry.h" // ChunkRegistry
 #include "voxel/chunk_renderer.h"
+#include "voxel/data/chunk_registry.h"
+#include "voxel/data/terrain_data.h"
 #include "voxel/greedy_mesh.h"
 
 #include <glm/glm.hpp>
@@ -26,7 +25,7 @@ namespace {
 // Build a flat materials byte-array from a chunk's TerrainData. Each cell's
 // `material` field is extracted in terrain-index order (y * size_z + z) *
 // size_x + x, matching greedy_mesh's indexing.
-std::vector<uint8_t> extract_materials(const snt::data::TerrainData& terrain) {
+std::vector<uint8_t> extract_materials(const TerrainData& terrain) {
     const size_t total = static_cast<size_t>(terrain.size_x) *
                          static_cast<size_t>(terrain.size_y) *
                          static_cast<size_t>(terrain.size_z);
@@ -42,7 +41,7 @@ std::vector<uint8_t> extract_materials(const snt::data::TerrainData& terrain) {
 // matching UniformBufferObject.model layout). Chunks are axis-aligned, so
 // the model matrix is a pure translation by (cx, cy, cz) * kChunkSize.
 void build_chunk_model(int32_t cx, int32_t cy, int32_t cz, float out[16]) {
-    constexpr int32_t kChunkSize = snt::data::ChunkData::kChunkSize;  // 32
+    constexpr int32_t kChunkSize = VoxelChunk::kChunkSize;
     glm::mat4 m = glm::translate(glm::mat4(1.0f),
                                  glm::vec3(static_cast<float>(cx * kChunkSize),
                                            static_cast<float>(cy * kChunkSize),
@@ -56,7 +55,7 @@ void build_chunk_model(int32_t cx, int32_t cy, int32_t cz, float out[16]) {
 // External dirty-marking API
 // ---------------------------------------------------------------------------
 
-void ChunkRenderSystem::untrack(const snt::data::ChunkKey& key) {
+void ChunkRenderSystem::untrack(const ChunkKey& key) {
     auto it = uploaded_meshes_.find(key);
     if (it != uploaded_meshes_.end()) {
         if (renderer_) {
@@ -96,7 +95,7 @@ void ChunkRenderSystem::schedule_dirty_remeshes() {
 
     while (dirty_it != dirty_chunks_.end() &&
            jobs_scheduled < remesh_jobs_per_frame_) {
-        const snt::data::ChunkKey key = *dirty_it;
+        const ChunkKey key = *dirty_it;
 
         // A subsequent mark_dirty() while this key is pending deliberately
         // stays in dirty_chunks_. Once this job uploads, it schedules a fresh
@@ -106,7 +105,7 @@ void ChunkRenderSystem::schedule_dirty_remeshes() {
             continue;
         }
 
-        const snt::data::ChunkData* chunk = registry_->get_chunk(
+        const VoxelChunk* chunk = registry_->get_chunk(
             key.dimension_id, key.chunk_x, key.chunk_y, key.chunk_z);
         if (!chunk) {
             SNT_LOG_WARN("ChunkRenderSystem: chunk (%d,%d,%d) '%s' missing from registry",

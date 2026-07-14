@@ -6,6 +6,7 @@
 // runs without a GPU.
 
 #include "assets/mesh_asset_reference_registry.h"
+#include "core/binary_writer.h"
 #include "render/render_components.h"
 #include "ecs/entity_guid.h"
 #include "ecs/world.h"
@@ -14,9 +15,11 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 using snt::assets::MeshAssetReferenceRegistry;
+using snt::core::BinaryWriter;
 using snt::render::Camera;
 using snt::ecs::EntityGuid;
 using snt::render::MeshRef;
@@ -239,6 +242,29 @@ TEST(SceneErrorTest, LoadUnsupportedVersionReturnsError) {
         uint32_t v = 999;                 // unsupported version
         ofs.write(reinterpret_cast<const char*>(&v), 4);
     }
+    World dst;
+    TestMeshReferences tc;
+    auto r = load_scene(dst, tc.registry, path);
+    ASSERT_FALSE(r.has_value());
+}
+
+TEST(SceneErrorTest, LoadUnknownComponentReturnsError) {
+    const auto path = temp_scene_path("unknown_component");
+    BinaryWriter writer;
+    writer.write_raw(snt::scene::kSceneMagic, 4);
+    writer.write_u32(snt::scene::kSceneVersion);
+    writer.write_u32(1);
+    writer.write_u64(0xAABBCCDDEEFF0011ull);
+    writer.write_u32(1);
+    writer.write_u32(999);
+    writer.write_u32(0);
+
+    {
+        std::ofstream ofs(path, std::ios::binary);
+        ofs.write(reinterpret_cast<const char*>(writer.buffer().data()),
+                  static_cast<std::streamsize>(writer.size()));
+    }
+
     World dst;
     TestMeshReferences tc;
     auto r = load_scene(dst, tc.registry, path);

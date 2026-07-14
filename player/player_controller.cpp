@@ -6,8 +6,8 @@
 #include "player/player_controller.h"
 #include "player/player_physics_system.h"
 
-#include "data/defs/terrain_data.h"
-#include "data/world/chunk_registry.h"
+#include "voxel/data/chunk_registry.h"
+#include "voxel/data/terrain_data.h"
 #include "ecs/world.h"
 #include "input/input_system.h"
 #include "player/ray_cast.h"
@@ -25,7 +25,7 @@ namespace snt::player {
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
-constexpr int32_t kChunkSize = snt::data::ChunkData::kChunkSize;
+constexpr int32_t kChunkSize = snt::voxel::VoxelChunk::kChunkSize;
 
 float degrees_to_radians(float deg) {
     return deg * kPi / 180.0f;
@@ -165,7 +165,7 @@ void PlayerControllerSystem::try_break_target_block(const PlayerControllerState&
     const int32_t ly = positive_mod_i32(hit.block.y, kChunkSize);
     const int32_t lz = positive_mod_i32(hit.block.z, kChunkSize);
 
-    snt::data::ChunkData* chunk = chunk_registry_->get_chunk(dimension_id_, cx, cy, cz);
+    snt::voxel::VoxelChunk* chunk = chunk_registry_->get_chunk(dimension_id_, cx, cy, cz);
     if (!chunk || !chunk->terrain.is_valid_cell(lx, ly, lz)) {
         SNT_LOG_WARN("Break block target missing chunk/cell at world=(%d,%d,%d)",
                      hit.block.x, hit.block.y, hit.block.z);
@@ -181,7 +181,7 @@ void PlayerControllerSystem::try_break_target_block(const PlayerControllerState&
     cell.flags = 0;
     cell.clear_fluid();
 
-    const snt::data::ChunkKey dirty_key(dimension_id_, cx, cy, cz);
+    const snt::voxel::ChunkKey dirty_key(dimension_id_, cx, cy, cz);
     chunk_render_system_->mark_dirty(dirty_key);
     if (lx == 0) chunk_render_system_->mark_dirty({dimension_id_, cx - 1, cy, cz});
     if (lx == kChunkSize - 1) chunk_render_system_->mark_dirty({dimension_id_, cx + 1, cy, cz});

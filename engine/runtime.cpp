@@ -4,6 +4,7 @@
 #include "engine/runtime.h"
 
 #include "engine/game_session.h"
+#include "engine/runtime_observer.h"
 #include "engine/runtime_services.h"
 
 #include "assets/asset_catalog.h"
@@ -15,7 +16,6 @@
 #include "core/memory_tracker.h"
 #include "core/path_utils.h"
 #include "core/profiling.h"
-#include "data/world/chunk_registry.h"
 #include "render/render_components.h"
 #include "ecs/event_bus.h"
 #include "ecs/system_scheduler.h"
@@ -39,6 +39,7 @@
 #include "ui/retained_mui.h"
 #include "voxel/chunk_renderer.h"
 #include "voxel/chunk_render_system.h"
+#include "voxel/data/chunk_registry.h"
 
 #include <volk.h>
 
@@ -179,7 +180,7 @@ struct Runtime::Impl {
     entt::entity active_camera = entt::null;
     snt::render::RenderSystem render_system;
 
-    snt::data::ChunkRegistry chunk_registry;
+    snt::voxel::ChunkRegistry chunk_registry;
     std::unique_ptr<snt::voxel::ChunkRenderer> chunk_renderer;
     std::shared_ptr<snt::voxel::ChunkRenderSystem> runtime_chunk_render_system;
 
@@ -230,7 +231,7 @@ const snt::assets::AssetCatalog& RuntimeServices::asset_catalog() const noexcept
 snt::script::ScriptManager& RuntimeServices::scripts() const noexcept { return *scripts_; }
 
 snt::ecs::World& WorldSession::world() const noexcept { return runtime_->impl_->world; }
-snt::data::ChunkRegistry& WorldSession::chunks() const noexcept {
+snt::voxel::ChunkRegistry& WorldSession::chunks() const noexcept {
     return runtime_->impl_->chunk_registry;
 }
 snt::voxel::ChunkRenderSystem& WorldSession::chunk_render_system() const noexcept {

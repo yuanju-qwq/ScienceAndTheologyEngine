@@ -2,7 +2,7 @@
 
 #include "player/player_physics_system.h"
 
-#include "data/world/chunk_registry.h"
+#include "voxel/data/chunk_registry.h"
 #include "render/render_components.h"
 #include "ecs/world.h"
 #include "ecs/world_command_queue.h"
@@ -112,7 +112,7 @@ private:
 }  // namespace
 
 PlayerPhysicsSystem::PlayerPhysicsSystem(
-    const snt::data::ChunkRegistry* chunk_registry,
+    const snt::voxel::ChunkRegistry* chunk_registry,
     entt::entity player_entity,
     std::string dimension_id,
     PlayerControllerTuning tuning)

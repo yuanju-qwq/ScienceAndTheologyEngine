@@ -20,7 +20,7 @@ target_link_libraries(snt_engine PUBLIC
     snt_renderer
     snt_ui
     snt_voxel
-    snt_data_world
+    snt_voxel_data
 )
 target_link_libraries(snt_engine PRIVATE
     snt_render_components

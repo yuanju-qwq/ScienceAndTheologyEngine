@@ -1,12 +1,12 @@
 #pragma once
 
-#include "data/defs/chunk_data.h"
+#include "voxel/data/voxel_chunk.h"
 
 #include <cstdint>
 #include <string>
 #include <utility>
 
-namespace snt::data { class ChunkRegistry; }
+namespace snt::voxel { class ChunkRegistry; }
 
 namespace snt::player {
 
@@ -39,14 +39,14 @@ public:
 // Main-thread adapter over ChunkRegistry. It is intentionally not safe to
 // pass to a worker; VoxelCollisionSnapshot is the worker-safe implementation.
 struct CollisionWorldView final : IVoxelCollisionWorld {
-    CollisionWorldView(const snt::data::ChunkRegistry* chunk_registry = nullptr,
+    CollisionWorldView(const snt::voxel::ChunkRegistry* chunk_registry = nullptr,
                        std::string world_dimension_id = "overworld",
                        bool missing_are_solid = false)
         : chunks(chunk_registry),
           dimension_id(std::move(world_dimension_id)),
           missing_chunks_are_solid(missing_are_solid) {}
 
-    const snt::data::ChunkRegistry* chunks = nullptr;
+    const snt::voxel::ChunkRegistry* chunks = nullptr;
     std::string dimension_id = "overworld";
     bool missing_chunks_are_solid = false;
 
