@@ -4,7 +4,7 @@ add_library(snt_render_components INTERFACE)
 target_link_libraries(snt_render_components INTERFACE
     snt_engine_settings
     snt_core
-    snt_assets
+    snt_asset_content
 )
 
 # Render module: ECS-driven rendering system.
@@ -23,8 +23,9 @@ target_link_libraries(snt_render PUBLIC
     snt_engine_settings
     snt_core
     snt_ecs
-    snt_assets
+    snt_gpu_assets
     snt_renderer
     snt_render_backend
 )
 target_link_libraries(snt_render PRIVATE snt_render_components)
+target_link_libraries(snt_render PRIVATE snt_asset_content)

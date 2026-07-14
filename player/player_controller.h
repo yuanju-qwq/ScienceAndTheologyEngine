@@ -67,7 +67,7 @@ public:
     void set_initial_look(float yaw, float pitch);
 
     // Freeze the current controller configuration into its paired worker.
-    // Call after setup and before registering systems with WorldSession.
+    // Call after setup and before registering systems with SimulationWorldSession.
     [[nodiscard]] std::shared_ptr<PlayerPhysicsSystem> make_physics_system() const;
 
     snt::ecs::SystemMetadata metadata() const override {

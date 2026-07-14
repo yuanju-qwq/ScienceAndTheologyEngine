@@ -1,10 +1,10 @@
 // Runtime configuration owned by the engine runtime.
 //
 // This module intentionally contains only generic runtime settings needed
-// before an IGameSession is created. Scene, script, player, and demo world
-// settings belong to the game-owned session configuration; the generic asset
-// manifest bootstrap remains here because Runtime must publish its catalog
-// before the session creates a World.
+// before a simulation or client session is created. Scene, script, player,
+// and demo-world settings belong to the game-owned session configuration; the
+// generic asset manifest bootstrap remains here because SimulationRuntime
+// publishes its catalog before a session creates its World.
 
 #pragma once
 
@@ -32,10 +32,10 @@ struct RenderConfig {
     uint32_t max_frames_in_flight = 2;
 };
 
-// Generic content bootstrap settings needed before IGameSession creates a
-// World. The manifest belongs to the game package, while Runtime owns the
-// source/catalog lifetime and makes the immutable catalog available to the
-// session through RuntimeServices.
+// Generic content bootstrap settings needed before ISimulationSession creates
+// a World. The manifest belongs to the game package, while SimulationRuntime
+// owns the source/catalog lifetime and exposes the immutable catalog through
+// SimulationServices.
 struct AssetConfig {
     std::string manifest_path = "config/default_manifest.json";
 };

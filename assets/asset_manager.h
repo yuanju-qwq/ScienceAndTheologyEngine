@@ -1,7 +1,8 @@
 // AssetManager: runtime-facing mesh identity and GPU residency service.
 //
 // Design:
-//   - Runtime owns this service and injects it through RuntimeServices.
+//   - ClientRuntime owns this service; SimulationRuntime never exposes GPU
+//     residency to a headless session.
 //   - MeshHandle/path identity is kept separate from Vulkan residency:
 //     MeshAssetReferenceRegistry owns the former, VulkanGpuAssetUploader owns
 //     the latter through IGpuAssetUploader token leases.

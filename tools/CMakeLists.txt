@@ -16,6 +16,6 @@ target_link_libraries(gen_default_scene PRIVATE
     snt_scene
     snt_core
     snt_ecs
-    snt_assets
+    snt_asset_content
     snt_render_components
 )

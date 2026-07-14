@@ -84,6 +84,10 @@ public:
                        size_t max_size = 5 * 1024 * 1024,  // 5 MB
                        int    max_files = 3);
 
+    // Close the current optional file sink. Runtime owners call this at
+    // shutdown so their user log directory is not held open after exit.
+    void remove_file_sink();
+
     // Emit one log line. Called by the SNT_LOG_* macros; users should
     // not call this directly.
     //   level   - severity

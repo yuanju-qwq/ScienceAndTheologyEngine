@@ -14,6 +14,6 @@ add_library(snt_ecs STATIC
 target_include_directories(snt_ecs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(snt_ecs PUBLIC
     snt_engine_settings
-    snt_third_party
+    EnTT::EnTT
     snt_core
 )

@@ -192,6 +192,16 @@ bool Logger::add_file_sink(const char* path, size_t max_size, int max_files) {
     return impl_->file != nullptr;
 }
 
+void Logger::remove_file_sink() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (impl_->file) {
+        std::fclose(impl_->file);
+        impl_->file = nullptr;
+    }
+    impl_->base_path.clear();
+    impl_->write_count = 0;
+}
+
 void Logger::log(LogLevel level, const char* channel, const char* fmt, ...) {
     // Fast path: filter without locking. The level check is a single int
     // read; a torn read here only risks emitting one stray message, which

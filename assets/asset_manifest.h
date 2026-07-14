@@ -25,8 +25,8 @@
 // refactoring (rename a path without changing the id).
 //
 // Layering: this header owns only the manifest value format and pure parser.
-// Source I/O belongs to AssetCatalog/IAssetSource. Uses nlohmann_json in its
-// implementation (linked via snt_third_party).
+// Source I/O belongs to AssetCatalog/IAssetSource. Uses nlohmann_json only in
+// its implementation, keeping the public content contract dependency-free.
 
 #pragma once
 

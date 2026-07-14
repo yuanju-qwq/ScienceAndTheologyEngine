@@ -41,9 +41,10 @@ target_link_libraries(snt_voxel PUBLIC
     snt_engine_settings
     snt_voxel_mesh
     snt_core
-    snt_assets
+    snt_asset_content
+    snt_gpu_assets
     snt_render_backend
     snt_ecs
     snt_voxel_data
-    snt_third_party            # glm
+    glm::glm
 )

@@ -16,6 +16,6 @@ target_link_libraries(snt_scene INTERFACE
     snt_engine_settings
     snt_core
     snt_ecs
-    snt_assets
+    snt_asset_content
     snt_render_components
 )

@@ -15,7 +15,7 @@ endif()
 add_executable(snt_tests
     test_main.cpp              # GoogleTest main entry (no TEST()s here)
     test_runtime_config.cpp
-    test_runtime_observer.cpp  # Runtime observer value-snapshot contract
+    test_simulation_runtime_observer.cpp  # simulation observer value contract
     test_clock.cpp
     test_path_utils.cpp
     test_asset_handle.cpp
@@ -43,7 +43,8 @@ target_compile_definitions(snt_tests PRIVATE
 target_link_libraries(snt_tests PRIVATE
     snt_core
     snt_ecs
-    snt_assets
+    snt_asset_content
+    snt_gpu_assets
     snt_render_components
     snt_ui
     snt_script
@@ -53,7 +54,7 @@ target_link_libraries(snt_tests PRIVATE
     snt_voxel_data             # generic terrain/chunk ownership boundary
     snt_voxel_storage          # current raw region framing
     snt_player                 # P4: player collision/raycast/controller
-    snt_engine                 # Runtime observer public contract
+    snt_simulation_runtime      # simulation observer public contract
     GTest::gtest
 )
 
@@ -70,3 +71,18 @@ add_custom_command(TARGET snt_tests POST_BUILD
     COMMAND_EXPAND_LISTS
     COMMENT "Copying runtime DLLs next to tests"
 )
+
+# This executable links only the SDL/Vulkan-free simulation target. It proves
+# the dedicated-server lifecycle can initialize and tick without client code.
+add_executable(snt_simulation_runtime_tests
+    test_simulation_runtime.cpp
+)
+target_compile_definitions(snt_simulation_runtime_tests PRIVATE
+    SNT_ENGINE_TEST_ROOT="${SNT_ENGINE_SOURCE_DIR}"
+)
+target_link_libraries(snt_simulation_runtime_tests PRIVATE
+    snt_engine_settings
+    snt_simulation_runtime
+    GTest::gtest_main
+)
+gtest_discover_tests(snt_simulation_runtime_tests DISCOVERY_MODE PRE_TEST)

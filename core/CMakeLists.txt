@@ -39,7 +39,7 @@ add_library(snt_core STATIC
 )
 target_include_directories(snt_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(snt_core PUBLIC snt_engine_settings)
-# engine_config.cpp uses nlohmann_json for JSON parsing. Linked PRIVATE
+# runtime_config.cpp uses nlohmann_json for JSON parsing. Linked PRIVATE
 # so the dependency doesn't leak to consumers of snt_core (the header
 # itself is dependency-free).
-target_link_libraries(snt_core PRIVATE snt_third_party)
+target_link_libraries(snt_core PRIVATE nlohmann_json::nlohmann_json)

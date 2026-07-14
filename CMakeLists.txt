@@ -65,7 +65,9 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/fetch_third_party.cmake)
 # ============================================================
 # Each module is its own static library for clear layering.
 # Layering rule (top -> bottom, never reverse):
-#   host application -> engine -> {ui, render, voxel, physics, script, audio, network}
+#   host application -> {client_runtime, simulation_runtime}
+#   client_runtime -> {ui, render, voxel, platform, input, gpu_assets}
+#   simulation_runtime -> {ecs, script, voxel_data/storage, asset_content}
 #                         -> renderer -> render_backend -> platform
 #                         -> ecs -> input -> core
 #                         -> voxel data/storage -> core
@@ -108,9 +110,52 @@ snt_register_engine_module(
     SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/render_backend"
 )
 snt_register_engine_module(
-    TARGET snt_assets
-    INCLUDE_PREFIXES assets
-    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/assets"
+    TARGET snt_asset_content
+    INCLUDE_PREFIXES
+        assets/asset_catalog.h
+        assets/asset_handle.h
+        assets/asset_manifest.h
+        assets/asset_source.h
+        assets/filesystem_asset_source.h
+        assets/mesh_asset_reference_registry.h
+    SOURCE_FILES
+        "${SNT_ENGINE_SOURCE_DIR}/assets/asset_catalog.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/asset_catalog.h"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/asset_handle.h"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/asset_manifest.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/asset_manifest.h"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/asset_source.h"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/filesystem_asset_source.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/filesystem_asset_source.h"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/loader.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/loader.h"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/mesh_asset_reference_registry.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/mesh_asset_reference_registry.h"
+)
+snt_register_engine_module(
+    TARGET snt_gpu_assets
+    INCLUDE_PREFIXES
+        assets/asset_manager.h
+        assets/font_atlas.h
+        assets/gpu_asset_uploader.h
+        assets/material_atlas.h
+        assets/shader_cache.h
+        assets/texture_cache.h
+        assets/vulkan_gpu_asset_uploader.h
+    SOURCE_FILES
+        "${SNT_ENGINE_SOURCE_DIR}/assets/asset_manager.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/asset_manager.h"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/font_atlas.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/font_atlas.h"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/gpu_asset_uploader.h"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/material_atlas.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/material_atlas.h"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/shader_cache.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/shader_cache.h"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/texture_cache.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/texture_cache.h"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/vulkan_gpu_asset_uploader.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/vulkan_gpu_asset_uploader.h"
 )
 snt_register_engine_module(
     TARGET snt_renderer
@@ -186,9 +231,30 @@ snt_register_engine_module(
     SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/player"
 )
 snt_register_engine_module(
-    TARGET snt_engine
-    INCLUDE_PREFIXES engine
-    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/engine"
+    TARGET snt_simulation_runtime
+    INCLUDE_PREFIXES
+        engine/simulation_runtime.h
+        engine/simulation_services.h
+        engine/simulation_session.h
+        engine/simulation_runtime_observer.h
+    SOURCE_FILES
+        "${SNT_ENGINE_SOURCE_DIR}/engine/simulation_runtime.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/engine/simulation_runtime.h"
+        "${SNT_ENGINE_SOURCE_DIR}/engine/simulation_services.h"
+        "${SNT_ENGINE_SOURCE_DIR}/engine/simulation_session.h"
+        "${SNT_ENGINE_SOURCE_DIR}/engine/simulation_runtime_observer.h"
+)
+snt_register_engine_module(
+    TARGET snt_client_runtime
+    INCLUDE_PREFIXES
+        engine/client_runtime.h
+        engine/client_services.h
+        engine/client_session.h
+    SOURCE_FILES
+        "${SNT_ENGINE_SOURCE_DIR}/engine/client_runtime.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/engine/client_runtime.h"
+        "${SNT_ENGINE_SOURCE_DIR}/engine/client_services.h"
+        "${SNT_ENGINE_SOURCE_DIR}/engine/client_session.h"
 )
 snt_verify_engine_module_dependencies()
 
