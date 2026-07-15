@@ -100,10 +100,11 @@ public:
                                                  std::string_view reason) = 0;
 };
 
-// Implemented by the game/server composition layer. A handler receives a
-// frame only from ReplicationService::poll_inbound on the simulation main
-// thread, so it may queue deterministic gameplay commands but must not retain
-// frame references after returning.
+// Implemented by a game host composition layer on either the authoritative
+// server or a client. A handler receives a frame only from
+// ReplicationService::poll_inbound on the simulation main thread, so it may
+// queue deterministic gameplay commands but must not retain frame references
+// after returning.
 class IReplicationHandler {
 public:
     virtual ~IReplicationHandler() = default;

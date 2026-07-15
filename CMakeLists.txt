@@ -1,5 +1,5 @@
 # Self-built engine root.
-# See docs/自研引擎架构设计.md for architecture baseline.
+# See docs/项目架构与运行时.md for architecture baseline.
 
 # ============================================================
 # Project setup
