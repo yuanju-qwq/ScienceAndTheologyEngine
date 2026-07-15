@@ -122,6 +122,9 @@ public:
     snt::core::Expected<void> emit_outbound(
         const snt::network::ReplicationTickContext&, snt::network::IReplicationFrameSink& sink) override {
         calls.push_back("emit");
+        if (disconnect_during_emit) {
+            return sink.disconnect(disconnect_peer, "test outbound disconnect");
+        }
         snt::network::ReplicationFrame frame;
         frame.server_tick = 42;
         frame.payload = bytes_from_text("outbound");
@@ -130,6 +133,8 @@ public:
 
     std::vector<std::string> calls;
     bool reject_connections = false;
+    bool disconnect_during_emit = false;
+    snt::network::PeerId disconnect_peer = snt::network::kInvalidPeerId;
 };
 
 class FakeSteamBackend final : public snt::network::ISteamP2PBackend {
@@ -299,6 +304,21 @@ TEST(ReplicationServiceTest, OrdersInboundBeforeOutboundEmission) {
 
     service.shutdown();
     EXPECT_TRUE(transport.shutdown_called);
+}
+
+TEST(ReplicationServiceTest, LetsHandlerDisconnectAPeerDuringOutbound) {
+    FakeReplicationTransport transport;
+    transport.peers = {7};
+    RecordingReplicationHandler handler;
+    handler.disconnect_during_emit = true;
+    handler.disconnect_peer = 7;
+    snt::network::ReplicationService service(transport, handler);
+
+    ASSERT_TRUE(service.emit_outbound({.tick_index = 9, .delta_seconds = 0.05f}));
+    ASSERT_EQ(handler.calls, (std::vector<std::string>{"emit"}));
+    ASSERT_EQ(transport.disconnected.size(), 1u);
+    EXPECT_EQ(transport.disconnected.front().first, 7u);
+    EXPECT_EQ(transport.disconnected.front().second, "test outbound disconnect");
 }
 
 TEST(ReplicationServiceTest, SkipsLaterEventsForAPeerRejectedDuringConnection) {

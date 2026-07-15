@@ -122,4 +122,12 @@ snt::core::Expected<void> ReplicationService::broadcast(const ReplicationFrame& 
     return {};
 }
 
+snt::core::Expected<void> ReplicationService::disconnect(PeerId peer,
+                                                          std::string_view reason) {
+    if (shutdown_ || transport_ == nullptr) {
+        return invalid_service_state("ReplicationService::disconnect called after shutdown");
+    }
+    return transport_->disconnect(peer, reason);
+}
+
 }  // namespace snt::network

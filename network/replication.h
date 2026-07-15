@@ -92,6 +92,12 @@ public:
     virtual snt::core::Expected<void> send(PeerId peer,
                                            const ReplicationFrame& frame) = 0;
     virtual snt::core::Expected<void> broadcast(const ReplicationFrame& frame) = 0;
+    // Handlers can request a lifecycle change only from their outbound phase.
+    // The sink remains the sole owner of the concrete transport and handler
+    // cleanup remains explicit because IReplicationTransport::disconnect()
+    // does not synthesize a PeerDisconnected event.
+    virtual snt::core::Expected<void> disconnect(PeerId peer,
+                                                 std::string_view reason) = 0;
 };
 
 // Implemented by the game/server composition layer. A handler receives a
@@ -130,6 +136,8 @@ private:
     snt::core::Expected<void> send(PeerId peer,
                                    const ReplicationFrame& frame) override;
     snt::core::Expected<void> broadcast(const ReplicationFrame& frame) override;
+    snt::core::Expected<void> disconnect(PeerId peer,
+                                         std::string_view reason) override;
 
     IReplicationTransport* transport_ = nullptr;
     IReplicationHandler* handler_ = nullptr;
