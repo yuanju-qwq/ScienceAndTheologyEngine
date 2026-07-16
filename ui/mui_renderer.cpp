@@ -11,6 +11,8 @@
 
 #include <volk.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <functional>
@@ -80,8 +82,13 @@ snt::core::Expected<void> MuiRenderer::init(
 
     device_ = &device;
 
-    // 1. Create the Unicode glyph atlas Vulkan texture.
-    if (auto r = create_glyph_atlas_texture(); !r) {
+    // 1. Create separate Unicode glyph and registered-image atlas textures.
+    if (auto r = create_atlas_texture(glyph_atlas_, UiGlyphAtlas::kDimension,
+                                      UiGlyphAtlas::kDimension, "Unicode glyph"); !r) {
+        return r.error();
+    }
+    if (auto r = create_atlas_texture(image_atlas_, UiImageAtlas::kDimension,
+                                      UiImageAtlas::kDimension, "UI image"); !r) {
         return r.error();
     }
 
@@ -95,8 +102,9 @@ snt::core::Expected<void> MuiRenderer::init(
         return r.error();
     }
 
-    SNT_LOG_INFO("MuiRenderer initialized (Unicode atlas=%ux%u RGBA)",
-                 UiGlyphAtlas::kDimension, UiGlyphAtlas::kDimension);
+    SNT_LOG_INFO("MuiRenderer initialized (glyph atlas=%ux%u, image atlas=%ux%u RGBA)",
+                 UiGlyphAtlas::kDimension, UiGlyphAtlas::kDimension,
+                 UiImageAtlas::kDimension, UiImageAtlas::kDimension);
     return {};
 }
 
@@ -115,26 +123,34 @@ void MuiRenderer::destroy() {
     if (vbo_)         { vmaDestroyBuffer(device_->vma_allocator(), vbo_,         vbo_alloc_);  vbo_ = VK_NULL_HANDLE; }
     if (ibo_)         { vmaDestroyBuffer(device_->vma_allocator(), ibo_,         ibo_alloc_);  ibo_ = VK_NULL_HANDLE; }
 
-    if (atlas_sampler_) { vkDestroySampler(dev, atlas_sampler_, nullptr); atlas_sampler_ = VK_NULL_HANDLE; }
-    if (atlas_view_)    { vkDestroyImageView(dev, atlas_view_, nullptr);  atlas_view_ = VK_NULL_HANDLE; }
-    if (atlas_image_)   { vmaDestroyImage(device_->vma_allocator(), atlas_image_, atlas_allocation_); atlas_image_ = VK_NULL_HANDLE; }
-
-    uploaded_atlas_revision_ = 0;
-    uploaded_atlas_ = nullptr;
+    const auto destroy_atlas = [this, dev](AtlasResource& atlas) {
+        if (atlas.sampler) vkDestroySampler(dev, atlas.sampler, nullptr);
+        if (atlas.view) vkDestroyImageView(dev, atlas.view, nullptr);
+        if (atlas.image) vmaDestroyImage(device_->vma_allocator(), atlas.image, atlas.allocation);
+        atlas = {};
+    };
+    destroy_atlas(glyph_atlas_);
+    destroy_atlas(image_atlas_);
+    framebuffer_width_ = 0;
+    framebuffer_height_ = 0;
     device_ = nullptr;
 }
 
 // ---------------------------------------------------------------------------
-// Font atlas baking
+// Dynamic atlas resources
 // ---------------------------------------------------------------------------
 
-snt::core::Expected<void> MuiRenderer::create_glyph_atlas_texture() {
-    constexpr uint32_t kDimension = UiGlyphAtlas::kDimension;
+snt::core::Expected<void> MuiRenderer::create_atlas_texture(AtlasResource& resource,
+                                                             uint32_t width,
+                                                             uint32_t height,
+                                                             const char* label) {
+    resource.width = width;
+    resource.height = height;
     VkImageCreateInfo image_ci{
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
         .format = VK_FORMAT_R8G8B8A8_UNORM,
-        .extent = {kDimension, kDimension, 1},
+        .extent = {width, height, 1},
         .mipLevels = 1,
         .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -146,14 +162,14 @@ snt::core::Expected<void> MuiRenderer::create_glyph_atlas_texture() {
     VmaAllocationCreateInfo alloc_ci{};
     alloc_ci.usage = VMA_MEMORY_USAGE_GPU_ONLY;
     if (vmaCreateImage(device_->vma_allocator(), &image_ci, &alloc_ci,
-                       &atlas_image_, &atlas_allocation_, nullptr) != VK_SUCCESS) {
+                       &resource.image, &resource.allocation, nullptr) != VK_SUCCESS) {
         return snt::core::Error{snt::core::ErrorCode::kUnknown,
-                                "vmaCreateImage (Unicode glyph atlas) failed"};
+                                std::string("vmaCreateImage (") + label + " atlas) failed"};
     }
 
     VkImageViewCreateInfo view_ci{
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .image = atlas_image_,
+        .image = resource.image,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
         .format = VK_FORMAT_R8G8B8A8_UNORM,
         .subresourceRange = {
@@ -164,9 +180,9 @@ snt::core::Expected<void> MuiRenderer::create_glyph_atlas_texture() {
             .layerCount = 1,
         },
     };
-    if (vkCreateImageView(device_->logical(), &view_ci, nullptr, &atlas_view_) != VK_SUCCESS) {
+    if (vkCreateImageView(device_->logical(), &view_ci, nullptr, &resource.view) != VK_SUCCESS) {
         return snt::core::Error{snt::core::ErrorCode::kUnknown,
-                                "vkCreateImageView (Unicode glyph atlas) failed"};
+                                std::string("vkCreateImageView (") + label + " atlas) failed"};
     }
 
     if (!one_time_submit(*device_, [&](VkCommandBuffer cmd) {
@@ -178,7 +194,7 @@ snt::core::Expected<void> MuiRenderer::create_glyph_atlas_texture() {
             .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = atlas_image_,
+            .image = resource.image,
             .subresourceRange = {
                 .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                 .baseMipLevel = 0,
@@ -192,7 +208,7 @@ snt::core::Expected<void> MuiRenderer::create_glyph_atlas_texture() {
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
     })) {
         return snt::core::Error{snt::core::ErrorCode::kUnknown,
-                                "Initial Unicode glyph atlas transition failed"};
+                                std::string("Initial ") + label + " atlas transition failed"};
     }
 
     VkSamplerCreateInfo sampler_ci{
@@ -206,18 +222,20 @@ snt::core::Expected<void> MuiRenderer::create_glyph_atlas_texture() {
         .minLod = 0.0f,
         .maxLod = 0.0f,
     };
-    if (vkCreateSampler(device_->logical(), &sampler_ci, nullptr, &atlas_sampler_) != VK_SUCCESS) {
+    if (vkCreateSampler(device_->logical(), &sampler_ci, nullptr, &resource.sampler) != VK_SUCCESS) {
         return snt::core::Error{snt::core::ErrorCode::kUnknown,
-                                "vkCreateSampler (Unicode glyph atlas) failed"};
+                                std::string("vkCreateSampler (") + label + " atlas) failed"};
     }
     return {};
 }
 
-snt::core::Expected<void> MuiRenderer::upload_glyph_atlas(const UiGlyphAtlas& atlas) {
-    if (atlas.width != UiGlyphAtlas::kDimension || atlas.height != UiGlyphAtlas::kDimension ||
+snt::core::Expected<void> MuiRenderer::upload_atlas(AtlasResource& resource,
+                                                     const UiRasterAtlas& atlas,
+                                                     const char* label) {
+    if (atlas.width != resource.width || atlas.height != resource.height ||
         atlas.rgba.size() != static_cast<size_t>(atlas.width) * atlas.height * 4u) {
         return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
-                                "Invalid Unicode glyph atlas upload payload"};
+                                std::string("Invalid ") + label + " atlas upload payload"};
     }
 
     VkBuffer staging = VK_NULL_HANDLE;
@@ -233,13 +251,13 @@ snt::core::Expected<void> MuiRenderer::upload_glyph_atlas(const UiGlyphAtlas& at
     if (vmaCreateBuffer(device_->vma_allocator(), &buffer_ci, &allocation_ci,
                         &staging, &staging_alloc, nullptr) != VK_SUCCESS) {
         return snt::core::Error{snt::core::ErrorCode::kUnknown,
-                                "vmaCreateBuffer (Unicode glyph staging) failed"};
+                                std::string("vmaCreateBuffer (") + label + " atlas staging) failed"};
     }
     void* mapped = nullptr;
     if (vmaMapMemory(device_->vma_allocator(), staging_alloc, &mapped) != VK_SUCCESS) {
         vmaDestroyBuffer(device_->vma_allocator(), staging, staging_alloc);
         return snt::core::Error{snt::core::ErrorCode::kVulkanBufferInitFailed,
-                                "vmaMapMemory (Unicode glyph staging) failed"};
+                                std::string("vmaMapMemory (") + label + " atlas staging) failed"};
     }
     std::memcpy(mapped, atlas.rgba.data(), atlas.rgba.size());
     vmaUnmapMemory(device_->vma_allocator(), staging_alloc);
@@ -253,7 +271,7 @@ snt::core::Expected<void> MuiRenderer::upload_glyph_atlas(const UiGlyphAtlas& at
             .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = atlas_image_,
+            .image = resource.image,
             .subresourceRange = {
                 .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                 .baseMipLevel = 0,
@@ -278,7 +296,7 @@ snt::core::Expected<void> MuiRenderer::upload_glyph_atlas(const UiGlyphAtlas& at
             .imageOffset = {0, 0, 0},
             .imageExtent = {atlas.width, atlas.height, 1},
         };
-        vkCmdCopyBufferToImage(cmd, staging, atlas_image_,
+        vkCmdCopyBufferToImage(cmd, staging, resource.image,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -291,7 +309,7 @@ snt::core::Expected<void> MuiRenderer::upload_glyph_atlas(const UiGlyphAtlas& at
     vmaDestroyBuffer(device_->vma_allocator(), staging, staging_alloc);
     if (!submitted) {
         return snt::core::Error{snt::core::ErrorCode::kUnknown,
-                                "Unicode glyph atlas upload submission failed"};
+                                std::string(label) + " atlas upload submission failed"};
     }
     return {};
 }// ---------------------------------------------------------------------------
@@ -327,14 +345,14 @@ snt::core::Expected<void> MuiRenderer::create_descriptors() {
                                 "vkCreateDescriptorSetLayout (ui) failed"};
     }
 
-    // Pool.
+    // Pool: one descriptor set for glyph batches and one for image batches.
     VkDescriptorPoolSize pool_sizes[2] = {
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2},
     };
     VkDescriptorPoolCreateInfo pool_ci{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .maxSets = 1,
+        .maxSets = 2,
         .poolSizeCount = 2,
         .pPoolSizes = pool_sizes,
     };
@@ -343,17 +361,21 @@ snt::core::Expected<void> MuiRenderer::create_descriptors() {
                                 "vkCreateDescriptorPool (ui) failed"};
     }
 
-    // Allocate one descriptor set.
+    // Allocate two descriptor sets with the shared layout.
+    VkDescriptorSetLayout layouts[2] = {desc_layout_, desc_layout_};
     VkDescriptorSetAllocateInfo alloc_info{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool = desc_pool_,
-        .descriptorSetCount = 1,
-        .pSetLayouts = &desc_layout_,
+        .descriptorSetCount = 2,
+        .pSetLayouts = layouts,
     };
-    if (vkAllocateDescriptorSets(dev, &alloc_info, &desc_set_) != VK_SUCCESS) {
+    VkDescriptorSet descriptor_sets[2] = {};
+    if (vkAllocateDescriptorSets(dev, &alloc_info, descriptor_sets) != VK_SUCCESS) {
         return snt::core::Error{snt::core::ErrorCode::kUnknown,
                                 "vkAllocateDescriptorSets (ui) failed"};
     }
+    glyph_desc_set_ = descriptor_sets[0];
+    image_desc_set_ = descriptor_sets[1];
 
     // Create UBO buffer (4x4 float matrix = 64 bytes, host-visible).
     VkBufferCreateInfo ubo_ci{
@@ -370,36 +392,41 @@ snt::core::Expected<void> MuiRenderer::create_descriptors() {
                                 "vmaCreateBuffer (ui ubo) failed"};
     }
 
-    // Update descriptor set: bind UBO + sampler.
+    // Update both descriptor sets: one sampler per dynamic atlas.
     VkDescriptorBufferInfo ubo_info{
         .buffer = ubo_buffer_,
         .offset = 0,
         .range = 64,
     };
-    VkDescriptorImageInfo img_info{
-        .sampler = atlas_sampler_,
-        .imageView = atlas_view_,
-        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    const auto update_descriptor = [&](VkDescriptorSet descriptor_set,
+                                       const AtlasResource& atlas) {
+        VkDescriptorImageInfo image_info{
+            .sampler = atlas.sampler,
+            .imageView = atlas.view,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+        VkWriteDescriptorSet writes[2] = {
+            {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = descriptor_set,
+                .dstBinding = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .pBufferInfo = &ubo_info,
+            },
+            {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = descriptor_set,
+                .dstBinding = 1,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .pImageInfo = &image_info,
+            },
+        };
+        vkUpdateDescriptorSets(dev, 2, writes, 0, nullptr);
     };
-    VkWriteDescriptorSet writes[2] = {
-        {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = desc_set_,
-            .dstBinding = 0,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .pBufferInfo = &ubo_info,
-        },
-        {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = desc_set_,
-            .dstBinding = 1,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .pImageInfo = &img_info,
-        },
-    };
-    vkUpdateDescriptorSets(dev, 2, writes, 0, nullptr);
+    update_descriptor(glyph_desc_set_, glyph_atlas_);
+    update_descriptor(image_desc_set_, image_atlas_);
 
     return {};
 }
@@ -613,6 +640,10 @@ void MuiRenderer::update_ortho(uint32_t fb_width, uint32_t fb_height) {
     // With a positive-height Vulkan viewport, NDC y=-1 lands at the top of
     // the framebuffer and y=+1 lands at the bottom. Keep pixel Y increasing
     // downward so UI layout and font quads stay upright.
+    framebuffer_width_ = fb_width;
+    framebuffer_height_ = fb_height;
+    if (!device_ || fb_width == 0 || fb_height == 0) return;
+
     float w = static_cast<float>(fb_width);
     float h = static_cast<float>(fb_height);
     float ortho[16] = {
@@ -628,18 +659,30 @@ void MuiRenderer::update_ortho(uint32_t fb_width, uint32_t fb_height) {
     vmaUnmapMemory(device_->vma_allocator(), ubo_alloc_);
 }
 
-snt::core::Expected<void> MuiRenderer::synchronize_glyph_atlas(const UiDrawData& draw_data) {
-    if (!draw_data.glyph_atlas) return {};
-    const UiGlyphAtlas& atlas = *draw_data.glyph_atlas;
-    if (uploaded_atlas_ == &atlas && uploaded_atlas_revision_ == atlas.revision) return {};
+snt::core::Expected<void> MuiRenderer::synchronize_atlases(const UiDrawData& draw_data) {
+    const auto synchronize = [this](AtlasResource& resource,
+                                    const UiRasterAtlas* atlas,
+                                    const char* label) -> snt::core::Expected<void> {
+        if (!atlas || (resource.uploaded_atlas == atlas &&
+                       resource.uploaded_revision == atlas->revision)) {
+            return {};
+        }
+        if (auto result = upload_atlas(resource, *atlas, label); !result) {
+            return result.error().with_context("MuiRenderer::synchronize_atlases");
+        }
+        resource.uploaded_atlas = atlas;
+        resource.uploaded_revision = atlas->revision;
+        SNT_LOG_INFO("MUI %s atlas synchronized (revision=%llu)", label,
+                     static_cast<unsigned long long>(atlas->revision));
+        return {};
+    };
 
-    if (auto result = upload_glyph_atlas(atlas); !result) {
-        return result.error().with_context("MuiRenderer::synchronize_glyph_atlas");
+    if (auto result = synchronize(glyph_atlas_, draw_data.glyph_atlas.get(), "glyph"); !result) {
+        return result.error();
     }
-    uploaded_atlas_ = &atlas;
-    uploaded_atlas_revision_ = atlas.revision;
-    SNT_LOG_INFO("MUI Unicode glyph atlas synchronized (revision=%llu)",
-                 static_cast<unsigned long long>(atlas.revision));
+    if (auto result = synchronize(image_atlas_, draw_data.image_atlas.get(), "image"); !result) {
+        return result.error();
+    }
     return {};
 }
 
@@ -666,7 +709,7 @@ void MuiRenderer::render(VkCommandBuffer cmd, const UiDrawData& draw_data) {
     }
 
     // Ensure IBO is large enough.
-    VkDeviceSize ibo_needed = draw_data.indices.size() * sizeof(uint16_t);
+    VkDeviceSize ibo_needed = draw_data.indices.size() * sizeof(UiIndex);
     if (ibo_needed > ibo_size_) {
         if (ibo_) {
             vmaDestroyBuffer(device_->vma_allocator(), ibo_, ibo_alloc_);
@@ -695,20 +738,70 @@ void MuiRenderer::render(VkCommandBuffer cmd, const UiDrawData& draw_data) {
     std::memcpy(ibo_mapped, draw_data.indices.data(), ibo_needed);
     vmaUnmapMemory(device_->vma_allocator(), ibo_alloc_);
 
-    // Bind pipeline + descriptor set.
+    // Bind pipeline and shared geometry buffers once. Each draw batch then
+    // selects its atlas descriptor and a dynamic scissor for its clip state.
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline_layout_, 0, 1, &desc_set_, 0, nullptr);
 
-    // Bind vertex + index buffers.
     VkDeviceSize offsets[1] = {0};
     vkCmdBindVertexBuffers(cmd, 0, 1, &vbo_, offsets);
-    vkCmdBindIndexBuffer(cmd, ibo_, 0, VK_INDEX_TYPE_UINT16);
+    vkCmdBindIndexBuffer(cmd, ibo_, 0, VK_INDEX_TYPE_UINT32);
 
-    // Draw.
-    vkCmdDrawIndexed(cmd,
-                     static_cast<uint32_t>(draw_data.indices.size()),
-                     1, 0, 0, 0);
+    const auto resolve_scissor = [this](const UiClipRect& clip, VkRect2D& out) {
+        if (framebuffer_width_ == 0 || framebuffer_height_ == 0) return false;
+        const float framebuffer_width = static_cast<float>(framebuffer_width_);
+        const float framebuffer_height = static_cast<float>(framebuffer_height_);
+        float left = 0.0f;
+        float top = 0.0f;
+        float right = framebuffer_width;
+        float bottom = framebuffer_height;
+        if (clip.enabled) {
+            left = std::clamp(clip.rect.pos.x, 0.0f, framebuffer_width);
+            top = std::clamp(clip.rect.pos.y, 0.0f, framebuffer_height);
+            right = std::clamp(clip.rect.pos.x + clip.rect.size.x, 0.0f, framebuffer_width);
+            bottom = std::clamp(clip.rect.pos.y + clip.rect.size.y, 0.0f, framebuffer_height);
+        }
+        if (right <= left || bottom <= top) return false;
+        const uint32_t x0 = static_cast<uint32_t>(std::floor(left));
+        const uint32_t y0 = static_cast<uint32_t>(std::floor(top));
+        const uint32_t x1 = std::min(framebuffer_width_,
+            static_cast<uint32_t>(std::ceil(right)));
+        const uint32_t y1 = std::min(framebuffer_height_,
+            static_cast<uint32_t>(std::ceil(bottom)));
+        if (x1 <= x0 || y1 <= y0) return false;
+        out = {
+            .offset = {static_cast<int32_t>(x0), static_cast<int32_t>(y0)},
+            .extent = {.width = x1 - x0, .height = y1 - y0},
+        };
+        return true;
+    };
+
+    const auto draw_batch = [&](const UiDrawBatch& batch) {
+        if (batch.index_count == 0 || batch.first_index > draw_data.indices.size() ||
+            batch.index_count > draw_data.indices.size() - batch.first_index) {
+            SNT_LOG_ERROR("MUI renderer rejected an invalid draw-batch range");
+            return;
+        }
+        VkRect2D scissor{};
+        if (!resolve_scissor(batch.clip, scissor)) return;
+        const VkDescriptorSet descriptor = batch.texture == UiTextureBinding::ImageAtlas
+            ? image_desc_set_ : glyph_desc_set_;
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipeline_layout_, 0, 1, &descriptor, 0, nullptr);
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+        vkCmdDrawIndexed(cmd, batch.index_count, 1, batch.first_index, 0, 0);
+    };
+
+    if (draw_data.batches.empty()) {
+        draw_batch({
+            .first_index = 0,
+            .index_count = static_cast<uint32_t>(draw_data.indices.size()),
+            .texture = UiTextureBinding::GlyphAtlas,
+        });
+        return;
+    }
+    for (const UiDrawBatch& batch : draw_data.batches) {
+        draw_batch(batch);
+    }
 }
 
 }  // namespace snt::ui

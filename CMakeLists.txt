@@ -124,6 +124,7 @@ snt_register_engine_module(
         assets/asset_source.h
         assets/filesystem_asset_source.h
         assets/mesh_asset_reference_registry.h
+        assets/texture_cache.h
     SOURCE_FILES
         "${SNT_ENGINE_SOURCE_DIR}/assets/asset_catalog.cpp"
         "${SNT_ENGINE_SOURCE_DIR}/assets/asset_catalog.h"
@@ -137,6 +138,8 @@ snt_register_engine_module(
         "${SNT_ENGINE_SOURCE_DIR}/assets/loader.h"
         "${SNT_ENGINE_SOURCE_DIR}/assets/mesh_asset_reference_registry.cpp"
         "${SNT_ENGINE_SOURCE_DIR}/assets/mesh_asset_reference_registry.h"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/texture_cache.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/assets/texture_cache.h"
 )
 snt_register_engine_module(
     TARGET snt_gpu_assets
@@ -146,7 +149,6 @@ snt_register_engine_module(
         assets/gpu_asset_uploader.h
         assets/material_atlas.h
         assets/shader_cache.h
-        assets/texture_cache.h
         assets/vulkan_gpu_asset_uploader.h
     SOURCE_FILES
         "${SNT_ENGINE_SOURCE_DIR}/assets/asset_manager.cpp"
@@ -158,8 +160,6 @@ snt_register_engine_module(
         "${SNT_ENGINE_SOURCE_DIR}/assets/material_atlas.h"
         "${SNT_ENGINE_SOURCE_DIR}/assets/shader_cache.cpp"
         "${SNT_ENGINE_SOURCE_DIR}/assets/shader_cache.h"
-        "${SNT_ENGINE_SOURCE_DIR}/assets/texture_cache.cpp"
-        "${SNT_ENGINE_SOURCE_DIR}/assets/texture_cache.h"
         "${SNT_ENGINE_SOURCE_DIR}/assets/vulkan_gpu_asset_uploader.cpp"
         "${SNT_ENGINE_SOURCE_DIR}/assets/vulkan_gpu_asset_uploader.h"
 )

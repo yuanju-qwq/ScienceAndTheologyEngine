@@ -19,6 +19,9 @@
 namespace snt::assets {
 class AssetManager;
 }
+namespace snt::ui {
+class UiImageRegistry;
+}
 namespace snt::input {
 class InputSystem;
 }
@@ -46,6 +49,8 @@ public:
     snt::ecs::EventBus& events() const noexcept;
 
     snt::assets::AssetManager& assets() const noexcept;
+    snt::ui::UiImageRegistry& ui_images() const noexcept;
+    snt::ui::UiLayerStack& ui_layers() const noexcept;
     snt::input::InputSystem& input() const noexcept;
     snt::voxel::ChunkRenderSystem& chunk_render_system() const noexcept;
 
@@ -95,6 +100,8 @@ public:
     float viewport_width() const noexcept { return viewport_width_; }
     float viewport_height() const noexcept { return viewport_height_; }
     bool mouse_locked() const noexcept;
+    snt::ui::UiImageRegistry& images() const noexcept;
+    snt::ui::UiLayerStack& layers() const noexcept;
 
     // Context owns each root until the host has laid out, routed input, and
     // rendered every layer. Callers transfer ownership deliberately so UI
@@ -109,9 +116,17 @@ private:
 
     struct Submission {
         snt::ui::UiLayer layer = snt::ui::UiLayer::Hud;
+        snt::ui::UiLayerInputPolicy input_policy{};
         uint64_t order = 0;
         std::unique_ptr<snt::ui::View> root;
+        // Layer-stack-owned screens keep a retained root across frames. Direct
+        // session submissions still transfer ownership through `root`.
+        snt::ui::View* borrowed_root = nullptr;
         std::unique_ptr<snt::ui::Arc2DCommandBuffer> commands;
+
+        [[nodiscard]] snt::ui::View* view_root() const noexcept {
+            return root ? root.get() : borrowed_root;
+        }
     };
 
     ClientUiContext(ClientRuntime& runtime,

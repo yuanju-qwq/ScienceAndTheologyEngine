@@ -1,5 +1,6 @@
 #define SNT_LOG_CHANNEL "ui"
 #include "retained_mui.h"
+#include "ui_packed_scene.h"
 
 #include "core/log.h"
 #include "core/path_utils.h"
@@ -21,6 +22,7 @@
 #include <fstream>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace snt::ui {
@@ -131,11 +133,78 @@ MeasureSpec child_spec(float parent_inner, float requested, float margin_a, floa
     return {.size = available, .mode = MeasureMode::AtMost};
 }
 
+bool is_non_empty_rect(Rect rect) {
+    return rect.size.x > 0.0f && rect.size.y > 0.0f;
+}
+
+UiClipRect intersect_clip(UiClipRect current, Rect next) {
+    if (!current.enabled) return {.enabled = true, .rect = next};
+    const float left = std::max(current.rect.pos.x, next.pos.x);
+    const float top = std::max(current.rect.pos.y, next.pos.y);
+    const float right = std::min(current.rect.pos.x + current.rect.size.x,
+                                 next.pos.x + next.size.x);
+    const float bottom = std::min(current.rect.pos.y + current.rect.size.y,
+                                  next.pos.y + next.size.y);
+    return {
+        .enabled = true,
+        .rect = {
+            .pos = {left, top},
+            .size = {std::max(0.0f, right - left), std::max(0.0f, bottom - top)},
+        },
+    };
+}
+
+bool same_clip(const UiClipRect& left, const UiClipRect& right) {
+    return left.enabled == right.enabled &&
+           (!left.enabled ||
+            (left.rect.pos.x == right.rect.pos.x &&
+             left.rect.pos.y == right.rect.pos.y &&
+             left.rect.size.x == right.rect.size.x &&
+             left.rect.size.y == right.rect.size.y));
+}
+
+bool begin_draw_batch(UiDrawData& out, UiTextureBinding texture, UiClipRect clip) {
+    if (clip.enabled && !is_non_empty_rect(clip.rect)) return false;
+    if (!out.batches.empty()) {
+        UiDrawBatch& last = out.batches.back();
+        if (last.texture == texture && same_clip(last.clip, clip) &&
+            last.first_index + last.index_count == out.indices.size()) {
+            return true;
+        }
+    }
+    out.batches.push_back({
+        .first_index = static_cast<uint32_t>(out.indices.size()),
+        .index_count = 0,
+        .texture = texture,
+        .clip = clip,
+    });
+    return true;
+}
+
+void append_batch_indices(UiDrawData& out, std::initializer_list<UiIndex> indices) {
+    out.indices.insert(out.indices.end(), indices.begin(), indices.end());
+    out.batches.back().index_count += static_cast<uint32_t>(indices.size());
+}
+
+bool has_vertex_capacity(const UiDrawData& out, size_t required) {
+    return out.vertices.size() <=
+        static_cast<size_t>(std::numeric_limits<UiIndex>::max()) - required;
+}
+
+bool scrolls_horizontally(ScrollAxis axis) {
+    return axis == ScrollAxis::Horizontal || axis == ScrollAxis::Both;
+}
+
+bool scrolls_vertically(ScrollAxis axis) {
+    return axis == ScrollAxis::Vertical || axis == ScrollAxis::Both;
+}
+
 bool build_hit_path(View& view, Vec2 point, std::vector<View*>& out) {
     if (view.visibility() != Visibility::Visible) return false;
 
     out.push_back(&view);
-    if (auto* group = dynamic_cast<ViewGroup*>(&view)) {
+    if (auto* group = dynamic_cast<ViewGroup*>(&view);
+        group && view.accepts_child_input(point)) {
         auto& children = group->children();
         for (auto it = children.rbegin(); it != children.rend(); ++it) {
             if (build_hit_path(**it, point, out)) return true;
@@ -914,21 +983,52 @@ void Arc2DCommandBuffer::image(Rect rect, std::string image_key, Color tint) {
     commands_.push_back(DrawImageCommand{rect, std::move(image_key), tint});
 }
 
+void Arc2DCommandBuffer::push_clip(Rect rect) {
+    commands_.push_back(PushClipCommand{rect});
+}
+
+void Arc2DCommandBuffer::pop_clip() {
+    commands_.push_back(PopClipCommand{});
+}
+
 UiDrawData Arc2DRenderer::build_draw_data(const Arc2DCommandBuffer& commands) const {
     UiDrawData out;
+    std::vector<UiClipRect> clip_stack;
+    UiClipRect current_clip{};
+    bool logged_unbalanced_pop = false;
     for (const auto& cmd : commands.commands()) {
         if (const auto* rect = std::get_if<DrawRectCommand>(&cmd)) {
-            append_rect(out, rect->rect, rect->color, rect->radius);
+            append_rect(out, rect->rect, rect->color, rect->radius, current_clip);
         } else if (const auto* image = std::get_if<DrawImageCommand>(&cmd)) {
-            append_rect(out, image->rect, image->tint, 0.0f);
+            append_image(out, *image, current_clip);
         } else if (const auto* text = std::get_if<DrawTextCommand>(&cmd)) {
-            append_glyph_text(out, *text);
+            append_glyph_text(out, *text, current_clip);
+        } else if (const auto* push = std::get_if<PushClipCommand>(&cmd)) {
+            clip_stack.push_back(current_clip);
+            current_clip = intersect_clip(current_clip, push->rect);
+        } else if (std::holds_alternative<PopClipCommand>(cmd)) {
+            if (clip_stack.empty()) {
+                if (!logged_unbalanced_pop) {
+                    SNT_LOG_WARN("Arc2D clip stack underflow; ignoring pop command");
+                    logged_unbalanced_pop = true;
+                }
+            } else {
+                current_clip = clip_stack.back();
+                clip_stack.pop_back();
+            }
         }
+    }
+    if (!clip_stack.empty()) {
+        SNT_LOG_WARN("Arc2D clip stack ended with %zu unclosed clip region(s)", clip_stack.size());
     }
     return out;
 }
 
-void Arc2DRenderer::append_rect(UiDrawData& out, Rect rect, Color color, float radius) {
+void Arc2DRenderer::append_rect(UiDrawData& out,
+                                Rect rect,
+                                Color color,
+                                float radius,
+                                UiClipRect clip) {
     if (rect.size.x <= 0.0f || rect.size.y <= 0.0f) return;
     const auto append_vertex = [&out, color](Vec2 position) {
         UiVertex vertex{};
@@ -946,11 +1046,12 @@ void Arc2DRenderer::append_rect(UiDrawData& out, Rect rect, Color color, float r
     const float safe_radius = std::clamp(radius, 0.0f,
                                          std::min(rect.size.x, rect.size.y) * 0.5f);
     if (safe_radius <= 0.0f) {
-        if (out.vertices.size() + 4 > 0xFFFFu) {
+        if (!has_vertex_capacity(out, 4)) {
             SNT_LOG_WARN("Arc2DRenderer draw buffer overflow; dropping rect");
             return;
         }
-        const uint16_t base = static_cast<uint16_t>(out.vertices.size());
+        if (!begin_draw_batch(out, UiTextureBinding::GlyphAtlas, clip)) return;
+        const UiIndex base = static_cast<UiIndex>(out.vertices.size());
         const float x0 = rect.pos.x;
         const float y0 = rect.pos.y;
         const float x1 = rect.pos.x + rect.size.x;
@@ -959,10 +1060,8 @@ void Arc2DRenderer::append_rect(UiDrawData& out, Rect rect, Color color, float r
         append_vertex({x0, y1});
         append_vertex({x1, y1});
         append_vertex({x1, y0});
-        out.indices.insert(out.indices.end(), {
-            static_cast<uint16_t>(base + 0), static_cast<uint16_t>(base + 1),
-            static_cast<uint16_t>(base + 2), static_cast<uint16_t>(base + 0),
-            static_cast<uint16_t>(base + 2), static_cast<uint16_t>(base + 3),
+        append_batch_indices(out, {
+            base + 0, base + 1, base + 2, base + 0, base + 2, base + 3,
         });
         return;
     }
@@ -972,12 +1071,13 @@ void Arc2DRenderer::append_rect(UiDrawData& out, Rect rect, Color color, float r
     constexpr size_t kSegmentsPerCorner = 4;
     constexpr size_t kPerimeterCount = kSegmentsPerCorner * 4;
     constexpr float kPi = 3.14159265358979323846f;
-    if (out.vertices.size() + 1 + kPerimeterCount > 0xFFFFu) {
+    if (!has_vertex_capacity(out, 1 + kPerimeterCount)) {
         SNT_LOG_WARN("Arc2DRenderer draw buffer overflow; dropping rounded rect");
         return;
     }
 
-    const uint16_t base = static_cast<uint16_t>(out.vertices.size());
+    if (!begin_draw_batch(out, UiTextureBinding::GlyphAtlas, clip)) return;
+    const UiIndex base = static_cast<UiIndex>(out.vertices.size());
     append_vertex({rect.pos.x + rect.size.x * 0.5f, rect.pos.y + rect.size.y * 0.5f});
     const std::array<Vec2, 4> centers{{
         {rect.pos.x + safe_radius, rect.pos.y + safe_radius},
@@ -997,15 +1097,15 @@ void Arc2DRenderer::append_rect(UiDrawData& out, Rect rect, Color color, float r
             });
         }
     }
-    for (uint16_t index = 0; index < kPerimeterCount; ++index) {
-        const uint16_t next = static_cast<uint16_t>((index + 1) % kPerimeterCount);
-        out.indices.push_back(base);
-        out.indices.push_back(static_cast<uint16_t>(base + 1 + next));
-        out.indices.push_back(static_cast<uint16_t>(base + 1 + index));
+    for (UiIndex index = 0; index < kPerimeterCount; ++index) {
+        const UiIndex next = (index + 1) % kPerimeterCount;
+        append_batch_indices(out, {base, base + 1 + next, base + 1 + index});
     }
 }
 
-void Arc2DRenderer::append_glyph_text(UiDrawData& out, const DrawTextCommand& text) {
+void Arc2DRenderer::append_glyph_text(UiDrawData& out,
+                                      const DrawTextCommand& text,
+                                      UiClipRect clip) {
     if (!text.layout.glyph_atlas) {
         SNT_LOG_ERROR("MUI text command is missing its Unicode glyph atlas");
         return;
@@ -1019,12 +1119,13 @@ void Arc2DRenderer::append_glyph_text(UiDrawData& out, const DrawTextCommand& te
 
     for (const TextGlyph& glyph : text.layout.glyphs) {
         if (!glyph.drawable || glyph.width <= 0.0f || glyph.height <= 0.0f) continue;
-        if (out.vertices.size() + 4 > 0xFFFFu) {
+        if (!has_vertex_capacity(out, 4)) {
             SNT_LOG_WARN("Arc2DRenderer draw buffer overflow; dropping glyph batch");
             return;
         }
+        if (!begin_draw_batch(out, UiTextureBinding::GlyphAtlas, clip)) return;
 
-        const uint16_t base = static_cast<uint16_t>(out.vertices.size());
+        const UiIndex base = static_cast<UiIndex>(out.vertices.size());
         const Color color = glyph.color ? Color{255, 255, 255, 255} : text.style.color;
         UiVertex vertex{};
         vertex.color[0] = color.r;
@@ -1048,13 +1149,58 @@ void Arc2DRenderer::append_glyph_text(UiDrawData& out, const DrawTextCommand& te
         vertex.position[0] = x1; vertex.position[1] = y0;
         vertex.uv[0] = glyph.u1; vertex.uv[1] = glyph.v0; out.vertices.push_back(vertex);
 
-        out.indices.push_back(base + 0);
-        out.indices.push_back(base + 1);
-        out.indices.push_back(base + 2);
-        out.indices.push_back(base + 0);
-        out.indices.push_back(base + 2);
-        out.indices.push_back(base + 3);
+        append_batch_indices(out, {
+            base + 0, base + 1, base + 2, base + 0, base + 2, base + 3,
+        });
     }
+}
+
+void Arc2DRenderer::append_image(UiDrawData& out,
+                                 const DrawImageCommand& image,
+                                 UiClipRect clip) const {
+    if (!images_ || !is_non_empty_rect(image.rect)) return;
+    const UiImageRegion* region = images_->resolve(image.image_key);
+    if (!region) return;
+    const auto atlas = images_->atlas();
+    if (!atlas) {
+        SNT_LOG_ERROR("MUI image registry resolved '%s' without an atlas", image.image_key.c_str());
+        return;
+    }
+    if (!out.image_atlas) {
+        out.image_atlas = atlas;
+    } else if (out.image_atlas.get() != atlas.get()) {
+        SNT_LOG_ERROR("MUI frame combines images from different UI atlases; rejecting image batch");
+        return;
+    }
+    if (!has_vertex_capacity(out, 4)) {
+        SNT_LOG_WARN("Arc2DRenderer draw buffer overflow; dropping image batch");
+        return;
+    }
+    if (!begin_draw_batch(out, UiTextureBinding::ImageAtlas, clip)) return;
+
+    const UiIndex base = static_cast<UiIndex>(out.vertices.size());
+    UiVertex vertex{};
+    vertex.color[0] = image.tint.r;
+    vertex.color[1] = image.tint.g;
+    vertex.color[2] = image.tint.b;
+    vertex.color[3] = image.tint.a;
+    vertex.texture_mode = UiTextureMode::Image;
+
+    const float x0 = image.rect.pos.x;
+    const float y0 = image.rect.pos.y;
+    const float x1 = x0 + image.rect.size.x;
+    const float y1 = y0 + image.rect.size.y;
+    vertex.position[0] = x0; vertex.position[1] = y0;
+    vertex.uv[0] = region->u0; vertex.uv[1] = region->v0; out.vertices.push_back(vertex);
+    vertex.position[0] = x0; vertex.position[1] = y1;
+    vertex.uv[0] = region->u0; vertex.uv[1] = region->v1; out.vertices.push_back(vertex);
+    vertex.position[0] = x1; vertex.position[1] = y1;
+    vertex.uv[0] = region->u1; vertex.uv[1] = region->v1; out.vertices.push_back(vertex);
+    vertex.position[0] = x1; vertex.position[1] = y0;
+    vertex.uv[0] = region->u1; vertex.uv[1] = region->v0; out.vertices.push_back(vertex);
+    append_batch_indices(out, {
+        base + 0, base + 1, base + 2, base + 0, base + 2, base + 3,
+    });
 }
 
 View::View(std::string id)
@@ -1062,6 +1208,12 @@ View::View(std::string id)
 
 void View::set_background(Color color, float radius) {
     background_ = DrawRectCommand{{}, color, radius};
+}
+
+void View::mark_layout_dirty() {
+    if (layout_dirty_) return;
+    layout_dirty_ = true;
+    if (parent_) parent_->mark_layout_dirty();
 }
 
 void View::bind_text(ViewModel& model, std::string key) {
@@ -1281,12 +1433,19 @@ ViewGroup::ViewGroup(std::string id)
     : View(std::move(id)) {}
 
 View& ViewGroup::add_child(std::unique_ptr<View> child) {
+    if (!child) {
+        SNT_LOG_ERROR("ViewGroup '%s' rejected a null child", id().c_str());
+        return *this;
+    }
+    child->attach_parent(this);
     children_.push_back(std::move(child));
+    mark_layout_dirty();
     return *children_.back();
 }
 
 void ViewGroup::clear_children() {
     children_.clear();
+    mark_layout_dirty();
 }
 
 View* ViewGroup::find(std::string_view id) {
@@ -1577,6 +1736,184 @@ void FrameLayout::layout(Rect bounds) {
     }
 }
 
+ScrollView::ScrollView(std::string id)
+    : ViewGroup(std::move(id)) {
+    set_hit_test_visible(true);
+}
+
+View& ScrollView::set_content(std::unique_ptr<View> content_view) {
+    if (!content_view) {
+        SNT_LOG_ERROR("ScrollView '%s' rejected null content", id().c_str());
+        return *this;
+    }
+    clear_children();
+    return add_child(std::move(content_view));
+}
+
+View* ScrollView::content() {
+    return children_.empty() ? nullptr : children_.front().get();
+}
+
+const View* ScrollView::content() const {
+    return children_.empty() ? nullptr : children_.front().get();
+}
+
+void ScrollView::set_scroll_axis(ScrollAxis axis) {
+    scroll_axis_ = axis;
+    clamp_scroll_offset();
+    layout_content();
+}
+
+void ScrollView::set_scroll_step(float pixels) {
+    scroll_step_ = std::max(1.0f, pixels);
+}
+
+void ScrollView::set_scroll_offset(Vec2 offset) {
+    scroll_offset_ = offset;
+    clamp_scroll_offset();
+    layout_content();
+}
+
+void ScrollView::measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) {
+    if (visibility_ == Visibility::Gone) {
+        measured_size_ = {};
+        content_size_ = {};
+        max_scroll_offset_ = {};
+        return;
+    }
+
+    View* const content_view = content();
+    if (!content_view || content_view->visibility() == Visibility::Gone) {
+        content_size_ = {};
+        measured_size_.x = resolve_axis(layout_params_.width, width, 0.0f);
+        measured_size_.y = resolve_axis(layout_params_.height, height, 0.0f);
+        max_scroll_offset_ = {};
+        scroll_offset_ = {};
+        return;
+    }
+
+    const auto& content_params = content_view->layout_params();
+    const bool horizontal = scrolls_horizontally(scroll_axis_);
+    const bool vertical = scrolls_vertically(scroll_axis_);
+    const float available_width = width.mode == MeasureMode::Unspecified
+        ? 0.0f
+        : std::max(0.0f, width.size - content_params.margin.left - content_params.margin.right);
+    const float available_height = height.mode == MeasureMode::Unspecified
+        ? 0.0f
+        : std::max(0.0f, height.size - content_params.margin.top - content_params.margin.bottom);
+
+    const MeasureSpec content_width = horizontal
+        ? MeasureSpec{}
+        : MeasureSpec{.size = available_width,
+                      .mode = width.mode == MeasureMode::Unspecified
+                          ? MeasureMode::Unspecified : MeasureMode::Exactly};
+    const MeasureSpec content_height = vertical
+        ? MeasureSpec{}
+        : MeasureSpec{.size = available_height,
+                      .mode = height.mode == MeasureMode::Unspecified
+                          ? MeasureMode::Unspecified : MeasureMode::Exactly};
+    content_view->measure(content_width, content_height, text_engine);
+    const Vec2 measured_content = content_view->measured_size();
+    content_size_ = {
+        measured_content.x + content_params.margin.left + content_params.margin.right,
+        measured_content.y + content_params.margin.top + content_params.margin.bottom,
+    };
+
+    measured_size_.x = resolve_axis(layout_params_.width, width, content_size_.x);
+    measured_size_.y = resolve_axis(layout_params_.height, height, content_size_.y);
+}
+
+void ScrollView::layout(Rect bounds) {
+    View::layout(bounds);
+    layout_content();
+}
+
+void ScrollView::paint(Arc2DCommandBuffer& out,
+                       TextEngine& text_engine,
+                       const UiTheme& theme) const {
+    View::paint(out, text_engine, theme);
+    if (visibility_ != Visibility::Visible || children_.empty()) return;
+    out.push_clip(bounds_);
+    for (const auto& child : children_) {
+        child->paint(out, text_engine, theme);
+    }
+    out.pop_clip();
+}
+
+UiEventReply ScrollView::on_input_event(const UiInputEvent& event) {
+    const UiEventReply base_reply = View::on_input_event(event);
+    if (base_reply == UiEventReply::StopPropagation || !enabled() ||
+        visibility() != Visibility::Visible || event.type != UiInputEventType::PointerScroll ||
+        (event.phase != UiEventPhase::Target && event.phase != UiEventPhase::Bubble)) {
+        return base_reply;
+    }
+
+    Vec2 delta{};
+    if (scrolls_horizontally(scroll_axis_)) {
+        delta.x = -event.scroll_delta.x * scroll_step_;
+    }
+    if (scrolls_vertically(scroll_axis_)) {
+        delta.y = -event.scroll_delta.y * scroll_step_;
+    }
+    // The nearest viewport that can move owns this wheel step. Returning
+    // StopPropagation keeps nested scroll panes from moving their parents at
+    // the same time; once this viewport reaches its edge, Ignored lets an
+    // ancestor ScrollView consume the remaining input naturally.
+    return scroll_by(delta) ? UiEventReply::StopPropagation : base_reply;
+}
+
+bool ScrollView::accepts_child_input(Vec2 point) const {
+    return point.x >= bounds_.pos.x && point.y >= bounds_.pos.y &&
+           point.x < bounds_.pos.x + bounds_.size.x &&
+           point.y < bounds_.pos.y + bounds_.size.y;
+}
+
+void ScrollView::layout_content() {
+    View* const content_view = content();
+    if (!content_view || content_view->visibility() == Visibility::Gone) {
+        max_scroll_offset_ = {};
+        scroll_offset_ = {};
+        return;
+    }
+
+    const auto& content_params = content_view->layout_params();
+    const Vec2 viewport = {
+        std::max(0.0f, bounds_.size.x),
+        std::max(0.0f, bounds_.size.y),
+    };
+    content_size_ = {
+        content_view->measured_size().x + content_params.margin.left + content_params.margin.right,
+        content_view->measured_size().y + content_params.margin.top + content_params.margin.bottom,
+    };
+    max_scroll_offset_ = {
+        scrolls_horizontally(scroll_axis_)
+            ? std::max(0.0f, content_size_.x - viewport.x) : 0.0f,
+        scrolls_vertically(scroll_axis_)
+            ? std::max(0.0f, content_size_.y - viewport.y) : 0.0f,
+    };
+    clamp_scroll_offset();
+    content_view->layout({
+        .pos = {bounds_.pos.x + content_params.margin.left - scroll_offset_.x,
+                bounds_.pos.y + content_params.margin.top - scroll_offset_.y},
+        .size = content_view->measured_size(),
+    });
+}
+
+void ScrollView::clamp_scroll_offset() {
+    scroll_offset_.x = std::clamp(scroll_offset_.x, 0.0f, max_scroll_offset_.x);
+    scroll_offset_.y = std::clamp(scroll_offset_.y, 0.0f, max_scroll_offset_.y);
+}
+
+bool ScrollView::scroll_by(Vec2 delta) {
+    const Vec2 before = scroll_offset_;
+    scroll_offset_.x += delta.x;
+    scroll_offset_.y += delta.y;
+    clamp_scroll_offset();
+    const bool changed = before.x != scroll_offset_.x || before.y != scroll_offset_.y;
+    if (changed) layout_content();
+    return changed;
+}
+
 Animation::Animation(float from, float to, float duration_s, Setter setter)
     : from_(from),
       to_(to),
@@ -1604,20 +1941,297 @@ void Animator::update(float dt) {
     animations_.erase(
         std::remove_if(animations_.begin(), animations_.end(),
                        [](const Animation& a) { return a.finished(); }),
-        animations_.end());
+                       animations_.end());
+}
+
+UiLayerInputPolicy ui_layer_input_policy(UiLayer layer) {
+    switch (layer) {
+        case UiLayer::Hud:
+        case UiLayer::Screen:
+            return {};
+        case UiLayer::Modal:
+            return {.accepts_pointer = true,
+                    .accepts_keyboard = true,
+                    .blocks_pointer_below = true,
+                    .blocks_keyboard_below = true};
+        case UiLayer::Tooltip:
+            return {.accepts_pointer = false,
+                    .accepts_keyboard = false,
+                    .blocks_pointer_below = false,
+                    .blocks_keyboard_below = false};
+    }
+    return {};
+}
+
+bool UiLayerStack::valid_key_part(std::string_view value) {
+    return !value.empty() && value.find(':') == std::string_view::npos;
+}
+
+std::string UiLayerStack::qualified_id(std::string_view owner_id,
+                                       std::string_view screen_id) {
+    return std::string(owner_id) + ":" + std::string(screen_id);
+}
+
+UiLayerStack::ScreenRecord* UiLayerStack::find_record(
+    std::string_view owner_id,
+    std::string_view screen_id) {
+    auto found = std::find_if(screens_.begin(), screens_.end(),
+        [owner_id, screen_id](const ScreenRecord& record) {
+            return record.registration.owner_id == owner_id &&
+                   record.registration.screen_id == screen_id;
+        });
+    return found == screens_.end() ? nullptr : &*found;
+}
+
+const UiLayerStack::ScreenRecord* UiLayerStack::find_record(
+    std::string_view owner_id,
+    std::string_view screen_id) const {
+    auto found = std::find_if(screens_.begin(), screens_.end(),
+        [owner_id, screen_id](const ScreenRecord& record) {
+            return record.registration.owner_id == owner_id &&
+                   record.registration.screen_id == screen_id;
+        });
+    return found == screens_.end() ? nullptr : &*found;
+}
+
+snt::core::Expected<void> UiLayerStack::register_screen(
+    UiScreenRegistration registration) {
+    if (!valid_key_part(registration.owner_id) || !valid_key_part(registration.screen_id) ||
+        !registration.factory) {
+        return snt::core::Error{
+            snt::core::ErrorCode::kInvalidArgument,
+            "UiLayerStack::register_screen: owner, screen ID, and factory are required"};
+    }
+    if (find_record(registration.owner_id, registration.screen_id)) {
+        return snt::core::Error{
+            snt::core::ErrorCode::kInvalidState,
+            "UiLayerStack::register_screen: screen is already registered"};
+    }
+
+    const std::string owner_id = registration.owner_id;
+    const std::string screen_id = registration.screen_id;
+    const UiLayer layer = registration.layer;
+    const bool visible = registration.initially_visible;
+    screens_.push_back({.registration = std::move(registration), .visible = visible});
+    SNT_LOG_INFO("MUI layer-stack screen registered: owner='%s' screen='%s' layer=%u visible=%s",
+                 owner_id.c_str(), screen_id.c_str(), static_cast<unsigned>(layer),
+                 visible ? "true" : "false");
+    return {};
+}
+
+snt::core::Expected<void> UiLayerStack::replace_owner_screens(
+    std::string_view owner_id,
+    std::vector<UiScreenRegistration> registrations) {
+    if (!valid_key_part(owner_id)) {
+        return snt::core::Error{
+            snt::core::ErrorCode::kInvalidArgument,
+            "UiLayerStack::replace_owner_screens: owner ID is required"};
+    }
+
+    std::unordered_set<std::string> screen_ids;
+    screen_ids.reserve(registrations.size());
+    for (const UiScreenRegistration& registration : registrations) {
+        if (registration.owner_id != owner_id || !valid_key_part(registration.screen_id) ||
+            !registration.factory) {
+            return snt::core::Error{
+                snt::core::ErrorCode::kInvalidArgument,
+                "UiLayerStack::replace_owner_screens: registrations must use the supplied owner, "
+                "a screen ID, and a factory"};
+        }
+        if (!screen_ids.emplace(registration.screen_id).second) {
+            return snt::core::Error{
+                snt::core::ErrorCode::kInvalidArgument,
+                "UiLayerStack::replace_owner_screens: replacement contains duplicate screen IDs"};
+        }
+    }
+
+    for (const ScreenRecord& record : screens_) {
+        if (record.registration.owner_id == owner_id) invalidate_interaction(record);
+    }
+    const size_t before = screens_.size();
+    screens_.erase(std::remove_if(screens_.begin(), screens_.end(),
+        [owner_id](const ScreenRecord& record) {
+            return record.registration.owner_id == owner_id;
+        }), screens_.end());
+    const size_t after_removal = screens_.size();
+    screens_.reserve(screens_.size() + registrations.size());
+    for (UiScreenRegistration& registration : registrations) {
+        const bool visible = registration.initially_visible;
+        screens_.push_back({.registration = std::move(registration), .visible = visible});
+    }
+
+    const size_t removed = before - after_removal;
+    SNT_LOG_INFO("MUI layer-stack owner replaced: owner='%.*s' removed=%zu registered=%zu",
+                 static_cast<int>(owner_id.size()), owner_id.data(), removed,
+                 registrations.size());
+    return {};
+}
+
+snt::core::Expected<void> UiLayerStack::set_visible(std::string_view owner_id,
+                                                     std::string_view screen_id,
+                                                     bool visible) {
+    ScreenRecord* record = find_record(owner_id, screen_id);
+    if (!record) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "UiLayerStack::set_visible: screen is not registered"};
+    }
+    if (record->visible == visible) return {};
+    if (!visible) invalidate_interaction(*record);
+    record->visible = visible;
+    SNT_LOG_INFO("MUI layer-stack screen visibility changed: owner='%s' screen='%s' visible=%s",
+                 record->registration.owner_id.c_str(), record->registration.screen_id.c_str(),
+                 visible ? "true" : "false");
+    return {};
+}
+
+snt::core::Expected<void> UiLayerStack::unregister_screen(std::string_view owner_id,
+                                                           std::string_view screen_id) {
+    const auto found = std::find_if(screens_.begin(), screens_.end(),
+        [owner_id, screen_id](const ScreenRecord& record) {
+            return record.registration.owner_id == owner_id &&
+                   record.registration.screen_id == screen_id;
+        });
+    if (found == screens_.end()) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "UiLayerStack::unregister_screen: screen is not registered"};
+    }
+    invalidate_interaction(*found);
+    SNT_LOG_INFO("MUI layer-stack screen unregistered: owner='%s' screen='%s'",
+                 found->registration.owner_id.c_str(), found->registration.screen_id.c_str());
+    screens_.erase(found);
+    return {};
+}
+
+size_t UiLayerStack::unregister_owner(std::string_view owner_id) {
+    const size_t before = screens_.size();
+    for (const ScreenRecord& record : screens_) {
+        if (record.registration.owner_id == owner_id) invalidate_interaction(record);
+    }
+    screens_.erase(std::remove_if(screens_.begin(), screens_.end(),
+        [owner_id](const ScreenRecord& record) {
+            return record.registration.owner_id == owner_id;
+        }), screens_.end());
+    const size_t removed = before - screens_.size();
+    if (removed > 0) {
+        SNT_LOG_INFO("MUI layer-stack owner unregistered: owner='%.*s' screens=%zu",
+                     static_cast<int>(owner_id.size()), owner_id.data(), removed);
+    }
+    return removed;
+}
+
+bool UiLayerStack::is_registered(std::string_view owner_id,
+                                 std::string_view screen_id) const {
+    return find_record(owner_id, screen_id) != nullptr;
+}
+
+bool UiLayerStack::is_visible(std::string_view owner_id,
+                              std::string_view screen_id) const {
+    const ScreenRecord* record = find_record(owner_id, screen_id);
+    return record && record->visible;
+}
+
+bool UiLayerStack::is_mounted(std::string_view owner_id,
+                              std::string_view screen_id) const {
+    const ScreenRecord* record = find_record(owner_id, screen_id);
+    return record && record->mounted.root != nullptr;
+}
+
+const std::vector<UiScreenSubmission>& UiLayerStack::prepare_frame(
+    const UiScreenFrameContext& context) {
+    frame_submissions_.clear();
+    frame_submissions_.reserve(screens_.size());
+
+    for (ScreenRecord& record : screens_) {
+        if (!record.visible) continue;
+
+        if (!record.mounted.root) {
+            auto mounted = record.registration.factory({
+                .viewport = context.viewport,
+                .images = context.images,
+                .dispatch_action = record.registration.dispatch_action,
+            });
+            if (!mounted || !mounted->root) {
+                if (!record.mount_failure_logged) {
+                    record.mount_failure_logged = true;
+                    if (!mounted) {
+                        SNT_LOG_ERROR("MUI screen mount failed: owner='%s' screen='%s' error=%s",
+                                      record.registration.owner_id.c_str(),
+                                      record.registration.screen_id.c_str(),
+                                      mounted.error().format().c_str());
+                    } else {
+                        SNT_LOG_ERROR("MUI screen mount returned a null root: owner='%s' screen='%s'",
+                                      record.registration.owner_id.c_str(),
+                                      record.registration.screen_id.c_str());
+                    }
+                }
+                continue;
+            }
+
+            mounted->root->set_id(qualified_id(record.registration.owner_id,
+                                                record.registration.screen_id));
+            record.mounted = std::move(*mounted);
+            record.mount_failure_logged = false;
+            SNT_LOG_INFO("MUI screen mounted: owner='%s' screen='%s' layer=%u",
+                         record.registration.owner_id.c_str(),
+                         record.registration.screen_id.c_str(),
+                         static_cast<unsigned>(record.registration.layer));
+        }
+
+        if (record.mounted.update) {
+            record.mounted.update(*record.mounted.root, context);
+        }
+        frame_submissions_.push_back({
+            .layer = record.registration.layer,
+            .input_policy = ui_layer_input_policy(record.registration.layer),
+            .root = record.mounted.root.get(),
+        });
+    }
+    return frame_submissions_;
+}
+
+std::vector<std::string> UiLayerStack::take_invalidated_root_ids() {
+    return std::exchange(invalidated_root_ids_, {});
+}
+
+void UiLayerStack::invalidate_interaction(const ScreenRecord& record) {
+    if (!record.mounted.root || record.mounted.root->id().empty()) return;
+    const std::string& root_id = record.mounted.root->id();
+    if (std::find(invalidated_root_ids_.begin(), invalidated_root_ids_.end(), root_id) ==
+        invalidated_root_ids_.end()) {
+        invalidated_root_ids_.push_back(root_id);
+    }
 }
 
 UiRuntime::UiRuntime(const snt::core::RuntimePathResolver& paths,
                      TextEngineConfig config,
                      UiTheme theme)
     : text_engine_(paths, std::move(config)),
-      theme_(std::move(theme)) {}
+      images_(),
+      renderer_(images_),
+      theme_(std::move(theme)) {
+    hit_path_scratch_.reserve(32);
+    event_path_scratch_.reserve(32);
+}
 
 void UiRuntime::layout(View& root, Vec2 viewport) {
+    const bool viewport_changed = !root.has_layout_viewport_ ||
+        root.last_layout_viewport_.x != viewport.x || root.last_layout_viewport_.y != viewport.y;
+    if (!root.layout_dirty_ && !viewport_changed) return;
+
     root.measure({.size = viewport.x, .mode = MeasureMode::Exactly},
                  {.size = viewport.y, .mode = MeasureMode::Exactly},
                  text_engine_);
     root.layout({.pos = {0.0f, 0.0f}, .size = viewport});
+
+    const auto clear_dirty = [](auto&& self, View& view) -> void {
+        view.layout_dirty_ = false;
+        if (auto* group = dynamic_cast<ViewGroup*>(&view)) {
+            for (auto& child : group->children()) self(self, *child);
+        }
+    };
+    clear_dirty(clear_dirty, root);
+    root.last_layout_viewport_ = viewport;
+    root.has_layout_viewport_ = true;
 }
 
 void UiRuntime::begin_input_frame(UiInputState input) {
@@ -1641,7 +2255,8 @@ bool UiRuntime::dispatch_pointer_input(View& root) {
     // reaches this stable root id.
     if (!pointer_capture_.empty() && pointer_capture_.root != root_id) return false;
 
-    std::vector<View*> hit_path;
+    std::vector<View*>& hit_path = hit_path_scratch_;
+    hit_path.clear();
     const bool has_hit_target = pointer_capture_.empty() &&
         build_hit_path(root, input_.pointer_position, hit_path);
     if (has_hit_target && !root_id.empty() && !hit_path.back()->id().empty()) {
@@ -1649,6 +2264,16 @@ bool UiRuntime::dispatch_pointer_input(View& root) {
     }
 
     bool claimed = false;
+    if (has_hit_target &&
+        (input_.scroll_delta.x != 0.0f || input_.scroll_delta.y != 0.0f)) {
+        const UiEventReply reply = dispatch_event_path(hit_path, {
+            .type = UiInputEventType::PointerScroll,
+            .pointer_position = input_.pointer_position,
+            .scroll_delta = input_.scroll_delta,
+        });
+        claimed = reply == UiEventReply::Handled || reply == UiEventReply::StopPropagation;
+    }
+
     for (size_t index = 0; index < input_.pointer_pressed.size(); ++index) {
         if (!input_.pointer_pressed[index] || !has_hit_target) continue;
 
@@ -1661,17 +2286,17 @@ bool UiRuntime::dispatch_pointer_input(View& root) {
             const ElementId next_focus{root_id, focus_target->id()};
             if (!next_focus.empty() && !focused_.matches(root_id, focus_target->id())) {
                 if (focused_.root == root_id) {
-                    std::vector<View*> old_focus_path;
-                    if (build_path_to_id(root, focused_.view, old_focus_path)) {
-                        dispatch_event_path(old_focus_path, {
+                    event_path_scratch_.clear();
+                    if (build_path_to_id(root, focused_.view, event_path_scratch_)) {
+                        dispatch_event_path(event_path_scratch_, {
                             .type = UiInputEventType::FocusLost,
                         });
                     }
                 }
                 focused_ = next_focus;
-                std::vector<View*> focus_path;
-                if (build_path_to_id(root, focus_target->id(), focus_path)) {
-                    dispatch_event_path(focus_path, {
+                event_path_scratch_.clear();
+                if (build_path_to_id(root, focus_target->id(), event_path_scratch_)) {
+                    dispatch_event_path(event_path_scratch_, {
                         .type = UiInputEventType::FocusGained,
                     });
                 }
@@ -1690,10 +2315,10 @@ bool UiRuntime::dispatch_pointer_input(View& root) {
         if (!pointer_released_[index]) continue;
 
         if (!pointer_capture_.empty() && pointer_capture_.root == root_id) {
-            std::vector<View*> captured_path;
-            if (build_path_to_id(root, pointer_capture_.view, captured_path)) {
-                const bool activation = captured_path.back()->hit_test(input_.pointer_position);
-                dispatch_event_path(captured_path, {
+            event_path_scratch_.clear();
+            if (build_path_to_id(root, pointer_capture_.view, event_path_scratch_)) {
+                const bool activation = event_path_scratch_.back()->hit_test(input_.pointer_position);
+                dispatch_event_path(event_path_scratch_, {
                     .type = UiInputEventType::PointerUp,
                     .pointer_position = input_.pointer_position,
                     .pointer_button = pointer_button_for_index(index),
@@ -1713,9 +2338,9 @@ bool UiRuntime::dispatch_pointer_input(View& root) {
     }
 
     if (!pointer_capture_.empty() && pointer_capture_.root == root_id) {
-        std::vector<View*> captured_path;
-        if (build_path_to_id(root, pointer_capture_.view, captured_path)) {
-            dispatch_event_path(captured_path, {
+        event_path_scratch_.clear();
+        if (build_path_to_id(root, pointer_capture_.view, event_path_scratch_)) {
+            dispatch_event_path(event_path_scratch_, {
                 .type = UiInputEventType::PointerMove,
                 .pointer_position = input_.pointer_position,
             });
@@ -1736,23 +2361,34 @@ bool UiRuntime::dispatch_pointer_input(View& root) {
 }
 
 bool UiRuntime::dispatch_keyboard_input(View& root) {
+    if (!focus_scope_root_.empty() && root.id() != focus_scope_root_) return false;
     if (input_.pressed_keys.empty() || focused_.empty() || focused_.root != root.id()) {
         return false;
     }
 
-    std::vector<View*> focus_path;
-    if (!build_path_to_id(root, focused_.view, focus_path)) {
+    event_path_scratch_.clear();
+    if (!build_path_to_id(root, focused_.view, event_path_scratch_)) {
         focused_.clear();
         return false;
     }
 
     for (UiKey key : input_.pressed_keys) {
-        dispatch_event_path(focus_path, {
+        dispatch_event_path(event_path_scratch_, {
             .type = UiInputEventType::KeyDown,
             .key = key,
         });
     }
     return true;
+}
+
+void UiRuntime::end_input_frame() {
+    // A modal can become visible between pointer-down and pointer-up. If its
+    // policy blocks the former root, the host deliberately withholds that
+    // release to prevent accidental activation behind the modal. Do not leave
+    // the old root visually pressed or permanently captured in that case.
+    const bool any_release = std::any_of(pointer_released_.begin(), pointer_released_.end(),
+                                         [](bool released) { return released; });
+    if (!input_.pointer_enabled || any_release) pointer_capture_.clear();
 }
 
 void UiRuntime::synchronize_interaction_state(View& root) {
@@ -1788,10 +2424,33 @@ UiFrameResult UiRuntime::paint(View& root) {
     return result;
 }
 
+UiDrawData UiRuntime::build_draw_data(const Arc2DCommandBuffer& commands) {
+    return renderer_.build_draw_data(commands);
+}
+
+void UiRuntime::set_focus_scope(std::string root_id) {
+    if (focus_scope_root_ == root_id) return;
+    focus_scope_root_ = std::move(root_id);
+    if (!focus_scope_root_.empty() && focused_.root != focus_scope_root_) {
+        focused_.clear();
+    }
+    if (!focus_scope_root_.empty() && pointer_capture_.root != focus_scope_root_) {
+        pointer_capture_.clear();
+    }
+}
+
+void UiRuntime::cancel_interaction_for_root(std::string_view root_id) {
+    if (hovered_.root == root_id) hovered_.clear();
+    if (focused_.root == root_id) focused_.clear();
+    if (pointer_capture_.root == root_id) pointer_capture_.clear();
+    if (focus_scope_root_ == root_id) focus_scope_root_.clear();
+}
+
 void UiRuntime::clear_interaction_state() {
     hovered_.clear();
     focused_.clear();
     pointer_capture_.clear();
+    focus_scope_root_.clear();
     previous_pointer_held_.fill(false);
     pointer_released_.fill(false);
 }

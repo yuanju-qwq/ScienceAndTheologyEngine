@@ -1,5 +1,6 @@
 // UI fragment shader — renders MUI solid primitives, signed-distance text,
-// and RGBA colour glyphs from the dynamic Unicode atlas.
+// color glyphs, and registered RGBA UI images from the atlas selected by the
+// current draw batch.
 
 #version 450
 

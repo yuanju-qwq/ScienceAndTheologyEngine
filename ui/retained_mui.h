@@ -6,6 +6,7 @@
 #pragma once
 
 #include "ui_draw_data.h"
+#include "ui_image_registry.h"
 
 #include <algorithm>
 #include <array>
@@ -61,13 +62,26 @@ enum class Visibility : uint8_t {
 
 // UI layer order is shared by the host, game screens, and future mod UI.
 // Higher layers render later and receive pointer input before lower layers.
+// These four layers are the complete public layering contract. Engine debug
+// overlays use Hud so Mods never need to depend on a private fifth layer.
 enum class UiLayer : uint8_t {
     Hud,
     Screen,
     Modal,
     Tooltip,
-    Debug,
 };
+
+// Layer ownership is centralized so rendering order and input behavior cannot
+// drift between client hosts. Tooltip remains visual-only; a modal blocks
+// lower layers even when its root does not hit-test the pointer.
+struct UiLayerInputPolicy {
+    bool accepts_pointer = true;
+    bool accepts_keyboard = true;
+    bool blocks_pointer_below = false;
+    bool blocks_keyboard_below = false;
+};
+
+[[nodiscard]] UiLayerInputPolicy ui_layer_input_policy(UiLayer layer);
 
 enum class UiPointerButton : uint8_t {
     None,
@@ -94,6 +108,7 @@ enum class UiInputEventType : uint8_t {
     PointerMove,
     PointerDown,
     PointerUp,
+    PointerScroll,
     KeyDown,
     FocusGained,
     FocusLost,
@@ -115,6 +130,7 @@ struct UiInputEvent {
     UiInputEventType type = UiInputEventType::PointerMove;
     UiEventPhase phase = UiEventPhase::Target;
     Vec2 pointer_position{};
+    Vec2 scroll_delta{};
     UiPointerButton pointer_button = UiPointerButton::None;
     UiKey key = UiKey::Unknown;
     // True only when a pointer-up lands on the same captured control.
@@ -130,6 +146,7 @@ struct UiInputState {
     std::array<bool, 3> pointer_held{};
     std::array<bool, 3> pointer_pressed{};
     std::array<bool, 3> pointer_released{};
+    Vec2 scroll_delta{};
     std::vector<UiKey> pressed_keys;
 };
 
@@ -173,6 +190,7 @@ enum class ViewKind : uint8_t {
     Button,
     ImageView,
     SlotView,
+    ScrollView,
 };
 
 struct TextStyle {
@@ -354,7 +372,14 @@ struct DrawImageCommand {
     Color tint{255, 255, 255, 255};
 };
 
-using ArcDrawCommand = std::variant<DrawRectCommand, DrawTextCommand, DrawImageCommand>;
+struct PushClipCommand {
+    Rect rect{};
+};
+
+struct PopClipCommand {};
+
+using ArcDrawCommand = std::variant<DrawRectCommand, DrawTextCommand, DrawImageCommand,
+                                    PushClipCommand, PopClipCommand>;
 
 class Arc2DCommandBuffer {
 public:
@@ -362,6 +387,8 @@ public:
     void rect(Rect rect, Color color, float radius = 0.0f);
     void text(Rect rect, std::string text, TextStyle style, TextLayout layout);
     void image(Rect rect, std::string image_key, Color tint = {});
+    void push_clip(Rect rect);
+    void pop_clip();
 
     const std::vector<ArcDrawCommand>& commands() const { return commands_; }
 
@@ -371,14 +398,22 @@ private:
 
 class Arc2DRenderer {
 public:
-    // Converts Arc2D primitives into renderer draw data. Text is lowered from
-    // HarfBuzz/FreeType glyphs into dynamic-atlas quads; no bitmap fallback
-    // exists in this renderer.
+    // Converts Arc2D primitives into renderer batches. Text is lowered from
+    // HarfBuzz/FreeType glyphs, images resolve through the explicit registry,
+    // and nested clips become dynamic Vulkan scissor state.
+    explicit Arc2DRenderer(UiImageRegistry& images) : images_(&images) {}
+
     UiDrawData build_draw_data(const Arc2DCommandBuffer& commands) const;
 
 private:
-    static void append_rect(UiDrawData& out, Rect rect, Color color, float radius);
-    static void append_glyph_text(UiDrawData& out, const DrawTextCommand& text);
+    static void append_rect(UiDrawData& out, Rect rect, Color color, float radius,
+                            UiClipRect clip);
+    static void append_glyph_text(UiDrawData& out, const DrawTextCommand& text,
+                                  UiClipRect clip);
+    void append_image(UiDrawData& out, const DrawImageCommand& image,
+                      UiClipRect clip) const;
+
+    UiImageRegistry* images_ = nullptr;
 };
 
 class View {
@@ -396,12 +431,18 @@ public:
     void set_id(std::string id) { id_ = std::move(id); }
     const std::string& id() const { return id_; }
 
-    void set_layout_params(LayoutParams params) { layout_params_ = params; }
+    void set_layout_params(LayoutParams params) {
+        layout_params_ = std::move(params);
+        mark_layout_dirty();
+    }
     const LayoutParams& layout_params() const { return layout_params_; }
-    LayoutParams& layout_params() { return layout_params_; }
 
     void set_background(Color color, float radius = 0.0f);
-    void set_visibility(Visibility visibility) { visibility_ = visibility; }
+    void set_visibility(Visibility visibility) {
+        if (visibility_ == visibility) return;
+        visibility_ = visibility;
+        mark_layout_dirty();
+    }
     Visibility visibility() const { return visibility_; }
     void set_enabled(bool enabled) { enabled_ = enabled; }
     bool enabled() const { return enabled_; }
@@ -414,6 +455,7 @@ public:
 
     Vec2 measured_size() const { return measured_size_; }
     Rect bounds() const { return bounds_; }
+    bool layout_dirty() const { return layout_dirty_; }
 
     void set_bound_text_key(std::string key) { bound_text_key_ = std::move(key); }
     const std::string& bound_text_key() const { return bound_text_key_; }
@@ -429,11 +471,22 @@ public:
     virtual UiEventReply on_input_event(const UiInputEvent& event);
     bool hit_test(Vec2 point) const;
 
+    // Parents can restrict child hit testing without changing child bounds.
+    // ScrollView uses this to prevent clipped-off controls from receiving
+    // clicks or wheel events outside its viewport.
+    virtual bool accepts_child_input(Vec2 point) const {
+        (void)point;
+        return true;
+    }
+
 protected:
     friend class UiRuntime;
+    friend class ViewGroup;
 
     static float resolve_axis(float requested, MeasureSpec spec, float desired);
     static float clamp_axis(float value, MeasureSpec spec);
+    void mark_layout_dirty();
+    void attach_parent(View* parent) { parent_ = parent; }
     virtual void set_interaction_state(UiInteractionState state) {
         interaction_state_ = state;
     }
@@ -451,6 +504,10 @@ protected:
     std::string bound_text_key_;
     InputHandler input_handler_;
     std::vector<ViewModel::Subscription> bindings_;
+    View* parent_ = nullptr;
+    bool layout_dirty_ = true;
+    bool has_layout_viewport_ = false;
+    Vec2 last_layout_viewport_{};
 };
 
 class TextView : public View {
@@ -458,10 +515,19 @@ public:
     explicit TextView(std::string id = {});
     ViewKind kind() const override { return ViewKind::TextView; }
 
-    void set_text(std::string text) { text_ = std::move(text); dirty_layout_ = true; }
+    void set_text(std::string text) {
+        if (text_ == text) return;
+        text_ = std::move(text);
+        dirty_layout_ = true;
+        mark_layout_dirty();
+    }
     const std::string& text() const { return text_; }
 
-    void set_text_style(TextStyle style) { style_ = style; dirty_layout_ = true; }
+    void set_text_style(TextStyle style) {
+        style_ = style;
+        dirty_layout_ = true;
+        mark_layout_dirty();
+    }
     const TextStyle& text_style() const { return style_; }
 
     void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
@@ -502,6 +568,8 @@ public:
 
     void set_image_key(std::string image_key) { image_key_ = std::move(image_key); }
     const std::string& image_key() const { return image_key_; }
+    void set_tint(Color tint) { tint_ = tint; }
+    Color tint() const { return tint_; }
 
     void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
     void paint(Arc2DCommandBuffer& out,
@@ -524,7 +592,13 @@ public:
     explicit SlotView(std::string id = {});
     ViewKind kind() const override { return ViewKind::SlotView; }
 
-    void set_slot_state(SlotState state) { state_ = std::move(state); }
+    void set_slot_state(SlotState state) {
+        if (state_.item_key == state.item_key && state_.count == state.count &&
+            state_.selected == state.selected) {
+            return;
+        }
+        state_ = std::move(state);
+    }
     const SlotState& slot_state() const { return state_; }
 
     void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
@@ -563,11 +637,22 @@ public:
     explicit LinearLayout(std::string id = {});
     ViewKind kind() const override { return ViewKind::LinearLayout; }
 
-    void set_orientation(Orientation orientation) { orientation_ = orientation; }
+    void set_orientation(Orientation orientation) {
+        if (orientation_ == orientation) return;
+        orientation_ = orientation;
+        mark_layout_dirty();
+    }
     Orientation orientation() const { return orientation_; }
-    void set_spacing(float spacing) { spacing_ = spacing; }
+    void set_spacing(float spacing) {
+        if (spacing_ == spacing) return;
+        spacing_ = spacing;
+        mark_layout_dirty();
+    }
     float spacing() const { return spacing_; }
-    void set_padding(Insets padding) { padding_ = padding; }
+    void set_padding(Insets padding) {
+        padding_ = padding;
+        mark_layout_dirty();
+    }
 
     void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
     void layout(Rect bounds) override;
@@ -580,19 +665,37 @@ private:
 
 // Fixed-column grid for inventory slots, recipe cells, and compact mod
 // panels. It measures each visible child once and derives per-column/per-row
-// cell extents, leaving scrolling and virtualization to a future ScrollView.
+// cell extents; ScrollView owns viewport clipping and scroll offsets.
 class GridLayout : public ViewGroup {
 public:
     explicit GridLayout(std::string id = {});
     ViewKind kind() const override { return ViewKind::GridLayout; }
 
-    void set_columns(int32_t columns) { columns_ = std::max(1, columns); }
+    void set_columns(int32_t columns) {
+        const int32_t value = std::max(1, columns);
+        if (columns_ == value) return;
+        columns_ = value;
+        mark_layout_dirty();
+    }
     int32_t columns() const { return columns_; }
-    void set_column_spacing(float spacing) { column_spacing_ = std::max(0.0f, spacing); }
+    void set_column_spacing(float spacing) {
+        const float value = std::max(0.0f, spacing);
+        if (column_spacing_ == value) return;
+        column_spacing_ = value;
+        mark_layout_dirty();
+    }
     float column_spacing() const { return column_spacing_; }
-    void set_row_spacing(float spacing) { row_spacing_ = std::max(0.0f, spacing); }
+    void set_row_spacing(float spacing) {
+        const float value = std::max(0.0f, spacing);
+        if (row_spacing_ == value) return;
+        row_spacing_ = value;
+        mark_layout_dirty();
+    }
     float row_spacing() const { return row_spacing_; }
-    void set_padding(Insets padding) { padding_ = padding; }
+    void set_padding(Insets padding) {
+        padding_ = padding;
+        mark_layout_dirty();
+    }
 
     void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
     void layout(Rect bounds) override;
@@ -609,12 +712,62 @@ public:
     explicit FrameLayout(std::string id = {});
     ViewKind kind() const override { return ViewKind::FrameLayout; }
 
-    void set_padding(Insets padding) { padding_ = padding; }
+    void set_padding(Insets padding) {
+        padding_ = padding;
+        mark_layout_dirty();
+    }
     void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
     void layout(Rect bounds) override;
 
 private:
     Insets padding_{};
+};
+
+enum class ScrollAxis : uint8_t {
+    Vertical,
+    Horizontal,
+    Both,
+};
+
+// Single-content viewport with nested Arc2D clipping and wheel scrolling.
+// The content remains a normal retained View, so GridLayout and custom mod
+// views do not need a scroll-specific rendering or input implementation.
+class ScrollView : public ViewGroup {
+public:
+    explicit ScrollView(std::string id = {});
+    ViewKind kind() const override { return ViewKind::ScrollView; }
+
+    View& set_content(std::unique_ptr<View> content);
+    View* content();
+    const View* content() const;
+
+    void set_scroll_axis(ScrollAxis axis);
+    ScrollAxis scroll_axis() const { return scroll_axis_; }
+    void set_scroll_step(float pixels);
+    float scroll_step() const { return scroll_step_; }
+    void set_scroll_offset(Vec2 offset);
+    Vec2 scroll_offset() const { return scroll_offset_; }
+    Vec2 max_scroll_offset() const { return max_scroll_offset_; }
+    Vec2 content_size() const { return content_size_; }
+
+    void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
+    void layout(Rect bounds) override;
+    void paint(Arc2DCommandBuffer& out,
+               TextEngine& text_engine,
+               const UiTheme& theme) const override;
+    UiEventReply on_input_event(const UiInputEvent& event) override;
+    bool accepts_child_input(Vec2 point) const override;
+
+private:
+    void layout_content();
+    void clamp_scroll_offset();
+    bool scroll_by(Vec2 delta);
+
+    ScrollAxis scroll_axis_ = ScrollAxis::Vertical;
+    float scroll_step_ = 36.0f;
+    Vec2 content_size_{};
+    Vec2 scroll_offset_{};
+    Vec2 max_scroll_offset_{};
 };
 
 class Animation {
@@ -644,6 +797,114 @@ private:
     std::vector<Animation> animations_;
 };
 
+// Extension boundary for game-owned and mod-owned retained screens. A screen
+// factory runs only while a screen is first mounted, never once per frame.
+// Its root remains owned by UiLayerStack until close/unregister. Resource
+// scenes use the same path as native game screens, but only the game-facing
+// side ever sees a View pointer or a callable updater.
+using UiActionDispatcher = std::function<void(std::string_view action_id)>;
+
+struct UiScreenMountContext {
+    Vec2 viewport{};
+    UiImageRegistry& images;
+    UiActionDispatcher dispatch_action;
+};
+
+struct UiScreenFrameContext {
+    Vec2 viewport{};
+    UiImageRegistry& images;
+};
+
+using UiScreenUpdater = std::function<void(View&, const UiScreenFrameContext&)>;
+
+struct UiScreenMount {
+    std::unique_ptr<View> root;
+    // Called once per host frame after mounting. Implementations must be
+    // cheap when their ViewModel revision has not changed.
+    UiScreenUpdater update;
+};
+
+using UiScreenFactory = std::function<snt::core::Expected<UiScreenMount>(
+    const UiScreenMountContext&)>;
+
+struct UiScreenRegistration {
+    // `owner_id` is the game or mod namespace, for example "builtin" or
+    // "example_expansion". `screen_id` is unique within that owner.
+    std::string owner_id;
+    std::string screen_id;
+    UiLayer layer = UiLayer::Screen;
+    bool initially_visible = false;
+    UiScreenFactory factory;
+    // Resource action IDs stay declarative until the host registers this
+    // screen. The host may route them to a command bus, a script callback, or
+    // a network request without exposing native function pointers in assets.
+    UiActionDispatcher dispatch_action;
+};
+
+struct UiScreenSubmission {
+    UiLayer layer = UiLayer::Screen;
+    UiLayerInputPolicy input_policy{};
+    // Borrowed from UiLayerStack. It remains valid until the stack mutates or
+    // the stack is destroyed.
+    View* root = nullptr;
+};
+
+class UiLayerStack final {
+public:
+    [[nodiscard]] snt::core::Expected<void> register_screen(UiScreenRegistration registration);
+    // Replaces one owner's complete screen set after all registrations have
+    // been validated. Resource loaders use this for transaction-like Mod
+    // reloads, so a malformed replacement never partially removes live UI.
+    [[nodiscard]] snt::core::Expected<void> replace_owner_screens(
+        std::string_view owner_id,
+        std::vector<UiScreenRegistration> registrations);
+    [[nodiscard]] snt::core::Expected<void> set_visible(std::string_view owner_id,
+                                                          std::string_view screen_id,
+                                                          bool visible);
+    [[nodiscard]] snt::core::Expected<void> unregister_screen(std::string_view owner_id,
+                                                               std::string_view screen_id);
+
+    // Removes every screen owned by one content package. This is the unload
+    // hook needed by hot-reloaded mods before their captured state is freed.
+    [[nodiscard]] size_t unregister_owner(std::string_view owner_id);
+    [[nodiscard]] bool is_registered(std::string_view owner_id,
+                                     std::string_view screen_id) const;
+    [[nodiscard]] bool is_visible(std::string_view owner_id,
+                                  std::string_view screen_id) const;
+    [[nodiscard]] bool is_mounted(std::string_view owner_id,
+                                  std::string_view screen_id) const;
+    [[nodiscard]] size_t screen_count() const { return screens_.size(); }
+
+    // Mounts visible screens that do not yet own a root and updates existing
+    // mounts. The returned storage is reused by the stack to avoid per-frame
+    // allocations; callers consume it before invoking another stack method.
+    [[nodiscard]] const std::vector<UiScreenSubmission>& prepare_frame(
+        const UiScreenFrameContext& context);
+
+    // Screen removal/hide invalidates focus and pointer capture rooted in the
+    // old tree. The host drains this after mutations and before input routing.
+    [[nodiscard]] std::vector<std::string> take_invalidated_root_ids();
+
+private:
+    struct ScreenRecord {
+        UiScreenRegistration registration;
+        bool visible = false;
+        bool mount_failure_logged = false;
+        UiScreenMount mounted;
+    };
+
+    ScreenRecord* find_record(std::string_view owner_id, std::string_view screen_id);
+    const ScreenRecord* find_record(std::string_view owner_id,
+                                    std::string_view screen_id) const;
+    void invalidate_interaction(const ScreenRecord& record);
+    static bool valid_key_part(std::string_view value);
+    static std::string qualified_id(std::string_view owner_id, std::string_view screen_id);
+
+    std::vector<ScreenRecord> screens_;
+    std::vector<UiScreenSubmission> frame_submissions_;
+    std::vector<std::string> invalidated_root_ids_;
+};
+
 struct UiFrameResult {
     Arc2DCommandBuffer commands;
     UiDrawData draw_data;
@@ -661,6 +922,10 @@ public:
     const std::string& text_initialization_error() const {
         return text_engine_.initialization_error();
     }
+    UiImageRegistry& images() { return images_; }
+    const UiImageRegistry& images() const { return images_; }
+    UiLayerStack& layers() { return layers_; }
+    const UiLayerStack& layers() const { return layers_; }
 
     void set_theme(UiTheme theme) { theme_ = std::move(theme); }
     const UiTheme& theme() const { return theme_; }
@@ -675,8 +940,15 @@ public:
     // lower layers must not receive that channel for the current host frame.
     bool dispatch_pointer_input(View& root);
     bool dispatch_keyboard_input(View& root);
+    // Clears a capture whose pointer-up could not be routed because a newly
+    // visible blocking layer superseded its former root. The host invokes this
+    // once after all layer policies have been evaluated for the frame.
+    void end_input_frame();
     void synchronize_interaction_state(View& root);
     UiFrameResult paint(View& root);
+    UiDrawData build_draw_data(const Arc2DCommandBuffer& commands);
+    void set_focus_scope(std::string root_id);
+    void cancel_interaction_for_root(std::string_view root_id);
     void clear_interaction_state();
 
 private:
@@ -692,6 +964,8 @@ private:
     };
 
     UnicodeTextEngine text_engine_;
+    UiImageRegistry images_;
+    UiLayerStack layers_;
     Arc2DRenderer renderer_;
     UiTheme theme_{};
     UiInputState input_{};
@@ -700,6 +974,11 @@ private:
     ElementId hovered_;
     ElementId focused_;
     ElementId pointer_capture_;
+    std::string focus_scope_root_;
+    // Main-thread routing scratch storage. Retaining these avoids allocating a
+    // hit/event path for every submitted root on every input frame.
+    std::vector<View*> hit_path_scratch_;
+    std::vector<View*> event_path_scratch_;
 };
 
 }  // namespace snt::ui

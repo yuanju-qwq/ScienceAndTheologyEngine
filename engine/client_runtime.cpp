@@ -35,6 +35,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -67,9 +68,24 @@ struct FpsTracker {
     }
 };
 
+bool same_ui_clip(const snt::ui::UiClipRect& left,
+                  const snt::ui::UiClipRect& right) {
+    return left.enabled == right.enabled &&
+           (!left.enabled ||
+            (left.rect.pos.x == right.rect.pos.x &&
+             left.rect.pos.y == right.rect.pos.y &&
+             left.rect.size.x == right.rect.size.x &&
+             left.rect.size.y == right.rect.size.y));
+}
+
 void append_draw_data(snt::ui::UiDrawData& destination,
                       const snt::ui::UiDrawData& source) {
     if (source.vertices.empty() || source.indices.empty()) return;
+    if (destination.vertices.size() > std::numeric_limits<snt::ui::UiIndex>::max() -
+                                      source.vertices.size()) {
+        SNT_LOG_WARN("UI draw data overflow while appending; dropping appended batch");
+        return;
+    }
 
     if (source.glyph_atlas) {
         if (!destination.glyph_atlas) {
@@ -79,17 +95,50 @@ void append_draw_data(snt::ui::UiDrawData& destination,
             return;
         }
     }
-
-    if (destination.vertices.size() + source.vertices.size() > 0xFFFFu) {
-        SNT_LOG_WARN("UI draw data overflow while appending; dropping appended batch");
-        return;
+    if (source.image_atlas) {
+        if (!destination.image_atlas) {
+            destination.image_atlas = source.image_atlas;
+        } else if (destination.image_atlas.get() != source.image_atlas.get()) {
+            SNT_LOG_ERROR("MUI draw batches reference different image atlases; batch rejected");
+            return;
+        }
     }
 
-    const uint16_t base = static_cast<uint16_t>(destination.vertices.size());
+    const auto base = static_cast<snt::ui::UiIndex>(destination.vertices.size());
+    const uint32_t first_index = static_cast<uint32_t>(destination.indices.size());
     destination.vertices.insert(destination.vertices.end(), source.vertices.begin(), source.vertices.end());
     destination.indices.reserve(destination.indices.size() + source.indices.size());
-    for (const uint16_t index : source.indices) {
-        destination.indices.push_back(static_cast<uint16_t>(base + index));
+    for (const snt::ui::UiIndex index : source.indices) {
+        destination.indices.push_back(base + index);
+    }
+
+    const auto append_batch = [&destination, first_index](snt::ui::UiDrawBatch batch) {
+        batch.first_index += first_index;
+        if (!destination.batches.empty()) {
+            auto& last = destination.batches.back();
+            if (last.texture == batch.texture && same_ui_clip(last.clip, batch.clip) &&
+                last.first_index + last.index_count == batch.first_index) {
+                last.index_count += batch.index_count;
+                return;
+            }
+        }
+        destination.batches.push_back(batch);
+    };
+    if (source.batches.empty()) {
+        append_batch({
+            .first_index = 0,
+            .index_count = static_cast<uint32_t>(source.indices.size()),
+            .texture = snt::ui::UiTextureBinding::GlyphAtlas,
+        });
+    } else {
+        for (const snt::ui::UiDrawBatch& batch : source.batches) {
+            if (batch.first_index > source.indices.size() ||
+                batch.index_count > source.indices.size() - batch.first_index) {
+                SNT_LOG_ERROR("UI draw data contains an invalid batch range; batch rejected");
+                continue;
+            }
+            append_batch(batch);
+        }
     }
 }
 
@@ -101,6 +150,7 @@ snt::ui::UiInputState make_ui_input_state(const snt::input::InputState& input,
         static_cast<float>(input.mouse_x),
         static_cast<float>(input.mouse_y),
     };
+    result.scroll_delta = {input.mouse_wheel_x, input.mouse_wheel_y};
     for (size_t index = 0; index < result.pointer_held.size(); ++index) {
         result.pointer_held[index] = input.mouse_held[index];
         result.pointer_pressed[index] = input.mouse_pressed[index];
@@ -148,7 +198,6 @@ struct ClientRuntime::Impl {
 
     std::unique_ptr<snt::ui::MuiRenderer> mui_renderer;
     std::unique_ptr<snt::ui::UiRuntime> ui_runtime;
-    snt::ui::Arc2DRenderer arc2d_renderer;
     snt::ui::UiDrawData ui_draw_data;
 
     FpsTracker fps_tracker;
@@ -460,8 +509,8 @@ void ClientRuntime::run() {
         ui_context.flush();
 
         if (impl_->mui_renderer) {
-            if (auto result = impl_->mui_renderer->synchronize_glyph_atlas(impl_->ui_draw_data); !result) {
-                SNT_LOG_ERROR("MUI glyph atlas synchronization failed: %s",
+            if (auto result = impl_->mui_renderer->synchronize_atlases(impl_->ui_draw_data); !result) {
+                SNT_LOG_ERROR("MUI atlas synchronization failed: %s",
                               result.error().format().c_str());
             }
             impl_->mui_renderer->update_ortho(extent.width, extent.height);
@@ -548,6 +597,12 @@ snt::ecs::EventBus& ClientWorldSession::events() const noexcept { return simulat
 snt::assets::AssetManager& ClientWorldSession::assets() const noexcept {
     return runtime_->impl_->asset_manager;
 }
+snt::ui::UiImageRegistry& ClientWorldSession::ui_images() const noexcept {
+    return runtime_->impl_->ui_runtime->images();
+}
+snt::ui::UiLayerStack& ClientWorldSession::ui_layers() const noexcept {
+    return runtime_->impl_->ui_runtime->layers();
+}
 snt::input::InputSystem& ClientWorldSession::input() const noexcept {
     return runtime_->impl_->input_system;
 }
@@ -572,6 +627,12 @@ void ClientFrameContext::set_mouse_locked(bool locked) {
 }
 
 bool ClientUiContext::mouse_locked() const noexcept { return runtime_->mouse_locked(); }
+snt::ui::UiImageRegistry& ClientUiContext::images() const noexcept {
+    return runtime_->impl_->ui_runtime->images();
+}
+snt::ui::UiLayerStack& ClientUiContext::layers() const noexcept {
+    return runtime_->impl_->ui_runtime->layers();
+}
 
 void ClientUiContext::submit(std::unique_ptr<snt::ui::View> root,
                              snt::ui::UiLayer layer) {
@@ -581,6 +642,7 @@ void ClientUiContext::submit(std::unique_ptr<snt::ui::View> root,
     }
     Submission submission;
     submission.layer = layer;
+    submission.input_policy = snt::ui::ui_layer_input_policy(layer);
     submission.order = next_submission_order_++;
     submission.root = std::move(root);
     submissions_.push_back(std::move(submission));
@@ -590,6 +652,7 @@ void ClientUiContext::submit(snt::ui::Arc2DCommandBuffer commands,
                              snt::ui::UiLayer layer) {
     Submission submission;
     submission.layer = layer;
+    submission.input_policy = snt::ui::ui_layer_input_policy(layer);
     submission.order = next_submission_order_++;
     submission.commands = std::make_unique<snt::ui::Arc2DCommandBuffer>(std::move(commands));
     submissions_.push_back(std::move(submission));
@@ -598,9 +661,33 @@ void ClientUiContext::submit(snt::ui::Arc2DCommandBuffer commands,
 void ClientUiContext::flush() {
     if (!runtime_ || !runtime_->impl_) return;
     auto& impl = *runtime_->impl_;
-    if (submissions_.empty()) {
+    if (impl.ui_runtime) {
+        const snt::ui::UiScreenFrameContext frame_context{
+            .viewport = {viewport_width_, viewport_height_},
+            .images = impl.ui_runtime->images(),
+        };
+        const auto& extension_screens = impl.ui_runtime->layers().prepare_frame(frame_context);
+        for (const std::string& root_id : impl.ui_runtime->layers().take_invalidated_root_ids()) {
+            impl.ui_runtime->cancel_interaction_for_root(root_id);
+        }
+        for (const snt::ui::UiScreenSubmission& screen : extension_screens) {
+            if (!screen.root) continue;
+            Submission submission;
+            submission.layer = screen.layer;
+            submission.input_policy = screen.input_policy;
+            submission.order = next_submission_order_++;
+            submission.borrowed_root = screen.root;
+            submissions_.push_back(std::move(submission));
+        }
+    }
+    const bool has_interactive_root = std::any_of(
+        submissions_.begin(), submissions_.end(), [](const Submission& submission) {
+            return submission.view_root() != nullptr;
+        });
+    if (!has_interactive_root) {
         if (impl.ui_runtime) impl.ui_runtime->clear_interaction_state();
-        return;
+        // Arc2D-only HUD commands still need to render, so continue through
+        // the paint pass with an empty retained interaction tree.
     }
 
     std::stable_sort(submissions_.begin(), submissions_.end(),
@@ -614,8 +701,8 @@ void ClientUiContext::flush() {
 
     if (impl.ui_runtime) {
         for (Submission& submission : submissions_) {
-            if (submission.root) {
-                impl.ui_runtime->layout(*submission.root,
+            if (snt::ui::View* root = submission.view_root()) {
+                impl.ui_runtime->layout(*root,
                                         {viewport_width_, viewport_height_});
             }
         }
@@ -623,28 +710,45 @@ void ClientUiContext::flush() {
         impl.ui_runtime->begin_input_frame(make_ui_input_state(
             impl.input_system.state(), !runtime_->mouse_locked()));
 
-        bool pointer_claimed = false;
-        for (auto it = submissions_.rbegin(); it != submissions_.rend() && !pointer_claimed; ++it) {
-            if (it->root) pointer_claimed = impl.ui_runtime->dispatch_pointer_input(*it->root);
+        std::string focus_scope_root;
+        for (auto it = submissions_.rbegin(); it != submissions_.rend(); ++it) {
+            if (it->input_policy.blocks_keyboard_below && it->view_root()) {
+                focus_scope_root = it->view_root()->id();
+                break;
+            }
+        }
+        impl.ui_runtime->set_focus_scope(std::move(focus_scope_root));
+
+        for (auto it = submissions_.rbegin(); it != submissions_.rend(); ++it) {
+            snt::ui::View* const root = it->view_root();
+            const bool claimed = it->input_policy.accepts_pointer && root &&
+                impl.ui_runtime->dispatch_pointer_input(*root);
+            if (claimed || it->input_policy.blocks_pointer_below) break;
         }
 
-        bool keyboard_claimed = false;
-        for (auto it = submissions_.rbegin(); it != submissions_.rend() && !keyboard_claimed; ++it) {
-            if (it->root) keyboard_claimed = impl.ui_runtime->dispatch_keyboard_input(*it->root);
+        for (auto it = submissions_.rbegin(); it != submissions_.rend(); ++it) {
+            snt::ui::View* const root = it->view_root();
+            const bool claimed = it->input_policy.accepts_keyboard && root &&
+                impl.ui_runtime->dispatch_keyboard_input(*root);
+            if (claimed || it->input_policy.blocks_keyboard_below) break;
         }
+
+        impl.ui_runtime->end_input_frame();
 
         for (Submission& submission : submissions_) {
-            if (submission.root) impl.ui_runtime->synchronize_interaction_state(*submission.root);
+            if (snt::ui::View* root = submission.view_root()) {
+                impl.ui_runtime->synchronize_interaction_state(*root);
+            }
         }
     }
 
     for (Submission& submission : submissions_) {
-        if (submission.root && impl.ui_runtime) {
-            auto frame = impl.ui_runtime->paint(*submission.root);
+        if (snt::ui::View* root = submission.view_root(); root && impl.ui_runtime) {
+            auto frame = impl.ui_runtime->paint(*root);
             append_draw_data(impl.ui_draw_data, frame.draw_data);
-        } else if (submission.commands) {
+        } else if (submission.commands && impl.ui_runtime) {
             append_draw_data(impl.ui_draw_data,
-                             impl.arc2d_renderer.build_draw_data(*submission.commands));
+                             impl.ui_runtime->build_draw_data(*submission.commands));
         }
     }
     submissions_.clear();

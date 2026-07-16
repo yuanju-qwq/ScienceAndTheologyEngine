@@ -13,6 +13,7 @@ add_library(snt_asset_content STATIC
     filesystem_asset_source.cpp
     loader.cpp
     mesh_asset_reference_registry.cpp
+    texture_cache.cpp
 )
 target_include_directories(snt_asset_content PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(snt_asset_content PUBLIC
@@ -21,14 +22,16 @@ target_link_libraries(snt_asset_content PUBLIC
 )
 # Manifest parsing is implementation-only; no broad third-party aggregate is
 # linked here so SimulationRuntime stays outside the SDL/Vulkan closure.
-target_link_libraries(snt_asset_content PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(snt_asset_content PRIVATE
+    nlohmann_json::nlohmann_json
+    stb::stb
+)
 
 add_library(snt_gpu_assets STATIC
     asset_manager.cpp
     font_atlas.cpp
     material_atlas.cpp
     shader_cache.cpp
-    texture_cache.cpp
     vulkan_gpu_asset_uploader.cpp
 )
 target_include_directories(snt_gpu_assets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -42,5 +45,4 @@ target_link_libraries(snt_gpu_assets PRIVATE
     Freetype::Freetype
     nlohmann_json::nlohmann_json
     shaderc::shaderc_shared
-    stb::stb
 )

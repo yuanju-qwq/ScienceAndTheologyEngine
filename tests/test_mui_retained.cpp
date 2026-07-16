@@ -1,9 +1,18 @@
 #include "core/path_utils.h"
 #include "ui/retained_mui.h"
+#include "ui/ui_packed_scene.h"
+#include "ui/ui_packed_scene_catalog.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
+#include <filesystem>
+#include <memory>
 #include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -55,7 +64,8 @@ TEST(RetainedMui, UnicodeGlyphAtlasEmitsCjkAndColorEmojiQuads) {
 
     Arc2DCommandBuffer commands;
     commands.text({.pos = {16.0f, 24.0f}, .size = {600.0f, 64.0f}}, text, style, layout);
-    Arc2DRenderer renderer;
+    UiImageRegistry images;
+    Arc2DRenderer renderer(images);
     UiDrawData draw_data = renderer.build_draw_data(commands);
 
     ASSERT_EQ(draw_data.glyph_atlas.get(), layout.glyph_atlas.get());
@@ -83,13 +93,64 @@ TEST(RetainedMui, RoundedRectProducesRoundedSolidGeometry) {
     commands.rect({.pos = {10.0f, 20.0f}, .size = {80.0f, 40.0f}},
                   {32, 64, 96, 255}, 8.0f);
 
-    Arc2DRenderer renderer;
+    UiImageRegistry images;
+    Arc2DRenderer renderer(images);
     const UiDrawData draw_data = renderer.build_draw_data(commands);
     EXPECT_EQ(draw_data.vertices.size(), 17u);
     EXPECT_EQ(draw_data.indices.size(), 48u);
     for (const UiVertex& vertex : draw_data.vertices) {
         EXPECT_EQ(vertex.texture_mode, UiTextureMode::Solid);
     }
+}
+
+TEST(RetainedMui, ImageAndClipCommandsCreateOrderedDrawBatches) {
+    UiImageRegistry images;
+    std::vector<uint8_t> pixels(2u * 2u * 4u, 255u);
+    ASSERT_TRUE(images.register_rgba("test.icon", 2, 2, std::move(pixels)));
+
+    Arc2DCommandBuffer commands;
+    commands.rect({.pos = {0.0f, 0.0f}, .size = {20.0f, 20.0f}},
+                  {30, 40, 50, 255});
+    commands.push_clip({.pos = {5.0f, 5.0f}, .size = {12.0f, 10.0f}});
+    commands.image({.pos = {2.0f, 2.0f}, .size = {16.0f, 16.0f}}, "test.icon");
+    commands.pop_clip();
+    commands.rect({.pos = {24.0f, 0.0f}, .size = {20.0f, 20.0f}},
+                  {70, 80, 90, 255});
+
+    Arc2DRenderer renderer(images);
+    const UiDrawData draw_data = renderer.build_draw_data(commands);
+    ASSERT_TRUE(draw_data.image_atlas);
+    ASSERT_EQ(draw_data.indices.size(), 18u);
+    ASSERT_EQ(draw_data.batches.size(), 3u);
+    EXPECT_EQ(draw_data.batches[0].texture, UiTextureBinding::GlyphAtlas);
+    EXPECT_EQ(draw_data.batches[1].texture, UiTextureBinding::ImageAtlas);
+    EXPECT_TRUE(draw_data.batches[1].clip.enabled);
+    EXPECT_FLOAT_EQ(draw_data.batches[1].clip.rect.pos.x, 5.0f);
+    EXPECT_FLOAT_EQ(draw_data.batches[1].clip.rect.size.y, 10.0f);
+    EXPECT_EQ(draw_data.batches[2].texture, UiTextureBinding::GlyphAtlas);
+
+    const bool has_image_vertex = std::any_of(
+        draw_data.vertices.begin(), draw_data.vertices.end(), [](const UiVertex& vertex) {
+            return vertex.texture_mode == UiTextureMode::Image;
+        });
+    EXPECT_TRUE(has_image_vertex);
+}
+
+TEST(RetainedMui, DrawDataUsesThirtyTwoBitIndicesForDensePanels) {
+    UiImageRegistry images;
+    Arc2DCommandBuffer commands;
+    constexpr int kRectCount = 17000;
+    for (int index = 0; index < kRectCount; ++index) {
+        commands.rect({.pos = {static_cast<float>(index), 0.0f}, .size = {1.0f, 1.0f}},
+                      {255, 255, 255, 255});
+    }
+
+    Arc2DRenderer renderer(images);
+    const UiDrawData draw_data = renderer.build_draw_data(commands);
+    ASSERT_GT(draw_data.vertices.size(), 0xFFFFu);
+    ASSERT_EQ(draw_data.batches.size(), 1u);
+    ASSERT_FALSE(draw_data.indices.empty());
+    EXPECT_EQ(draw_data.indices.back(), draw_data.vertices.size() - 1u);
 }
 
 TEST(RetainedMui, GridLayoutPlacesVisibleChildrenInRowsAndColumns) {
@@ -123,6 +184,389 @@ TEST(RetainedMui, GridLayoutPlacesVisibleChildrenInRowsAndColumns) {
     EXPECT_EQ(children[2]->bounds().pos.x, 27.0f);
     EXPECT_EQ(children[3]->bounds().pos.x, 3.0f);
     EXPECT_EQ(children[3]->bounds().pos.y, 26.0f);
+}
+
+TEST(RetainedMui, ScrollViewScrollsWheelInputAndEmitsViewportClip) {
+    auto paths = make_test_path_resolver();
+    ASSERT_TRUE(paths) << paths.error().format();
+    UiRuntime runtime(*paths);
+
+    auto root = std::make_unique<FrameLayout>("root");
+    auto scroll = std::make_unique<ScrollView>("scroll");
+    ScrollView* raw_scroll = scroll.get();
+    LayoutParams scroll_params;
+    scroll_params.width = 100.0f;
+    scroll_params.height = 40.0f;
+    scroll->set_layout_params(scroll_params);
+
+    auto content = std::make_unique<LinearLayout>("content");
+    content->set_orientation(Orientation::Vertical);
+    std::array<View*, 3> rows{};
+    for (size_t index = 0; index < rows.size(); ++index) {
+        auto row = std::make_unique<View>("row_" + std::to_string(index));
+        LayoutParams row_params;
+        row_params.width = 100.0f;
+        row_params.height = 30.0f;
+        row->set_layout_params(row_params);
+        row->set_background({static_cast<uint8_t>(30 + index), 40, 50, 255});
+        rows[index] = row.get();
+        content->add_child(std::move(row));
+    }
+    scroll->set_content(std::move(content));
+    root->add_child(std::move(scroll));
+
+    runtime.layout(*root, {160.0f, 120.0f});
+    EXPECT_FLOAT_EQ(raw_scroll->max_scroll_offset().y, 50.0f);
+    const float before_second_row = rows[1]->bounds().pos.y;
+
+    runtime.begin_input_frame({
+        .pointer_position = {10.0f, 10.0f},
+        .scroll_delta = {0.0f, -1.0f},
+    });
+    EXPECT_TRUE(runtime.dispatch_pointer_input(*root));
+    EXPECT_FLOAT_EQ(raw_scroll->scroll_offset().y, 36.0f);
+    EXPECT_LT(rows[1]->bounds().pos.y, before_second_row);
+
+    const UiFrameResult frame = runtime.paint(*root);
+    const bool has_push_clip = std::any_of(
+        frame.commands.commands().begin(), frame.commands.commands().end(),
+        [](const ArcDrawCommand& command) {
+            return std::holds_alternative<PushClipCommand>(command);
+        });
+    const bool has_pop_clip = std::any_of(
+        frame.commands.commands().begin(), frame.commands.commands().end(),
+        [](const ArcDrawCommand& command) {
+            return std::holds_alternative<PopClipCommand>(command);
+        });
+    EXPECT_TRUE(has_push_clip);
+    EXPECT_TRUE(has_pop_clip);
+}
+
+TEST(RetainedMui, NestedScrollViewsKeepWheelInputAtNearestMovableViewport) {
+    auto paths = make_test_path_resolver();
+    ASSERT_TRUE(paths) << paths.error().format();
+    UiRuntime runtime(*paths);
+
+    auto root = std::make_unique<FrameLayout>("root");
+    auto outer = std::make_unique<ScrollView>("outer_scroll");
+    ScrollView* raw_outer = outer.get();
+    outer->set_layout_params({.width = 120.0f, .height = 80.0f});
+
+    auto outer_content = std::make_unique<LinearLayout>("outer_content");
+    outer_content->set_orientation(Orientation::Vertical);
+
+    auto inner = std::make_unique<ScrollView>("inner_scroll");
+    ScrollView* raw_inner = inner.get();
+    inner->set_layout_params({.width = 120.0f, .height = 40.0f});
+    auto inner_content = std::make_unique<LinearLayout>("inner_content");
+    inner_content->set_orientation(Orientation::Vertical);
+    for (int index = 0; index < 3; ++index) {
+        auto row = std::make_unique<View>("inner_row_" + std::to_string(index));
+        row->set_layout_params({.width = 120.0f, .height = 30.0f});
+        inner_content->add_child(std::move(row));
+    }
+    inner->set_content(std::move(inner_content));
+    outer_content->add_child(std::move(inner));
+
+    auto spacer = std::make_unique<View>("outer_spacer");
+    spacer->set_layout_params({.width = 120.0f, .height = 100.0f});
+    outer_content->add_child(std::move(spacer));
+    outer->set_content(std::move(outer_content));
+    root->add_child(std::move(outer));
+
+    runtime.layout(*root, {160.0f, 120.0f});
+    ASSERT_FLOAT_EQ(raw_inner->max_scroll_offset().y, 50.0f);
+    ASSERT_GT(raw_outer->max_scroll_offset().y, 0.0f);
+
+    const UiInputState wheel = {
+        .pointer_position = {10.0f, 10.0f},
+        .scroll_delta = {0.0f, -1.0f},
+    };
+    runtime.begin_input_frame(wheel);
+    EXPECT_TRUE(runtime.dispatch_pointer_input(*root));
+    EXPECT_FLOAT_EQ(raw_inner->scroll_offset().y, 36.0f);
+    EXPECT_FLOAT_EQ(raw_outer->scroll_offset().y, 0.0f);
+
+    runtime.begin_input_frame(wheel);
+    EXPECT_TRUE(runtime.dispatch_pointer_input(*root));
+    EXPECT_FLOAT_EQ(raw_inner->scroll_offset().y, 50.0f);
+    EXPECT_FLOAT_EQ(raw_outer->scroll_offset().y, 0.0f);
+
+    runtime.begin_input_frame(wheel);
+    EXPECT_TRUE(runtime.dispatch_pointer_input(*root));
+    EXPECT_FLOAT_EQ(raw_inner->scroll_offset().y, 50.0f);
+    EXPECT_FLOAT_EQ(raw_outer->scroll_offset().y, 36.0f);
+}
+
+TEST(RetainedMui, LayerStackNamespacedLifecycleMountsOnceAndUpdatesVisibleRoots) {
+    UiImageRegistry images;
+    UiLayerStack layers;
+    int mount_count = 0;
+    int update_count = 0;
+
+    ASSERT_TRUE(layers.register_screen({
+        .owner_id = "example_expansion",
+        .screen_id = "research",
+        .layer = UiLayer::Modal,
+        .initially_visible = false,
+        .factory = [&mount_count, &update_count](const UiScreenMountContext& context)
+            -> snt::core::Expected<UiScreenMount> {
+            ++mount_count;
+            EXPECT_FLOAT_EQ(context.viewport.x, 1280.0f);
+            EXPECT_FLOAT_EQ(context.viewport.y, 720.0f);
+            auto root = std::make_unique<FrameLayout>("caller_supplied_root_id");
+            root->set_background({20, 30, 40, 255});
+            return UiScreenMount{
+                .root = std::move(root),
+                .update = [&update_count](View&, const UiScreenFrameContext& update_context) {
+                    ++update_count;
+                    EXPECT_FLOAT_EQ(update_context.viewport.x, 1280.0f);
+                    EXPECT_FLOAT_EQ(update_context.viewport.y, 720.0f);
+                },
+            };
+        },
+    }));
+    EXPECT_TRUE(layers.is_registered("example_expansion", "research"));
+    EXPECT_FALSE(layers.is_visible("example_expansion", "research"));
+    EXPECT_TRUE(layers.prepare_frame({.viewport = {1280.0f, 720.0f}, .images = images}).empty());
+
+    EXPECT_FALSE(layers.register_screen({
+        .owner_id = "example_expansion",
+        .screen_id = "research",
+        .factory = [](const UiScreenMountContext&)
+            -> snt::core::Expected<UiScreenMount> { return UiScreenMount{}; },
+    }));
+    ASSERT_TRUE(layers.set_visible("example_expansion", "research", true));
+
+    const auto& visible = layers.prepare_frame({.viewport = {1280.0f, 720.0f}, .images = images});
+    ASSERT_EQ(visible.size(), 1u);
+    ASSERT_NE(visible.front().root, nullptr);
+    EXPECT_EQ(visible.front().layer, UiLayer::Modal);
+    EXPECT_EQ(visible.front().root->id(), "example_expansion:research");
+    EXPECT_EQ(mount_count, 1);
+    EXPECT_EQ(update_count, 1);
+    View* const mounted_root = visible.front().root;
+
+    const auto& next_frame = layers.prepare_frame({.viewport = {1280.0f, 720.0f}, .images = images});
+    ASSERT_EQ(next_frame.size(), 1u);
+    EXPECT_EQ(next_frame.front().root, mounted_root);
+    EXPECT_EQ(mount_count, 1);
+    EXPECT_EQ(update_count, 2);
+
+    EXPECT_EQ(layers.unregister_owner("example_expansion"), 1u);
+    EXPECT_FALSE(layers.is_registered("example_expansion", "research"));
+    EXPECT_EQ(layers.take_invalidated_root_ids(),
+              std::vector<std::string>{"example_expansion:research"});
+    EXPECT_TRUE(layers.prepare_frame({.viewport = {1280.0f, 720.0f}, .images = images}).empty());
+}
+
+TEST(RetainedMui, PackedSceneJsonInstantiatesWidgetsAndDispatchesActions) {
+    constexpr std::string_view source = R"json(
+{
+  "format": "snt.ui.packed_scene",
+  "version": 1,
+  "root": {
+    "type": "frame",
+    "id": "research_root",
+    "layout": { "width": 0, "height": 0, "padding": [8, 8, 8, 8] },
+    "background": { "color": [14, 20, 30, 240], "radius": 6 },
+    "children": [
+      {
+        "type": "linear",
+        "id": "research_panel",
+        "layout": { "orientation": "vertical", "spacing": 6 },
+        "children": [
+          {
+            "type": "text",
+            "id": "research_title",
+            "text": "Research",
+            "text_style": { "size": 18, "color": [230, 236, 245, 255] }
+          },
+          {
+            "type": "button",
+            "id": "claim_reward",
+            "text": "Claim",
+            "action": "research.claim"
+          }
+        ]
+      }
+    ]
+  }
+}
+)json";
+
+    auto scene = parse_ui_packed_scene_json(source, "research.mui.json");
+    ASSERT_TRUE(scene) << scene.error().format();
+
+    std::string dispatched_action;
+    auto root = instantiate_ui_packed_scene(*scene, {
+        .dispatch_action = [&dispatched_action](std::string_view action_id) {
+            dispatched_action = action_id;
+        },
+    });
+    ASSERT_TRUE(root) << root.error().format();
+    EXPECT_EQ((*root)->kind(), ViewKind::FrameLayout);
+    auto* root_group = dynamic_cast<ViewGroup*>(root->get());
+    ASSERT_NE(root_group, nullptr);
+
+    auto* title = dynamic_cast<TextView*>(root_group->find("research_title"));
+    ASSERT_NE(title, nullptr);
+    EXPECT_EQ(title->text(), "Research");
+
+    auto* button = dynamic_cast<Button*>(root_group->find("claim_reward"));
+    ASSERT_NE(button, nullptr);
+    EXPECT_TRUE(button->activate());
+    EXPECT_EQ(dispatched_action, "research.claim");
+}
+
+TEST(RetainedMui, DynamicWidgetBuilderAndLayerStackShareOneTreePath) {
+    UiWidgetTreeBuilder builder(UiWidgetType::Linear, "dynamic_root");
+    builder.root().layout.orientation = Orientation::Vertical;
+    builder.root().layout.spacing = 4.0f;
+    builder.root().background = Color{20, 28, 40, 255};
+    builder.root().background_radius = 4.0f;
+
+    UiWidgetTemplate label;
+    label.type = UiWidgetType::Text;
+    label.id = "dynamic_label";
+    label.text = "Dynamic widget tree";
+    label.text_style.size_px = 15.0f;
+    builder.add_child(builder.root(), std::move(label));
+
+    UiWidgetTemplate button;
+    button.type = UiWidgetType::Button;
+    button.id = "dynamic_button";
+    button.text = "Run";
+    button.action_id = "dynamic.run";
+    builder.add_child(builder.root(), std::move(button));
+
+    auto tree = std::make_shared<const UiWidgetTree>(std::move(builder).finish());
+    ASSERT_TRUE(validate_ui_widget_tree(*tree));
+
+    UiImageRegistry images;
+    UiLayerStack layers;
+    std::string dispatched_action;
+    ASSERT_TRUE(layers.register_screen({
+        .owner_id = "example_expansion",
+        .screen_id = "dynamic",
+        .layer = UiLayer::Modal,
+        .initially_visible = true,
+        .factory = make_ui_widget_tree_factory(tree),
+        .dispatch_action = [&dispatched_action](std::string_view action_id) {
+            dispatched_action = action_id;
+        },
+    }));
+
+    const auto& visible = layers.prepare_frame({.viewport = {800.0f, 600.0f}, .images = images});
+    ASSERT_EQ(visible.size(), 1u);
+    ASSERT_NE(visible.front().root, nullptr);
+    EXPECT_EQ(visible.front().root->id(), "example_expansion:dynamic");
+    EXPECT_TRUE(layers.is_mounted("example_expansion", "dynamic"));
+    auto* root_group = dynamic_cast<ViewGroup*>(visible.front().root);
+    ASSERT_NE(root_group, nullptr);
+    EXPECT_NE(root_group->find("dynamic_label"), nullptr);
+
+    auto* button_view = dynamic_cast<Button*>(root_group->find("dynamic_button"));
+    ASSERT_NE(button_view, nullptr);
+    EXPECT_TRUE(button_view->activate());
+    EXPECT_EQ(dispatched_action, "dynamic.run");
+}
+
+TEST(RetainedMui, PackedSceneFileOwnerLifecycleRetainsMountedTreeOnFailedReload) {
+    const std::filesystem::path resource_path = std::filesystem::path(SNT_ENGINE_TEST_ROOT) /
+        "tests" / "assets" / "ui" / "research_panel.mui.json";
+
+    UiImageRegistry images;
+    UiLayerStack layers;
+    std::string dispatched_action;
+    ASSERT_TRUE(load_ui_packed_scene_owner(
+        layers,
+        "example_expansion",
+        {{
+            .screen_id = "research",
+            .source_path = resource_path,
+            .layer = UiLayer::Modal,
+            .initially_visible = true,
+            .dispatch_action = [&dispatched_action](std::string_view action_id) {
+                dispatched_action = action_id;
+            },
+        }}));
+
+    const auto& visible = layers.prepare_frame({.viewport = {800.0f, 600.0f}, .images = images});
+    ASSERT_EQ(visible.size(), 1u);
+    ASSERT_NE(visible.front().root, nullptr);
+    View* const mounted_root = visible.front().root;
+    EXPECT_EQ(mounted_root->id(), "example_expansion:research");
+
+    auto* root_group = dynamic_cast<ViewGroup*>(mounted_root);
+    ASSERT_NE(root_group, nullptr);
+    auto* title = dynamic_cast<TextView*>(root_group->find("research_title"));
+    ASSERT_NE(title, nullptr);
+    EXPECT_EQ(title->text(), "Research Archive");
+    auto* button = dynamic_cast<Button*>(root_group->find("research_claim"));
+    ASSERT_NE(button, nullptr);
+    EXPECT_TRUE(button->activate());
+    EXPECT_EQ(dispatched_action, "research.claim");
+
+    const auto& same_tree = layers.prepare_frame({.viewport = {800.0f, 600.0f}, .images = images});
+    ASSERT_EQ(same_tree.size(), 1u);
+    EXPECT_EQ(same_tree.front().root, mounted_root);
+
+    UiPackedScene invalid_scene;
+    invalid_scene.tree.root.type = UiWidgetType::Frame;
+    invalid_scene.tree.root.id = "duplicate";
+    UiWidgetTemplate duplicate_child;
+    duplicate_child.type = UiWidgetType::Text;
+    duplicate_child.id = "duplicate";
+    invalid_scene.tree.root.children.push_back(std::move(duplicate_child));
+    EXPECT_FALSE(replace_ui_packed_scene_owner(
+        layers,
+        "example_expansion",
+        {{
+            .screen_id = "research",
+            .scene = std::make_shared<const UiPackedScene>(std::move(invalid_scene)),
+            .layer = UiLayer::Modal,
+            .initially_visible = true,
+        }}));
+
+    const auto& after_failed_reload = layers.prepare_frame(
+        {.viewport = {800.0f, 600.0f}, .images = images});
+    ASSERT_EQ(after_failed_reload.size(), 1u);
+    EXPECT_EQ(after_failed_reload.front().root, mounted_root);
+    EXPECT_TRUE(layers.is_registered("example_expansion", "research"));
+    EXPECT_EQ(layers.unregister_owner("example_expansion"), 1u);
+    EXPECT_TRUE(layers.prepare_frame({.viewport = {800.0f, 600.0f}, .images = images}).empty());
+}
+
+TEST(RetainedMui, PackedSceneRejectsDuplicateIdsAndInvalidScrollContent) {
+    constexpr std::string_view duplicate_ids = R"json(
+{
+  "format": "snt.ui.packed_scene",
+  "version": 1,
+  "root": {
+    "type": "frame",
+    "id": "root",
+    "children": [{ "type": "text", "id": "root", "text": "duplicate" }]
+  }
+}
+)json";
+    EXPECT_FALSE(parse_ui_packed_scene_json(duplicate_ids, "duplicate.mui.json"));
+
+    constexpr std::string_view invalid_scroll = R"json(
+{
+  "format": "snt.ui.packed_scene",
+  "version": 1,
+  "root": {
+    "type": "scroll",
+    "id": "scroll",
+    "children": [
+      { "type": "text", "id": "first", "text": "one" },
+      { "type": "text", "id": "second", "text": "two" }
+    ]
+  }
+}
+)json";
+    EXPECT_FALSE(parse_ui_packed_scene_json(invalid_scroll, "invalid_scroll.mui.json"));
 }
 
 TEST(RetainedMui, MixedBidiAndJoinedEmojiProduceGlyphs) {
@@ -199,6 +643,47 @@ TEST(RetainedMui, ViewModelSubscriptionDisconnectsWithoutDanglingCallbacks) {
     });
     model.set("nested.primary", int64_t{3});
     EXPECT_EQ(nested_notifications, 1);
+}
+
+TEST(RetainedMui, PointerEventUsesCaptureTargetAndBubblePhases) {
+    auto paths = make_test_path_resolver();
+    ASSERT_TRUE(paths) << paths.error().format();
+    UiRuntime runtime(*paths);
+
+    auto root = std::make_unique<FrameLayout>("root");
+    auto parent = std::make_unique<LinearLayout>("parent");
+    auto button = std::make_unique<Button>("target");
+    button->set_layout_params({.width = 120.0f, .height = 40.0f});
+
+    std::vector<std::string> order;
+    const auto record = [&order](std::string name) {
+        return [&order, name = std::move(name)](const UiInputEvent& event) {
+            if (event.type == UiInputEventType::PointerDown) {
+                switch (event.phase) {
+                    case UiEventPhase::Capture: order.push_back(name + ":capture"); break;
+                    case UiEventPhase::Target: order.push_back(name + ":target"); break;
+                    case UiEventPhase::Bubble: order.push_back(name + ":bubble"); break;
+                }
+            }
+            return UiEventReply::Ignored;
+        };
+    };
+    root->set_input_handler(record("root"));
+    parent->set_input_handler(record("parent"));
+    button->set_input_handler(record("target"));
+    parent->add_child(std::move(button));
+    root->add_child(std::move(parent));
+    runtime.layout(*root, {320.0f, 180.0f});
+
+    runtime.begin_input_frame({
+        .pointer_position = {20.0f, 20.0f},
+        .pointer_held = {true, false, false},
+        .pointer_pressed = {true, false, false},
+    });
+    EXPECT_TRUE(runtime.dispatch_pointer_input(*root));
+    EXPECT_EQ(order, (std::vector<std::string>{
+        "root:capture", "parent:capture", "target:target", "parent:bubble", "root:bubble",
+    }));
 }
 
 TEST(RetainedMui, ButtonRoutesPointerAndKeyboardActivation) {

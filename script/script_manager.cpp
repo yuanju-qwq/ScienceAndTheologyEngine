@@ -132,6 +132,26 @@ snt::core::Expected<void> ScriptManager::reload_all() {
     return loader_.reload_all();
 }
 
+snt::core::Expected<void> ScriptManager::invoke_callback(
+    ScriptId script_id,
+    std::string_view callback_id) {
+    if (!initialized_) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "ScriptManager is not initialized"};
+    }
+    if (script_id == kBuiltinScriptId || callback_id.empty()) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
+                                "Script callback requires a content ScriptId and callback name"};
+    }
+
+    ScriptModule* const module = loader_.get_module(script_id);
+    if (!module) {
+        return snt::core::Error{snt::core::ErrorCode::kScriptModuleNotFound,
+                                "No committed content module for callback"};
+    }
+    return module->call_void(contexts_, "void " + std::string(callback_id) + "()");
+}
+
 void ScriptManager::shutdown() {
     if (!initialized_) {
         content_host_ = nullptr;

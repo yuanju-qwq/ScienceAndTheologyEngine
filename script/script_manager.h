@@ -54,6 +54,12 @@ public:
     // same compile/register/commit or rollback flow as file changes.
     snt::core::Expected<void> reload_all();
 
+    // Invoke a no-argument callback from the currently committed generation
+    // of one content module. Client-only extension hosts use this for
+    // deliberate UI actions; callers stay on the script main thread.
+    snt::core::Expected<void> invoke_callback(ScriptId script_id,
+                                              std::string_view callback_id);
+
     // Release the AS engine and all modules.
     void shutdown();
 

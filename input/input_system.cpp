@@ -18,6 +18,8 @@ void InputSystem::new_frame() {
     std::memset(state_.mouse_released, 0, sizeof(state_.mouse_released));
     state_.mouse_dx = 0.0f;
     state_.mouse_dy = 0.0f;
+    state_.mouse_wheel_x = 0.0f;
+    state_.mouse_wheel_y = 0.0f;
     state_.esc_pressed = false;
     state_.wants_mouse_lock = false;
 }
@@ -97,6 +99,11 @@ void InputSystem::process_event(const void* sdl_event) {
             state_.mouse_y = event.motion.y;
             break;
         }
+
+        case SDL_EVENT_MOUSE_WHEEL:
+            state_.mouse_wheel_x += event.wheel.x;
+            state_.mouse_wheel_y += event.wheel.y;
+            break;
 
         default:
             break;

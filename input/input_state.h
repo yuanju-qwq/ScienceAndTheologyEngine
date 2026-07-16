@@ -43,6 +43,11 @@ struct InputState {
     float mouse_dx = 0.0f;
     float mouse_dy = 0.0f;
 
+    // Mouse-wheel delta accumulated since last new_frame(). Positive Y is
+    // the platform's upward wheel direction; UI maps it to content offset.
+    float mouse_wheel_x = 0.0f;
+    float mouse_wheel_y = 0.0f;
+
     // Absolute mouse position (window-space, pixels).
     int32_t mouse_x = 0;
     int32_t mouse_y = 0;
