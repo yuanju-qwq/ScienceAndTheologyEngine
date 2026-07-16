@@ -16,10 +16,6 @@
 namespace snt::ecs {
 struct EntityGuid;
 }
-namespace snt::ui {
-class Arc2DCommandBuffer;
-class View;
-}
 
 namespace snt::engine {
 
@@ -52,8 +48,6 @@ private:
     bool mouse_locked() const noexcept;
     snt::core::Expected<void> set_mouse_locked(bool locked);
     snt::core::Expected<void> set_active_camera(snt::ecs::EntityGuid guid);
-    void submit_ui(snt::ui::View& root);
-    void submit_ui(const snt::ui::Arc2DCommandBuffer& commands);
 
     SimulationRuntime simulation_;
     std::unique_ptr<Impl> impl_;

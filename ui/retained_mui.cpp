@@ -21,6 +21,7 @@
 #include <fstream>
 #include <limits>
 #include <unordered_map>
+#include <utility>
 
 namespace snt::ui {
 
@@ -128,6 +129,77 @@ MeasureSpec child_spec(float parent_inner, float requested, float margin_a, floa
     if (requested > 0.0f) return {.size = requested, .mode = MeasureMode::Exactly};
     if (requested == 0.0f) return {.size = available, .mode = MeasureMode::Exactly};
     return {.size = available, .mode = MeasureMode::AtMost};
+}
+
+bool build_hit_path(View& view, Vec2 point, std::vector<View*>& out) {
+    if (view.visibility() != Visibility::Visible) return false;
+
+    out.push_back(&view);
+    if (auto* group = dynamic_cast<ViewGroup*>(&view)) {
+        auto& children = group->children();
+        for (auto it = children.rbegin(); it != children.rend(); ++it) {
+            if (build_hit_path(**it, point, out)) return true;
+        }
+    }
+    if (view.hit_test(point)) return true;
+
+    out.pop_back();
+    return false;
+}
+
+bool build_path_to_id(View& view, std::string_view id, std::vector<View*>& out) {
+    if (view.visibility() != Visibility::Visible) return false;
+
+    out.push_back(&view);
+    if (view.id() == id) return true;
+    if (auto* group = dynamic_cast<ViewGroup*>(&view)) {
+        for (auto& child : group->children()) {
+            if (build_path_to_id(*child, id, out)) return true;
+        }
+    }
+    out.pop_back();
+    return false;
+}
+
+UiEventReply dispatch_event_path(const std::vector<View*>& path, UiInputEvent event) {
+    UiEventReply result = UiEventReply::Ignored;
+    if (path.empty()) return result;
+
+    for (size_t index = 0; index + 1 < path.size(); ++index) {
+        event.phase = UiEventPhase::Capture;
+        const UiEventReply reply = path[index]->on_input_event(event);
+        if (reply == UiEventReply::StopPropagation) return reply;
+        if (reply == UiEventReply::Handled) result = reply;
+    }
+
+    event.phase = UiEventPhase::Target;
+    const UiEventReply target_reply = path.back()->on_input_event(event);
+    if (target_reply == UiEventReply::StopPropagation) return target_reply;
+    if (target_reply == UiEventReply::Handled) result = target_reply;
+
+    for (size_t index = path.size() - 1; index > 0; --index) {
+        event.phase = UiEventPhase::Bubble;
+        const UiEventReply reply = path[index - 1]->on_input_event(event);
+        if (reply == UiEventReply::StopPropagation) return reply;
+        if (reply == UiEventReply::Handled) result = reply;
+    }
+    return result;
+}
+
+View* deepest_focusable_view(const std::vector<View*>& path) {
+    for (auto it = path.rbegin(); it != path.rend(); ++it) {
+        if ((*it)->focusable() && (*it)->enabled()) return *it;
+    }
+    return nullptr;
+}
+
+UiPointerButton pointer_button_for_index(size_t index) {
+    switch (index) {
+        case 0: return UiPointerButton::Primary;
+        case 1: return UiPointerButton::Middle;
+        case 2: return UiPointerButton::Secondary;
+        default: return UiPointerButton::None;
+    }
 }
 
 }  // namespace
@@ -707,44 +779,123 @@ TextLayout UnicodeTextEngine::shape(std::string_view text, const TextStyle& styl
     return layout;
 }
 
+struct ViewModel::State {
+    struct ObserverSlot {
+        uint64_t id = 0;
+        Observer callback;
+    };
+
+    std::unordered_map<std::string, BindingValue> values;
+    std::unordered_map<std::string, std::vector<ObserverSlot>> observers;
+    uint64_t next_observer_id = 1;
+};
+
+ViewModel::Subscription::Subscription(std::weak_ptr<State> state,
+                                      std::string key,
+                                      uint64_t observer_id)
+    : state_(std::move(state)), key_(std::move(key)), observer_id_(observer_id) {}
+
+ViewModel::Subscription::~Subscription() {
+    reset();
+}
+
+ViewModel::Subscription::Subscription(Subscription&& other) noexcept
+    : state_(std::move(other.state_)),
+      key_(std::move(other.key_)),
+      observer_id_(std::exchange(other.observer_id_, 0)) {}
+
+ViewModel::Subscription& ViewModel::Subscription::operator=(Subscription&& other) noexcept {
+    if (this == &other) return *this;
+    reset();
+    state_ = std::move(other.state_);
+    key_ = std::move(other.key_);
+    observer_id_ = std::exchange(other.observer_id_, 0);
+    return *this;
+}
+
+void ViewModel::Subscription::reset() {
+    if (observer_id_ == 0) return;
+    if (auto state = state_.lock()) {
+        auto it = state->observers.find(key_);
+        if (it != state->observers.end()) {
+            auto& slots = it->second;
+            slots.erase(std::remove_if(slots.begin(), slots.end(),
+                                       [id = observer_id_](const State::ObserverSlot& slot) {
+                                           return slot.id == id;
+                                       }),
+                        slots.end());
+            if (slots.empty()) state->observers.erase(it);
+        }
+    }
+    state_.reset();
+    key_.clear();
+    observer_id_ = 0;
+}
+
+bool ViewModel::Subscription::connected() const {
+    if (observer_id_ == 0) return false;
+    const auto state = state_.lock();
+    if (!state) return false;
+    const auto it = state->observers.find(key_);
+    if (it == state->observers.end()) return false;
+    return std::any_of(it->second.begin(), it->second.end(),
+                       [id = observer_id_](const State::ObserverSlot& slot) {
+                           return slot.id == id;
+                       });
+}
+
+ViewModel::ViewModel()
+    : state_(std::make_shared<State>()) {}
+
+ViewModel::~ViewModel() = default;
+
+ViewModel::ViewModel(ViewModel&& other)
+    : state_(std::move(other.state_)) {
+    if (!state_) state_ = std::make_shared<State>();
+    other.state_ = std::make_shared<State>();
+}
+
+ViewModel& ViewModel::operator=(ViewModel&& other) {
+    if (this == &other) return *this;
+    state_ = std::move(other.state_);
+    if (!state_) state_ = std::make_shared<State>();
+    other.state_ = std::make_shared<State>();
+    return *this;
+}
+
 void ViewModel::set(std::string key, BindingValue value) {
     const std::string stable_key = key;
-    values_[std::move(key)] = value;
-    auto it = observers_.find(stable_key);
-    if (it == observers_.end()) return;
-    for (auto& observer : it->second) {
-        if (observer) observer(stable_key, values_[stable_key]);
+    state_->values[std::move(key)] = std::move(value);
+    const auto it = state_->observers.find(stable_key);
+    if (it == state_->observers.end()) return;
+
+    // Observer callbacks may tear down their own subscriptions. Dispatch a
+    // stable copy so the registry remains valid throughout this notification.
+    const auto observers = it->second;
+    const BindingValue current = state_->values[stable_key];
+    for (const State::ObserverSlot& slot : observers) {
+        if (slot.callback) slot.callback(stable_key, current);
     }
 }
 
 const BindingValue* ViewModel::get(std::string_view key) const {
-    auto it = values_.find(std::string(key));
-    return it == values_.end() ? nullptr : &it->second;
+    const auto it = state_->values.find(std::string(key));
+    return it == state_->values.end() ? nullptr : &it->second;
 }
 
-void ViewModel::bind(std::string key, Observer observer) {
-    if (!observer) return;
-    auto& list = observers_[key];
-    list.push_back(observer);
-    auto value_it = values_.find(key);
-    if (value_it != values_.end()) {
-        list.back()(key, value_it->second);
+ViewModel::Subscription ViewModel::bind(std::string key, Observer observer) {
+    if (!observer) return {};
+
+    const uint64_t observer_id = state_->next_observer_id++;
+    auto& slots = state_->observers[key];
+    slots.push_back({.id = observer_id, .callback = std::move(observer)});
+    Subscription subscription(state_, key, observer_id);
+
+    const auto value_it = state_->values.find(key);
+    if (value_it != state_->values.end()) {
+        slots.back().callback(key, value_it->second);
     }
-}
-
-void ViewModel::set_command(std::string name, Command command) {
-    commands_[std::move(name)] = std::move(command);
-}
-
-bool ViewModel::invoke(std::string_view name, BindingValue payload) {
-    auto it = commands_.find(std::string(name));
-    if (it == commands_.end() || !it->second) {
-        SNT_LOG_WARN("ViewModel command '%.*s' is not registered",
-                     static_cast<int>(name.size()), name.data());
-        return false;
-    }
-    it->second(payload);
-    return true;
+    return subscription;
 }
 
 void Arc2DCommandBuffer::clear() {
@@ -767,9 +918,9 @@ UiDrawData Arc2DRenderer::build_draw_data(const Arc2DCommandBuffer& commands) co
     UiDrawData out;
     for (const auto& cmd : commands.commands()) {
         if (const auto* rect = std::get_if<DrawRectCommand>(&cmd)) {
-            append_rect(out, rect->rect, rect->color);
+            append_rect(out, rect->rect, rect->color, rect->radius);
         } else if (const auto* image = std::get_if<DrawImageCommand>(&cmd)) {
-            append_rect(out, image->rect, image->tint);
+            append_rect(out, image->rect, image->tint, 0.0f);
         } else if (const auto* text = std::get_if<DrawTextCommand>(&cmd)) {
             append_glyph_text(out, *text);
         }
@@ -777,38 +928,81 @@ UiDrawData Arc2DRenderer::build_draw_data(const Arc2DCommandBuffer& commands) co
     return out;
 }
 
-void Arc2DRenderer::append_rect(UiDrawData& out, Rect rect, Color color) {
+void Arc2DRenderer::append_rect(UiDrawData& out, Rect rect, Color color, float radius) {
     if (rect.size.x <= 0.0f || rect.size.y <= 0.0f) return;
-    if (out.vertices.size() + 4 > 0xFFFFu) {
-        SNT_LOG_WARN("Arc2DRenderer draw buffer overflow; dropping rect");
+    const auto append_vertex = [&out, color](Vec2 position) {
+        UiVertex vertex{};
+        vertex.position[0] = position.x;
+        vertex.position[1] = position.y;
+        vertex.uv[0] = -1.0f;
+        vertex.uv[1] = -1.0f;
+        vertex.color[0] = color.r;
+        vertex.color[1] = color.g;
+        vertex.color[2] = color.b;
+        vertex.color[3] = color.a;
+        out.vertices.push_back(vertex);
+    };
+
+    const float safe_radius = std::clamp(radius, 0.0f,
+                                         std::min(rect.size.x, rect.size.y) * 0.5f);
+    if (safe_radius <= 0.0f) {
+        if (out.vertices.size() + 4 > 0xFFFFu) {
+            SNT_LOG_WARN("Arc2DRenderer draw buffer overflow; dropping rect");
+            return;
+        }
+        const uint16_t base = static_cast<uint16_t>(out.vertices.size());
+        const float x0 = rect.pos.x;
+        const float y0 = rect.pos.y;
+        const float x1 = rect.pos.x + rect.size.x;
+        const float y1 = rect.pos.y + rect.size.y;
+        append_vertex({x0, y0});
+        append_vertex({x0, y1});
+        append_vertex({x1, y1});
+        append_vertex({x1, y0});
+        out.indices.insert(out.indices.end(), {
+            static_cast<uint16_t>(base + 0), static_cast<uint16_t>(base + 1),
+            static_cast<uint16_t>(base + 2), static_cast<uint16_t>(base + 0),
+            static_cast<uint16_t>(base + 2), static_cast<uint16_t>(base + 3),
+        });
+        return;
+    }
+
+    // Four segments per corner make compact game UI corners smooth without
+    // turning panels and slot grids into a large vertex stream.
+    constexpr size_t kSegmentsPerCorner = 4;
+    constexpr size_t kPerimeterCount = kSegmentsPerCorner * 4;
+    constexpr float kPi = 3.14159265358979323846f;
+    if (out.vertices.size() + 1 + kPerimeterCount > 0xFFFFu) {
+        SNT_LOG_WARN("Arc2DRenderer draw buffer overflow; dropping rounded rect");
         return;
     }
 
     const uint16_t base = static_cast<uint16_t>(out.vertices.size());
-    UiVertex v{};
-    v.uv[0] = -1.0f;
-    v.uv[1] = -1.0f;
-    v.color[0] = color.r;
-    v.color[1] = color.g;
-    v.color[2] = color.b;
-    v.color[3] = color.a;
-
-    const float x0 = rect.pos.x;
-    const float y0 = rect.pos.y;
-    const float x1 = rect.pos.x + rect.size.x;
-    const float y1 = rect.pos.y + rect.size.y;
-
-    v.position[0] = x0; v.position[1] = y0; out.vertices.push_back(v);
-    v.position[0] = x0; v.position[1] = y1; out.vertices.push_back(v);
-    v.position[0] = x1; v.position[1] = y1; out.vertices.push_back(v);
-    v.position[0] = x1; v.position[1] = y0; out.vertices.push_back(v);
-
-    out.indices.push_back(base + 0);
-    out.indices.push_back(base + 1);
-    out.indices.push_back(base + 2);
-    out.indices.push_back(base + 0);
-    out.indices.push_back(base + 2);
-    out.indices.push_back(base + 3);
+    append_vertex({rect.pos.x + rect.size.x * 0.5f, rect.pos.y + rect.size.y * 0.5f});
+    const std::array<Vec2, 4> centers{{
+        {rect.pos.x + safe_radius, rect.pos.y + safe_radius},
+        {rect.pos.x + rect.size.x - safe_radius, rect.pos.y + safe_radius},
+        {rect.pos.x + rect.size.x - safe_radius, rect.pos.y + rect.size.y - safe_radius},
+        {rect.pos.x + safe_radius, rect.pos.y + rect.size.y - safe_radius},
+    }};
+    const std::array<float, 4> starts{{kPi, kPi * 1.5f, 0.0f, kPi * 0.5f}};
+    for (size_t corner = 0; corner < centers.size(); ++corner) {
+        for (size_t segment = 0; segment < kSegmentsPerCorner; ++segment) {
+            const float fraction = static_cast<float>(segment) /
+                static_cast<float>(kSegmentsPerCorner);
+            const float angle = starts[corner] + fraction * (kPi * 0.5f);
+            append_vertex({
+                centers[corner].x + std::cos(angle) * safe_radius,
+                centers[corner].y + std::sin(angle) * safe_radius,
+            });
+        }
+    }
+    for (uint16_t index = 0; index < kPerimeterCount; ++index) {
+        const uint16_t next = static_cast<uint16_t>((index + 1) % kPerimeterCount);
+        out.indices.push_back(base);
+        out.indices.push_back(static_cast<uint16_t>(base + 1 + next));
+        out.indices.push_back(static_cast<uint16_t>(base + 1 + index));
+    }
 }
 
 void Arc2DRenderer::append_glyph_text(UiDrawData& out, const DrawTextCommand& text) {
@@ -872,11 +1066,12 @@ void View::set_background(Color color, float radius) {
 
 void View::bind_text(ViewModel& model, std::string key) {
     set_bound_text_key(key);
-    model.bind(key, [this](std::string_view, const BindingValue& value) {
+    auto subscription = model.bind(std::move(key), [this](std::string_view, const BindingValue& value) {
         if (auto* text = dynamic_cast<TextView*>(this)) {
             text->set_text(binding_value_to_string(value));
         }
     });
+    if (subscription.connected()) bindings_.push_back(std::move(subscription));
 }
 
 void View::measure(MeasureSpec width, MeasureSpec height, TextEngine&) {
@@ -892,11 +1087,25 @@ void View::layout(Rect bounds) {
     bounds_ = bounds;
 }
 
-void View::paint(Arc2DCommandBuffer& out, TextEngine&) const {
+void View::paint(Arc2DCommandBuffer& out, TextEngine&, const UiTheme&) const {
     if (visibility_ != Visibility::Visible) return;
     if (background_) {
         out.rect(bounds_, background_->color, background_->radius);
     }
+}
+
+UiEventReply View::on_input_event(const UiInputEvent& event) {
+    if (visibility_ != Visibility::Visible || !enabled_ || !input_handler_) {
+        return UiEventReply::Ignored;
+    }
+    return input_handler_(event);
+}
+
+bool View::hit_test(Vec2 point) const {
+    if (visibility_ != Visibility::Visible || !hit_test_visible_) return false;
+    return point.x >= bounds_.pos.x && point.y >= bounds_.pos.y &&
+           point.x < bounds_.pos.x + bounds_.size.x &&
+           point.y < bounds_.pos.y + bounds_.size.y;
 }
 
 float View::resolve_axis(float requested, MeasureSpec spec, float desired) {
@@ -930,8 +1139,10 @@ void TextView::measure(MeasureSpec width, MeasureSpec height, TextEngine& text_e
     measured_size_.y = resolve_axis(layout_params_.height, height, desired_h);
 }
 
-void TextView::paint(Arc2DCommandBuffer& out, TextEngine& text_engine) const {
-    View::paint(out, text_engine);
+void TextView::paint(Arc2DCommandBuffer& out,
+                     TextEngine& text_engine,
+                     const UiTheme& theme) const {
+    View::paint(out, text_engine, theme);
     if (visibility_ != Visibility::Visible || text_.empty()) return;
     if (dirty_layout_) {
         cached_layout_ = text_engine.shape(text_, style_);
@@ -942,15 +1153,66 @@ void TextView::paint(Arc2DCommandBuffer& out, TextEngine& text_engine) const {
 
 Button::Button(std::string id)
     : TextView(std::move(id)) {
-    set_background({37, 50, 65, 230}, 4.0f);
+    set_hit_test_visible(true);
+    set_focusable(true);
     TextStyle style = text_style();
     style.color = {240, 245, 255, 255};
     set_text_style(style);
 }
 
-bool Button::click(ViewModel& model, BindingValue payload) const {
-    if (command_.empty()) return false;
-    return model.invoke(command_, std::move(payload));
+bool Button::activate() const {
+    if (!enabled() || !activate_handler_) return false;
+    activate_handler_();
+    return true;
+}
+
+void Button::paint(Arc2DCommandBuffer& out,
+                   TextEngine& text_engine,
+                   const UiTheme& theme) const {
+    if (visibility_ != Visibility::Visible) return;
+
+    Color background = theme.button_normal;
+    if (!enabled()) {
+        background = theme.button_disabled;
+    } else if (has_interaction_state(interaction_state(), UiInteractionState::Pressed)) {
+        background = theme.button_pressed;
+    } else if (has_interaction_state(interaction_state(), UiInteractionState::Hovered)) {
+        background = theme.button_hovered;
+    } else if (has_interaction_state(interaction_state(), UiInteractionState::Focused)) {
+        background = theme.button_focused;
+    }
+    out.rect(bounds_, background, theme.button_radius);
+
+    if (text_.empty()) return;
+    if (dirty_layout_) {
+        cached_layout_ = text_engine.shape(text_, style_);
+        dirty_layout_ = false;
+    }
+    out.text(bounds_, text_, style_, cached_layout_);
+}
+
+UiEventReply Button::on_input_event(const UiInputEvent& event) {
+    const UiEventReply base_reply = View::on_input_event(event);
+    if (base_reply == UiEventReply::StopPropagation || event.phase != UiEventPhase::Target ||
+        !enabled()) {
+        return base_reply;
+    }
+
+    if (event.type == UiInputEventType::PointerDown &&
+        event.pointer_button == UiPointerButton::Primary) {
+        return UiEventReply::Handled;
+    }
+    if (event.type == UiInputEventType::PointerUp &&
+        event.pointer_button == UiPointerButton::Primary) {
+        if (event.activation) activate();
+        return UiEventReply::Handled;
+    }
+    if (event.type == UiInputEventType::KeyDown &&
+        (event.key == UiKey::Enter || event.key == UiKey::Space)) {
+        activate();
+        return UiEventReply::Handled;
+    }
+    return base_reply;
 }
 
 ImageView::ImageView(std::string id)
@@ -966,14 +1228,19 @@ void ImageView::measure(MeasureSpec width, MeasureSpec height, TextEngine& text_
     measured_size_.y = resolve_axis(layout_params_.height, height, 32.0f);
 }
 
-void ImageView::paint(Arc2DCommandBuffer& out, TextEngine& text_engine) const {
-    View::paint(out, text_engine);
+void ImageView::paint(Arc2DCommandBuffer& out,
+                      TextEngine& text_engine,
+                      const UiTheme& theme) const {
+    View::paint(out, text_engine, theme);
     if (visibility_ != Visibility::Visible || image_key_.empty()) return;
     out.image(bounds_, image_key_, tint_);
 }
 
 SlotView::SlotView(std::string id)
-    : View(std::move(id)) {}
+    : View(std::move(id)) {
+    set_hit_test_visible(true);
+    set_focusable(true);
+}
 
 void SlotView::measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) {
     (void)text_engine;
@@ -985,7 +1252,9 @@ void SlotView::measure(MeasureSpec width, MeasureSpec height, TextEngine& text_e
     measured_size_.y = resolve_axis(layout_params_.height, height, 36.0f);
 }
 
-void SlotView::paint(Arc2DCommandBuffer& out, TextEngine& text_engine) const {
+void SlotView::paint(Arc2DCommandBuffer& out,
+                     TextEngine& text_engine,
+                     const UiTheme&) const {
     if (visibility_ != Visibility::Visible) return;
     const Color base = state_.selected ? Color{84, 128, 176, 255}
                                        : Color{34, 38, 48, 255};
@@ -1014,6 +1283,10 @@ ViewGroup::ViewGroup(std::string id)
 View& ViewGroup::add_child(std::unique_ptr<View> child) {
     children_.push_back(std::move(child));
     return *children_.back();
+}
+
+void ViewGroup::clear_children() {
+    children_.clear();
 }
 
 View* ViewGroup::find(std::string_view id) {
@@ -1058,11 +1331,13 @@ void ViewGroup::layout(Rect bounds) {
     }
 }
 
-void ViewGroup::paint(Arc2DCommandBuffer& out, TextEngine& text_engine) const {
-    View::paint(out, text_engine);
+void ViewGroup::paint(Arc2DCommandBuffer& out,
+                      TextEngine& text_engine,
+                      const UiTheme& theme) const {
+    View::paint(out, text_engine, theme);
     if (visibility_ != Visibility::Visible) return;
     for (const auto& child : children_) {
-        child->paint(out, text_engine);
+        child->paint(out, text_engine, theme);
     }
 }
 
@@ -1140,6 +1415,127 @@ void LinearLayout::layout(Rect bounds) {
     }
 }
 
+GridLayout::GridLayout(std::string id)
+    : ViewGroup(std::move(id)) {}
+
+void GridLayout::measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) {
+    if (visibility_ == Visibility::Gone) {
+        measured_size_ = {};
+        return;
+    }
+
+    const int32_t safe_columns = std::max(1, columns_);
+    const float inner_w = width.mode == MeasureMode::Unspecified
+        ? 0.0f : std::max(0.0f, width.size - padding_.left - padding_.right);
+    const float inner_h = height.mode == MeasureMode::Unspecified
+        ? 0.0f : std::max(0.0f, height.size - padding_.top - padding_.bottom);
+    const int32_t visible_children = static_cast<int32_t>(std::count_if(
+        children_.begin(), children_.end(), [](const std::unique_ptr<View>& child) {
+            return child->visibility() != Visibility::Gone;
+        }));
+    const int32_t row_count = visible_children == 0
+        ? 0 : (visible_children + safe_columns - 1) / safe_columns;
+    const float cell_w = width.mode == MeasureMode::Unspecified
+        ? 0.0f
+        : std::max(0.0f, (inner_w - column_spacing_ * static_cast<float>(safe_columns - 1)) /
+                            static_cast<float>(safe_columns));
+    const float cell_h = height.mode == MeasureMode::Unspecified || row_count == 0
+        ? 0.0f
+        : std::max(0.0f, (inner_h - row_spacing_ * static_cast<float>(row_count - 1)) /
+                            static_cast<float>(row_count));
+
+    std::vector<float> column_widths(static_cast<size_t>(safe_columns), 0.0f);
+    std::vector<float> row_heights;
+    int32_t visible_index = 0;
+    for (auto& child : children_) {
+        if (child->visibility() == Visibility::Gone) continue;
+        const auto& lp = child->layout_params();
+        const MeasureSpec child_width = width.mode == MeasureMode::Unspecified
+            ? MeasureSpec{}
+            : child_spec(cell_w, lp.width, lp.margin.left, lp.margin.right);
+        const MeasureSpec child_height = height.mode == MeasureMode::Unspecified
+            ? MeasureSpec{}
+            : child_spec(cell_h, lp.height, lp.margin.top, lp.margin.bottom);
+        child->measure(child_width, child_height, text_engine);
+
+        const int32_t column = visible_index % safe_columns;
+        const int32_t row = visible_index / safe_columns;
+        if (row >= static_cast<int32_t>(row_heights.size())) row_heights.push_back(0.0f);
+        column_widths[static_cast<size_t>(column)] = std::max(
+            column_widths[static_cast<size_t>(column)],
+            child->measured_size().x + lp.margin.left + lp.margin.right);
+        row_heights[static_cast<size_t>(row)] = std::max(
+            row_heights[static_cast<size_t>(row)],
+            child->measured_size().y + lp.margin.top + lp.margin.bottom);
+        ++visible_index;
+    }
+
+    float content_width = 0.0f;
+    for (float column_width : column_widths) content_width += column_width;
+    if (visible_index > 0) {
+        const int32_t used_columns = std::min(safe_columns, visible_index);
+        content_width += column_spacing_ * static_cast<float>(used_columns - 1);
+    }
+    float content_height = 0.0f;
+    for (float row_height : row_heights) content_height += row_height;
+    if (row_heights.size() > 1) {
+        content_height += row_spacing_ * static_cast<float>(row_heights.size() - 1);
+    }
+
+    measured_size_.x = resolve_axis(layout_params_.width, width,
+                                    content_width + padding_.left + padding_.right);
+    measured_size_.y = resolve_axis(layout_params_.height, height,
+                                    content_height + padding_.top + padding_.bottom);
+}
+
+void GridLayout::layout(Rect bounds) {
+    View::layout(bounds);
+    const int32_t safe_columns = std::max(1, columns_);
+    std::vector<float> column_widths(static_cast<size_t>(safe_columns), 0.0f);
+    std::vector<float> row_heights;
+    int32_t visible_index = 0;
+    for (const auto& child : children_) {
+        if (child->visibility() == Visibility::Gone) continue;
+        const auto& lp = child->layout_params();
+        const int32_t column = visible_index % safe_columns;
+        const int32_t row = visible_index / safe_columns;
+        if (row >= static_cast<int32_t>(row_heights.size())) row_heights.push_back(0.0f);
+        column_widths[static_cast<size_t>(column)] = std::max(
+            column_widths[static_cast<size_t>(column)],
+            child->measured_size().x + lp.margin.left + lp.margin.right);
+        row_heights[static_cast<size_t>(row)] = std::max(
+            row_heights[static_cast<size_t>(row)],
+            child->measured_size().y + lp.margin.top + lp.margin.bottom);
+        ++visible_index;
+    }
+
+    std::vector<float> column_offsets(static_cast<size_t>(safe_columns),
+                                      bounds.pos.x + padding_.left);
+    for (int32_t column = 1; column < safe_columns; ++column) {
+        column_offsets[static_cast<size_t>(column)] =
+            column_offsets[static_cast<size_t>(column - 1)] +
+            column_widths[static_cast<size_t>(column - 1)] + column_spacing_;
+    }
+    std::vector<float> row_offsets(row_heights.size(), bounds.pos.y + padding_.top);
+    for (size_t row = 1; row < row_offsets.size(); ++row) {
+        row_offsets[row] = row_offsets[row - 1] + row_heights[row - 1] + row_spacing_;
+    }
+
+    visible_index = 0;
+    for (auto& child : children_) {
+        if (child->visibility() == Visibility::Gone) continue;
+        const auto& lp = child->layout_params();
+        const int32_t column = visible_index % safe_columns;
+        const int32_t row = visible_index / safe_columns;
+        child->layout({
+            .pos = {column_offsets[static_cast<size_t>(column)] + lp.margin.left,
+                    row_offsets[static_cast<size_t>(row)] + lp.margin.top},
+            .size = child->measured_size(),
+        });
+        ++visible_index;
+    }
+}
+
 FrameLayout::FrameLayout(std::string id)
     : ViewGroup(std::move(id)) {}
 
@@ -1212,19 +1608,192 @@ void Animator::update(float dt) {
 }
 
 UiRuntime::UiRuntime(const snt::core::RuntimePathResolver& paths,
-                     TextEngineConfig config)
-    : text_engine_(paths, std::move(config)) {}
+                     TextEngineConfig config,
+                     UiTheme theme)
+    : text_engine_(paths, std::move(config)),
+      theme_(std::move(theme)) {}
 
-UiFrameResult UiRuntime::build_frame(View& root, Vec2 viewport) {
+void UiRuntime::layout(View& root, Vec2 viewport) {
     root.measure({.size = viewport.x, .mode = MeasureMode::Exactly},
                  {.size = viewport.y, .mode = MeasureMode::Exactly},
                  text_engine_);
     root.layout({.pos = {0.0f, 0.0f}, .size = viewport});
+}
 
+void UiRuntime::begin_input_frame(UiInputState input) {
+    input_ = std::move(input);
+    for (size_t index = 0; index < previous_pointer_held_.size(); ++index) {
+        pointer_released_[index] = input_.pointer_released[index] ||
+            (previous_pointer_held_[index] && !input_.pointer_held[index]);
+        previous_pointer_held_[index] = input_.pointer_held[index];
+    }
+
+    hovered_.clear();
+    if (!input_.pointer_enabled) pointer_capture_.clear();
+}
+
+bool UiRuntime::dispatch_pointer_input(View& root) {
+    if (!input_.pointer_enabled) return false;
+    const std::string& root_id = root.id();
+
+    // A captured button owns pointer-up even when another modal is now under
+    // the cursor. The host therefore tries roots from top to bottom until it
+    // reaches this stable root id.
+    if (!pointer_capture_.empty() && pointer_capture_.root != root_id) return false;
+
+    std::vector<View*> hit_path;
+    const bool has_hit_target = pointer_capture_.empty() &&
+        build_hit_path(root, input_.pointer_position, hit_path);
+    if (has_hit_target && !root_id.empty() && !hit_path.back()->id().empty()) {
+        hovered_ = {root_id, hit_path.back()->id()};
+    }
+
+    bool claimed = false;
+    for (size_t index = 0; index < input_.pointer_pressed.size(); ++index) {
+        if (!input_.pointer_pressed[index] || !has_hit_target) continue;
+
+        View* const target = hit_path.back();
+        if (!root_id.empty() && !target->id().empty()) {
+            pointer_capture_ = {root_id, target->id()};
+        }
+
+        if (View* const focus_target = deepest_focusable_view(hit_path)) {
+            const ElementId next_focus{root_id, focus_target->id()};
+            if (!next_focus.empty() && !focused_.matches(root_id, focus_target->id())) {
+                if (focused_.root == root_id) {
+                    std::vector<View*> old_focus_path;
+                    if (build_path_to_id(root, focused_.view, old_focus_path)) {
+                        dispatch_event_path(old_focus_path, {
+                            .type = UiInputEventType::FocusLost,
+                        });
+                    }
+                }
+                focused_ = next_focus;
+                std::vector<View*> focus_path;
+                if (build_path_to_id(root, focus_target->id(), focus_path)) {
+                    dispatch_event_path(focus_path, {
+                        .type = UiInputEventType::FocusGained,
+                    });
+                }
+            }
+        }
+
+        dispatch_event_path(hit_path, {
+            .type = UiInputEventType::PointerDown,
+            .pointer_position = input_.pointer_position,
+            .pointer_button = pointer_button_for_index(index),
+        });
+        claimed = true;
+    }
+
+    for (size_t index = 0; index < pointer_released_.size(); ++index) {
+        if (!pointer_released_[index]) continue;
+
+        if (!pointer_capture_.empty() && pointer_capture_.root == root_id) {
+            std::vector<View*> captured_path;
+            if (build_path_to_id(root, pointer_capture_.view, captured_path)) {
+                const bool activation = captured_path.back()->hit_test(input_.pointer_position);
+                dispatch_event_path(captured_path, {
+                    .type = UiInputEventType::PointerUp,
+                    .pointer_position = input_.pointer_position,
+                    .pointer_button = pointer_button_for_index(index),
+                    .activation = activation,
+                });
+            }
+            pointer_capture_.clear();
+            claimed = true;
+        } else if (has_hit_target) {
+            dispatch_event_path(hit_path, {
+                .type = UiInputEventType::PointerUp,
+                .pointer_position = input_.pointer_position,
+                .pointer_button = pointer_button_for_index(index),
+            });
+            claimed = true;
+        }
+    }
+
+    if (!pointer_capture_.empty() && pointer_capture_.root == root_id) {
+        std::vector<View*> captured_path;
+        if (build_path_to_id(root, pointer_capture_.view, captured_path)) {
+            dispatch_event_path(captured_path, {
+                .type = UiInputEventType::PointerMove,
+                .pointer_position = input_.pointer_position,
+            });
+        } else {
+            pointer_capture_.clear();
+        }
+        return true;
+    }
+
+    if (has_hit_target) {
+        dispatch_event_path(hit_path, {
+            .type = UiInputEventType::PointerMove,
+            .pointer_position = input_.pointer_position,
+        });
+        return true;
+    }
+    return claimed;
+}
+
+bool UiRuntime::dispatch_keyboard_input(View& root) {
+    if (input_.pressed_keys.empty() || focused_.empty() || focused_.root != root.id()) {
+        return false;
+    }
+
+    std::vector<View*> focus_path;
+    if (!build_path_to_id(root, focused_.view, focus_path)) {
+        focused_.clear();
+        return false;
+    }
+
+    for (UiKey key : input_.pressed_keys) {
+        dispatch_event_path(focus_path, {
+            .type = UiInputEventType::KeyDown,
+            .key = key,
+        });
+    }
+    return true;
+}
+
+void UiRuntime::synchronize_interaction_state(View& root) {
+    const std::string& root_id = root.id();
+    const auto synchronize = [this, &root_id](auto&& self, View& view) -> void {
+        UiInteractionState state = UiInteractionState::None;
+        if (!view.enabled()) {
+            state = UiInteractionState::Disabled;
+        } else if (!root_id.empty() && !view.id().empty()) {
+            if (hovered_.matches(root_id, view.id())) {
+                state = state | UiInteractionState::Hovered;
+            }
+            if (pointer_capture_.matches(root_id, view.id())) {
+                state = state | UiInteractionState::Pressed;
+            }
+            if (focused_.matches(root_id, view.id())) {
+                state = state | UiInteractionState::Focused;
+            }
+        }
+        view.set_interaction_state(state);
+
+        if (auto* group = dynamic_cast<ViewGroup*>(&view)) {
+            for (auto& child : group->children()) self(self, *child);
+        }
+    };
+    synchronize(synchronize, root);
+}
+
+UiFrameResult UiRuntime::paint(View& root) {
     UiFrameResult result;
-    root.paint(result.commands, text_engine_);
+    root.paint(result.commands, text_engine_, theme_);
     result.draw_data = renderer_.build_draw_data(result.commands);
     return result;
+}
+
+void UiRuntime::clear_interaction_state() {
+    hovered_.clear();
+    focused_.clear();
+    pointer_capture_.clear();
+    previous_pointer_held_.fill(false);
+    pointer_released_.fill(false);
 }
 
 }  // namespace snt::ui

@@ -10,18 +10,17 @@
 #include "ecs/entity_guid.h"
 #include "engine/simulation_services.h"
 #include "input/input_state.h"
+#include "ui/retained_mui.h"
 
 #include <cstdint>
+#include <memory>
+#include <vector>
 
 namespace snt::assets {
 class AssetManager;
 }
 namespace snt::input {
 class InputSystem;
-}
-namespace snt::ui {
-class Arc2DCommandBuffer;
-class View;
 }
 namespace snt::voxel {
 class ChunkRenderSystem;
@@ -97,11 +96,23 @@ public:
     float viewport_height() const noexcept { return viewport_height_; }
     bool mouse_locked() const noexcept;
 
-    void submit(snt::ui::View& root);
-    void submit(const snt::ui::Arc2DCommandBuffer& commands);
+    // Context owns each root until the host has laid out, routed input, and
+    // rendered every layer. Callers transfer ownership deliberately so UI
+    // callbacks cannot observe a destroyed temporary view during dispatch.
+    void submit(std::unique_ptr<snt::ui::View> root,
+                snt::ui::UiLayer layer = snt::ui::UiLayer::Screen);
+    void submit(snt::ui::Arc2DCommandBuffer commands,
+                snt::ui::UiLayer layer = snt::ui::UiLayer::Hud);
 
 private:
     friend class ClientRuntime;
+
+    struct Submission {
+        snt::ui::UiLayer layer = snt::ui::UiLayer::Hud;
+        uint64_t order = 0;
+        std::unique_ptr<snt::ui::View> root;
+        std::unique_ptr<snt::ui::Arc2DCommandBuffer> commands;
+    };
 
     ClientUiContext(ClientRuntime& runtime,
                     SimulationServices& services,
@@ -111,11 +122,15 @@ private:
         : runtime_(&runtime), services_(&services), world_(&world),
           viewport_width_(viewport_width), viewport_height_(viewport_height) {}
 
+    void flush();
+
     ClientRuntime* runtime_ = nullptr;
     SimulationServices* services_ = nullptr;
     ClientWorldSession* world_ = nullptr;
     float viewport_width_ = 0.0f;
     float viewport_height_ = 0.0f;
+    uint64_t next_submission_order_ = 0;
+    std::vector<Submission> submissions_;
 };
 
 }  // namespace snt::engine

@@ -15,6 +15,7 @@ void InputSystem::new_frame() {
     // Clear per-frame edge state. Held state is refreshed in end_frame().
     std::memset(state_.key_pressed, 0, sizeof(state_.key_pressed));
     std::memset(state_.mouse_pressed, 0, sizeof(state_.mouse_pressed));
+    std::memset(state_.mouse_released, 0, sizeof(state_.mouse_released));
     state_.mouse_dx = 0.0f;
     state_.mouse_dy = 0.0f;
     state_.esc_pressed = false;
@@ -84,6 +85,7 @@ void InputSystem::process_event(const void* sdl_event) {
             else if (event.button.button == SDL_BUTTON_RIGHT)  idx = 2;
             else break;
             state_.mouse_held[idx] = false;
+            state_.mouse_released[idx] = true;
             break;
         }
 

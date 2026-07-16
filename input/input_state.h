@@ -34,6 +34,10 @@ struct InputState {
     // Mouse buttons.
     bool mouse_held[kMouseButtonCount] = {};
     bool mouse_pressed[kMouseButtonCount] = {};
+    // Edge set on the frame a button transitions from down to up. UI input
+    // needs this explicitly so a press and release received in one event
+    // pump still forms a deterministic click.
+    bool mouse_released[kMouseButtonCount] = {};
 
     // Relative mouse motion accumulated since last new_frame().
     float mouse_dx = 0.0f;

@@ -7,6 +7,8 @@
 
 #include "ui_draw_data.h"
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -57,10 +59,115 @@ enum class Visibility : uint8_t {
     Gone,
 };
 
+// UI layer order is shared by the host, game screens, and future mod UI.
+// Higher layers render later and receive pointer input before lower layers.
+enum class UiLayer : uint8_t {
+    Hud,
+    Screen,
+    Modal,
+    Tooltip,
+    Debug,
+};
+
+enum class UiPointerButton : uint8_t {
+    None,
+    Primary,
+    Middle,
+    Secondary,
+};
+
+// Platform hosts map their native keyboard values onto this small, stable
+// navigation set. Raw SDL or platform key codes do not leak into mod UI APIs.
+enum class UiKey : uint8_t {
+    Unknown,
+    Enter,
+    Space,
+    Escape,
+    Tab,
+    Left,
+    Right,
+    Up,
+    Down,
+};
+
+enum class UiInputEventType : uint8_t {
+    PointerMove,
+    PointerDown,
+    PointerUp,
+    KeyDown,
+    FocusGained,
+    FocusLost,
+};
+
+enum class UiEventPhase : uint8_t {
+    Capture,
+    Target,
+    Bubble,
+};
+
+enum class UiEventReply : uint8_t {
+    Ignored,
+    Handled,
+    StopPropagation,
+};
+
+struct UiInputEvent {
+    UiInputEventType type = UiInputEventType::PointerMove;
+    UiEventPhase phase = UiEventPhase::Target;
+    Vec2 pointer_position{};
+    UiPointerButton pointer_button = UiPointerButton::None;
+    UiKey key = UiKey::Unknown;
+    // True only when a pointer-up lands on the same captured control.
+    bool activation = false;
+};
+
+// One host frame of platform-neutral input. UI runtime state derives release
+// edges from held state, so hosts only need to provide current held/pressed
+// button values and mapped key edges.
+struct UiInputState {
+    bool pointer_enabled = true;
+    Vec2 pointer_position{};
+    std::array<bool, 3> pointer_held{};
+    std::array<bool, 3> pointer_pressed{};
+    std::array<bool, 3> pointer_released{};
+    std::vector<UiKey> pressed_keys;
+};
+
+enum class UiInteractionState : uint8_t {
+    None = 0,
+    Hovered = 1u << 0u,
+    Pressed = 1u << 1u,
+    Focused = 1u << 2u,
+    Disabled = 1u << 3u,
+};
+
+constexpr UiInteractionState operator|(UiInteractionState left,
+                                        UiInteractionState right) {
+    return static_cast<UiInteractionState>(static_cast<uint8_t>(left) |
+                                           static_cast<uint8_t>(right));
+}
+
+constexpr bool has_interaction_state(UiInteractionState value,
+                                     UiInteractionState flag) {
+    return (static_cast<uint8_t>(value) & static_cast<uint8_t>(flag)) != 0;
+}
+
+// Theme values are data, not widget-specific globals. A future asset-backed
+// theme loader can replace the active value without changing the view API.
+struct UiTheme {
+    Color button_normal{37, 50, 65, 230};
+    Color button_hovered{56, 82, 108, 238};
+    Color button_pressed{76, 116, 154, 245};
+    Color button_focused{48, 69, 92, 238};
+    Color button_disabled{44, 47, 53, 180};
+    float button_radius = 4.0f;
+};
+
 enum class ViewKind : uint8_t {
     View,
     ViewGroup,
     LinearLayout,
+    GridLayout,
     FrameLayout,
     TextView,
     Button,
@@ -180,21 +287,52 @@ private:
 using BindingValue = std::variant<std::monostate, bool, int64_t, double, std::string>;
 
 class ViewModel {
+private:
+    struct State;
+
 public:
     using Observer = std::function<void(std::string_view, const BindingValue&)>;
-    using Command = std::function<void(const BindingValue&)>;
+
+    // A subscription owns one observer registration. It is movable but not
+    // copyable; destroying it is safe even after its ViewModel has died.
+    class Subscription {
+    public:
+        Subscription() = default;
+        ~Subscription();
+
+        Subscription(const Subscription&) = delete;
+        Subscription& operator=(const Subscription&) = delete;
+        Subscription(Subscription&& other) noexcept;
+        Subscription& operator=(Subscription&& other) noexcept;
+
+        void reset();
+        bool connected() const;
+
+    private:
+        friend class ViewModel;
+
+        Subscription(std::weak_ptr<State> state, std::string key, uint64_t observer_id);
+
+        std::weak_ptr<State> state_;
+        std::string key_;
+        uint64_t observer_id_ = 0;
+    };
+
+    ViewModel();
+    ~ViewModel();
+
+    ViewModel(const ViewModel&) = delete;
+    ViewModel& operator=(const ViewModel&) = delete;
+    ViewModel(ViewModel&&);
+    ViewModel& operator=(ViewModel&&);
 
     void set(std::string key, BindingValue value);
     const BindingValue* get(std::string_view key) const;
 
-    void bind(std::string key, Observer observer);
-    void set_command(std::string name, Command command);
-    bool invoke(std::string_view name, BindingValue payload = {});
+    [[nodiscard]] Subscription bind(std::string key, Observer observer);
 
 private:
-    std::unordered_map<std::string, BindingValue> values_;
-    std::unordered_map<std::string, std::vector<Observer>> observers_;
-    std::unordered_map<std::string, Command> commands_;
+    std::shared_ptr<State> state_;
 };
 
 struct DrawTextCommand {
@@ -239,12 +377,14 @@ public:
     UiDrawData build_draw_data(const Arc2DCommandBuffer& commands) const;
 
 private:
-    static void append_rect(UiDrawData& out, Rect rect, Color color);
+    static void append_rect(UiDrawData& out, Rect rect, Color color, float radius);
     static void append_glyph_text(UiDrawData& out, const DrawTextCommand& text);
 };
 
 class View {
 public:
+    using InputHandler = std::function<UiEventReply(const UiInputEvent&)>;
+
     explicit View(std::string id = {});
     virtual ~View() = default;
 
@@ -263,6 +403,14 @@ public:
     void set_background(Color color, float radius = 0.0f);
     void set_visibility(Visibility visibility) { visibility_ = visibility; }
     Visibility visibility() const { return visibility_; }
+    void set_enabled(bool enabled) { enabled_ = enabled; }
+    bool enabled() const { return enabled_; }
+    void set_hit_test_visible(bool visible) { hit_test_visible_ = visible; }
+    bool hit_test_visible() const { return hit_test_visible_; }
+    void set_focusable(bool focusable) { focusable_ = focusable; }
+    bool focusable() const { return focusable_; }
+    UiInteractionState interaction_state() const { return interaction_state_; }
+    void set_input_handler(InputHandler handler) { input_handler_ = std::move(handler); }
 
     Vec2 measured_size() const { return measured_size_; }
     Rect bounds() const { return bounds_; }
@@ -274,19 +422,35 @@ public:
 
     virtual void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine);
     virtual void layout(Rect bounds);
-    virtual void paint(Arc2DCommandBuffer& out, TextEngine& text_engine) const;
+    virtual void paint(Arc2DCommandBuffer& out,
+                       TextEngine& text_engine,
+                       const UiTheme& theme) const;
+
+    virtual UiEventReply on_input_event(const UiInputEvent& event);
+    bool hit_test(Vec2 point) const;
 
 protected:
+    friend class UiRuntime;
+
     static float resolve_axis(float requested, MeasureSpec spec, float desired);
     static float clamp_axis(float value, MeasureSpec spec);
+    virtual void set_interaction_state(UiInteractionState state) {
+        interaction_state_ = state;
+    }
 
     std::string id_;
     LayoutParams layout_params_{};
     Visibility visibility_ = Visibility::Visible;
+    bool enabled_ = true;
+    bool hit_test_visible_ = false;
+    bool focusable_ = false;
+    UiInteractionState interaction_state_ = UiInteractionState::None;
     Vec2 measured_size_{};
     Rect bounds_{};
     std::optional<DrawRectCommand> background_;
     std::string bound_text_key_;
+    InputHandler input_handler_;
+    std::vector<ViewModel::Subscription> bindings_;
 };
 
 class TextView : public View {
@@ -301,7 +465,9 @@ public:
     const TextStyle& text_style() const { return style_; }
 
     void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
-    void paint(Arc2DCommandBuffer& out, TextEngine& text_engine) const override;
+    void paint(Arc2DCommandBuffer& out,
+               TextEngine& text_engine,
+               const UiTheme& theme) const override;
 
 protected:
     std::string text_;
@@ -312,15 +478,21 @@ protected:
 
 class Button : public TextView {
 public:
+    using ActivateHandler = std::function<void()>;
+
     explicit Button(std::string id = {});
     ViewKind kind() const override { return ViewKind::Button; }
 
-    void set_command(std::string command) { command_ = std::move(command); }
-    const std::string& command() const { return command_; }
-    bool click(ViewModel& model, BindingValue payload = {}) const;
+    void set_on_activate(ActivateHandler handler) { activate_handler_ = std::move(handler); }
+    bool activate() const;
+
+    void paint(Arc2DCommandBuffer& out,
+               TextEngine& text_engine,
+               const UiTheme& theme) const override;
+    UiEventReply on_input_event(const UiInputEvent& event) override;
 
 private:
-    std::string command_;
+    ActivateHandler activate_handler_;
 };
 
 class ImageView : public View {
@@ -332,7 +504,9 @@ public:
     const std::string& image_key() const { return image_key_; }
 
     void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
-    void paint(Arc2DCommandBuffer& out, TextEngine& text_engine) const override;
+    void paint(Arc2DCommandBuffer& out,
+               TextEngine& text_engine,
+               const UiTheme& theme) const override;
 
 private:
     std::string image_key_;
@@ -354,7 +528,9 @@ public:
     const SlotState& slot_state() const { return state_; }
 
     void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
-    void paint(Arc2DCommandBuffer& out, TextEngine& text_engine) const override;
+    void paint(Arc2DCommandBuffer& out,
+               TextEngine& text_engine,
+               const UiTheme& theme) const override;
 
 private:
     SlotState state_{};
@@ -368,12 +544,15 @@ public:
     View& add_child(std::unique_ptr<View> child);
     const std::vector<std::unique_ptr<View>>& children() const { return children_; }
     std::vector<std::unique_ptr<View>>& children() { return children_; }
+    void clear_children();
     View* find(std::string_view id);
     const View* find(std::string_view id) const;
 
     void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
     void layout(Rect bounds) override;
-    void paint(Arc2DCommandBuffer& out, TextEngine& text_engine) const override;
+    void paint(Arc2DCommandBuffer& out,
+               TextEngine& text_engine,
+               const UiTheme& theme) const override;
 
 protected:
     std::vector<std::unique_ptr<View>> children_;
@@ -396,6 +575,32 @@ public:
 private:
     Orientation orientation_ = Orientation::Vertical;
     float spacing_ = 0.0f;
+    Insets padding_{};
+};
+
+// Fixed-column grid for inventory slots, recipe cells, and compact mod
+// panels. It measures each visible child once and derives per-column/per-row
+// cell extents, leaving scrolling and virtualization to a future ScrollView.
+class GridLayout : public ViewGroup {
+public:
+    explicit GridLayout(std::string id = {});
+    ViewKind kind() const override { return ViewKind::GridLayout; }
+
+    void set_columns(int32_t columns) { columns_ = std::max(1, columns); }
+    int32_t columns() const { return columns_; }
+    void set_column_spacing(float spacing) { column_spacing_ = std::max(0.0f, spacing); }
+    float column_spacing() const { return column_spacing_; }
+    void set_row_spacing(float spacing) { row_spacing_ = std::max(0.0f, spacing); }
+    float row_spacing() const { return row_spacing_; }
+    void set_padding(Insets padding) { padding_ = padding; }
+
+    void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
+    void layout(Rect bounds) override;
+
+private:
+    int32_t columns_ = 1;
+    float column_spacing_ = 0.0f;
+    float row_spacing_ = 0.0f;
     Insets padding_{};
 };
 
@@ -447,7 +652,8 @@ struct UiFrameResult {
 class UiRuntime {
 public:
     UiRuntime(const snt::core::RuntimePathResolver& paths,
-              TextEngineConfig config = {});
+              TextEngineConfig config = {},
+              UiTheme theme = {});
 
     TextEngine& text_engine() { return text_engine_; }
     const TextEngine& text_engine() const { return text_engine_; }
@@ -456,11 +662,44 @@ public:
         return text_engine_.initialization_error();
     }
 
-    UiFrameResult build_frame(View& root, Vec2 viewport);
+    void set_theme(UiTheme theme) { theme_ = std::move(theme); }
+    const UiTheme& theme() const { return theme_; }
+
+    // Hosts first layout all submitted roots, route one input frame from the
+    // highest interactive layer downward, then synchronize states and paint.
+    // Root and child ids must be unique within their UI layer so transient
+    // view rebuilding can safely retain focus, hover, and pointer capture.
+    void layout(View& root, Vec2 viewport);
+    void begin_input_frame(UiInputState input);
+    // Each dispatcher returns true when this root owns that input channel and
+    // lower layers must not receive that channel for the current host frame.
+    bool dispatch_pointer_input(View& root);
+    bool dispatch_keyboard_input(View& root);
+    void synchronize_interaction_state(View& root);
+    UiFrameResult paint(View& root);
+    void clear_interaction_state();
 
 private:
+    struct ElementId {
+        std::string root;
+        std::string view;
+
+        bool matches(std::string_view root_id, std::string_view view_id) const {
+            return root == root_id && view == view_id;
+        }
+        bool empty() const { return root.empty() || view.empty(); }
+        void clear() { root.clear(); view.clear(); }
+    };
+
     UnicodeTextEngine text_engine_;
     Arc2DRenderer renderer_;
+    UiTheme theme_{};
+    UiInputState input_{};
+    std::array<bool, 3> previous_pointer_held_{};
+    std::array<bool, 3> pointer_released_{};
+    ElementId hovered_;
+    ElementId focused_;
+    ElementId pointer_capture_;
 };
 
 }  // namespace snt::ui

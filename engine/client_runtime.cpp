@@ -30,8 +30,10 @@
 #include "voxel/chunk_renderer.h"
 #include "voxel/chunk_render_system.h"
 
+#include <SDL3/SDL.h>
 #include <volk.h>
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <utility>
@@ -89,6 +91,38 @@ void append_draw_data(snt::ui::UiDrawData& destination,
     for (const uint16_t index : source.indices) {
         destination.indices.push_back(static_cast<uint16_t>(base + index));
     }
+}
+
+snt::ui::UiInputState make_ui_input_state(const snt::input::InputState& input,
+                                          bool ui_input_enabled) {
+    snt::ui::UiInputState result;
+    result.pointer_enabled = ui_input_enabled;
+    result.pointer_position = {
+        static_cast<float>(input.mouse_x),
+        static_cast<float>(input.mouse_y),
+    };
+    for (size_t index = 0; index < result.pointer_held.size(); ++index) {
+        result.pointer_held[index] = input.mouse_held[index];
+        result.pointer_pressed[index] = input.mouse_pressed[index];
+        result.pointer_released[index] = input.mouse_released[index];
+    }
+
+    if (!ui_input_enabled) return result;
+    const auto add_key = [&result, &input](int scancode, snt::ui::UiKey key) {
+        if (scancode >= 0 && scancode < static_cast<int>(snt::input::kKeyCount) &&
+            input.key_pressed[scancode]) {
+            result.pressed_keys.push_back(key);
+        }
+    };
+    add_key(SDL_SCANCODE_RETURN, snt::ui::UiKey::Enter);
+    add_key(SDL_SCANCODE_SPACE, snt::ui::UiKey::Space);
+    add_key(SDL_SCANCODE_ESCAPE, snt::ui::UiKey::Escape);
+    add_key(SDL_SCANCODE_TAB, snt::ui::UiKey::Tab);
+    add_key(SDL_SCANCODE_LEFT, snt::ui::UiKey::Left);
+    add_key(SDL_SCANCODE_RIGHT, snt::ui::UiKey::Right);
+    add_key(SDL_SCANCODE_UP, snt::ui::UiKey::Up);
+    add_key(SDL_SCANCODE_DOWN, snt::ui::UiKey::Down);
+    return result;
 }
 
 }  // namespace
@@ -385,7 +419,13 @@ void ClientRuntime::run() {
     if (!impl_ || !impl_->session || !impl_->world_session) return;
 
     auto last_time = simulation_.clock().now();
-    while (!simulation_.stop_requested() && impl_->window.poll_events()) {
+    while (!simulation_.stop_requested()) {
+        // Input edge state must be cleared before SDL pumps this frame's
+        // events. UI is built later in the same iteration and therefore sees
+        // the exact snapshot already consumed by gameplay systems.
+        impl_->input_system.new_frame();
+        if (!impl_->window.poll_events()) break;
+
         const auto now = simulation_.clock().now();
         const float frame_ms = simulation_.clock().delta_since(last_time).count();
         const float delta_seconds = frame_ms / 1000.0f;
@@ -411,14 +451,13 @@ void ClientRuntime::run() {
             request_stop();
             break;
         }
-        impl_->input_system.new_frame();
-
         impl_->ui_draw_data = {};
         const auto& extent = impl_->vk_swapchain.extent();
         ClientUiContext ui_context(*this, simulation_.services(), *impl_->world_session,
                                    static_cast<float>(extent.width),
                                    static_cast<float>(extent.height));
         impl_->session->build_ui(ui_context);
+        ui_context.flush();
 
         if (impl_->mui_renderer) {
             if (auto result = impl_->mui_renderer->synchronize_glyph_atlas(impl_->ui_draw_data); !result) {
@@ -533,9 +572,82 @@ void ClientFrameContext::set_mouse_locked(bool locked) {
 }
 
 bool ClientUiContext::mouse_locked() const noexcept { return runtime_->mouse_locked(); }
-void ClientUiContext::submit(snt::ui::View& root) { runtime_->submit_ui(root); }
-void ClientUiContext::submit(const snt::ui::Arc2DCommandBuffer& commands) {
-    runtime_->submit_ui(commands);
+
+void ClientUiContext::submit(std::unique_ptr<snt::ui::View> root,
+                             snt::ui::UiLayer layer) {
+    if (!root) {
+        SNT_LOG_WARN("Client UI ignored a null view-root submission");
+        return;
+    }
+    Submission submission;
+    submission.layer = layer;
+    submission.order = next_submission_order_++;
+    submission.root = std::move(root);
+    submissions_.push_back(std::move(submission));
+}
+
+void ClientUiContext::submit(snt::ui::Arc2DCommandBuffer commands,
+                             snt::ui::UiLayer layer) {
+    Submission submission;
+    submission.layer = layer;
+    submission.order = next_submission_order_++;
+    submission.commands = std::make_unique<snt::ui::Arc2DCommandBuffer>(std::move(commands));
+    submissions_.push_back(std::move(submission));
+}
+
+void ClientUiContext::flush() {
+    if (!runtime_ || !runtime_->impl_) return;
+    auto& impl = *runtime_->impl_;
+    if (submissions_.empty()) {
+        if (impl.ui_runtime) impl.ui_runtime->clear_interaction_state();
+        return;
+    }
+
+    std::stable_sort(submissions_.begin(), submissions_.end(),
+                     [](const Submission& left, const Submission& right) {
+                         const auto left_layer = static_cast<uint8_t>(left.layer);
+                         const auto right_layer = static_cast<uint8_t>(right.layer);
+                         return left_layer == right_layer
+                             ? left.order < right.order
+                             : left_layer < right_layer;
+                     });
+
+    if (impl.ui_runtime) {
+        for (Submission& submission : submissions_) {
+            if (submission.root) {
+                impl.ui_runtime->layout(*submission.root,
+                                        {viewport_width_, viewport_height_});
+            }
+        }
+
+        impl.ui_runtime->begin_input_frame(make_ui_input_state(
+            impl.input_system.state(), !runtime_->mouse_locked()));
+
+        bool pointer_claimed = false;
+        for (auto it = submissions_.rbegin(); it != submissions_.rend() && !pointer_claimed; ++it) {
+            if (it->root) pointer_claimed = impl.ui_runtime->dispatch_pointer_input(*it->root);
+        }
+
+        bool keyboard_claimed = false;
+        for (auto it = submissions_.rbegin(); it != submissions_.rend() && !keyboard_claimed; ++it) {
+            if (it->root) keyboard_claimed = impl.ui_runtime->dispatch_keyboard_input(*it->root);
+        }
+
+        for (Submission& submission : submissions_) {
+            if (submission.root) impl.ui_runtime->synchronize_interaction_state(*submission.root);
+        }
+    }
+
+    for (Submission& submission : submissions_) {
+        if (submission.root && impl.ui_runtime) {
+            auto frame = impl.ui_runtime->paint(*submission.root);
+            append_draw_data(impl.ui_draw_data, frame.draw_data);
+        } else if (submission.commands) {
+            append_draw_data(impl.ui_draw_data,
+                             impl.arc2d_renderer.build_draw_data(*submission.commands));
+        }
+    }
+    submissions_.clear();
 }
 
 bool ClientRuntime::mouse_locked() const noexcept { return impl_ && impl_->mouse_locked; }
@@ -574,19 +686,6 @@ snt::core::Expected<void> ClientRuntime::set_active_camera(snt::ecs::EntityGuid 
     impl_->active_camera = entity;
     impl_->render_system.set_active_camera(entity);
     return {};
-}
-
-void ClientRuntime::submit_ui(snt::ui::View& root) {
-    if (!impl_ || !impl_->ui_runtime) return;
-    const auto& extent = impl_->vk_swapchain.extent();
-    auto frame = impl_->ui_runtime->build_frame(
-        root, {static_cast<float>(extent.width), static_cast<float>(extent.height)});
-    append_draw_data(impl_->ui_draw_data, frame.draw_data);
-}
-
-void ClientRuntime::submit_ui(const snt::ui::Arc2DCommandBuffer& commands) {
-    if (!impl_) return;
-    append_draw_data(impl_->ui_draw_data, impl_->arc2d_renderer.build_draw_data(commands));
 }
 
 }  // namespace snt::engine

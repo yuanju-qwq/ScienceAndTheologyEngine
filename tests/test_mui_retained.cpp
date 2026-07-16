@@ -78,6 +78,53 @@ TEST(RetainedMui, UnicodeGlyphAtlasEmitsCjkAndColorEmojiQuads) {
     EXPECT_TRUE(has_color);
 }
 
+TEST(RetainedMui, RoundedRectProducesRoundedSolidGeometry) {
+    Arc2DCommandBuffer commands;
+    commands.rect({.pos = {10.0f, 20.0f}, .size = {80.0f, 40.0f}},
+                  {32, 64, 96, 255}, 8.0f);
+
+    Arc2DRenderer renderer;
+    const UiDrawData draw_data = renderer.build_draw_data(commands);
+    EXPECT_EQ(draw_data.vertices.size(), 17u);
+    EXPECT_EQ(draw_data.indices.size(), 48u);
+    for (const UiVertex& vertex : draw_data.vertices) {
+        EXPECT_EQ(vertex.texture_mode, UiTextureMode::Solid);
+    }
+}
+
+TEST(RetainedMui, GridLayoutPlacesVisibleChildrenInRowsAndColumns) {
+    auto paths = make_test_path_resolver();
+    ASSERT_TRUE(paths) << paths.error().format();
+    UiRuntime runtime(*paths);
+
+    auto root = std::make_unique<FrameLayout>("root");
+    auto grid = std::make_unique<GridLayout>("grid");
+    grid->set_columns(3);
+    grid->set_column_spacing(2.0f);
+    grid->set_row_spacing(2.0f);
+    grid->set_padding({3.0f, 4.0f, 3.0f, 4.0f});
+
+    std::array<View*, 4> children{};
+    for (size_t index = 0; index < children.size(); ++index) {
+        auto child = std::make_unique<View>("cell_" + std::to_string(index));
+        LayoutParams params;
+        params.width = 10.0f;
+        params.height = 20.0f;
+        child->set_layout_params(params);
+        children[index] = child.get();
+        grid->add_child(std::move(child));
+    }
+    root->add_child(std::move(grid));
+    runtime.layout(*root, {160.0f, 100.0f});
+
+    EXPECT_EQ(children[0]->bounds().pos.x, 3.0f);
+    EXPECT_EQ(children[0]->bounds().pos.y, 4.0f);
+    EXPECT_EQ(children[1]->bounds().pos.x, 15.0f);
+    EXPECT_EQ(children[2]->bounds().pos.x, 27.0f);
+    EXPECT_EQ(children[3]->bounds().pos.x, 3.0f);
+    EXPECT_EQ(children[3]->bounds().pos.y, 26.0f);
+}
+
 TEST(RetainedMui, MixedBidiAndJoinedEmojiProduceGlyphs) {
     auto paths = make_test_path_resolver();
     ASSERT_TRUE(paths) << paths.error().format();
@@ -115,6 +162,89 @@ TEST(RetainedMui, ViewModelBindingUpdatesTextView) {
     model.set("screen.title", std::string("合成 Crafting ⚒"));
 
     EXPECT_EQ(raw->text(), "合成 Crafting ⚒");
+}
+
+TEST(RetainedMui, ViewModelSubscriptionDisconnectsWithoutDanglingCallbacks) {
+    ViewModel model;
+    int notifications = 0;
+    auto subscription = model.bind("screen.title", [&](std::string_view,
+                                                        const BindingValue&) {
+        ++notifications;
+    });
+    ASSERT_TRUE(subscription.connected());
+
+    model.set("screen.title", std::string("first"));
+    EXPECT_EQ(notifications, 1);
+
+    subscription.reset();
+    EXPECT_FALSE(subscription.connected());
+    model.set("screen.title", std::string("second"));
+    EXPECT_EQ(notifications, 1);
+
+    {
+        auto text = std::make_unique<TextView>("title");
+        text->bind_text(model, "screen.title");
+    }
+    model.set("screen.title", std::string("after-view-destruction"));
+    EXPECT_EQ(notifications, 1);
+
+    int nested_notifications = 0;
+    auto secondary = model.bind("nested.secondary", [&](std::string_view,
+                                                          const BindingValue&) {
+        ++nested_notifications;
+    });
+    auto primary = model.bind("nested.primary", [&](std::string_view,
+                                                      const BindingValue&) {
+        model.set("nested.secondary", int64_t{7});
+    });
+    model.set("nested.primary", int64_t{3});
+    EXPECT_EQ(nested_notifications, 1);
+}
+
+TEST(RetainedMui, ButtonRoutesPointerAndKeyboardActivation) {
+    auto paths = make_test_path_resolver();
+    ASSERT_TRUE(paths) << paths.error().format();
+    UiRuntime runtime(*paths);
+
+    auto root = std::make_unique<FrameLayout>("test_root");
+    auto button = std::make_unique<Button>("confirm");
+    Button* raw_button = button.get();
+    LayoutParams params;
+    params.width = 120.0f;
+    params.height = 40.0f;
+    params.margin = {20.0f, 20.0f, 0.0f, 0.0f};
+    button->set_layout_params(params);
+    button->set_text("Confirm");
+    int activations = 0;
+    button->set_on_activate([&] { ++activations; });
+    root->add_child(std::move(button));
+    runtime.layout(*root, {320.0f, 180.0f});
+
+    runtime.begin_input_frame({
+        .pointer_position = {40.0f, 40.0f},
+        .pointer_held = {true, false, false},
+        .pointer_pressed = {true, false, false},
+    });
+    EXPECT_TRUE(runtime.dispatch_pointer_input(*root));
+    runtime.synchronize_interaction_state(*root);
+    EXPECT_TRUE(has_interaction_state(raw_button->interaction_state(),
+                                      UiInteractionState::Pressed));
+    EXPECT_TRUE(has_interaction_state(raw_button->interaction_state(),
+                                      UiInteractionState::Focused));
+
+    runtime.begin_input_frame({
+        .pointer_position = {40.0f, 40.0f},
+        .pointer_released = {true, false, false},
+    });
+    EXPECT_TRUE(runtime.dispatch_pointer_input(*root));
+    runtime.synchronize_interaction_state(*root);
+    EXPECT_EQ(activations, 1);
+    EXPECT_FALSE(has_interaction_state(raw_button->interaction_state(),
+                                       UiInteractionState::Pressed));
+
+    runtime.begin_input_frame({.pressed_keys = {UiKey::Enter}});
+    EXPECT_TRUE(runtime.dispatch_keyboard_input(*root));
+    EXPECT_EQ(activations, 2);
 }
 
 TEST(RetainedMui, AnimationCompletesAndSetsFinalValue) {
