@@ -232,6 +232,13 @@ snt_register_engine_module(
         "${SNT_ENGINE_SOURCE_DIR}/voxel/chunk_render_system.h"
 )
 snt_register_engine_module(
+    TARGET snt_voxel_collision
+    INCLUDE_PREFIXES player/voxel_collision.h
+    SOURCE_FILES
+        "${SNT_ENGINE_SOURCE_DIR}/player/voxel_collision.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/player/voxel_collision.h"
+)
+snt_register_engine_module(
     TARGET snt_player
     INCLUDE_PREFIXES player
     SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/player"
