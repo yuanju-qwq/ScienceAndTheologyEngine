@@ -8,7 +8,7 @@
 #include "ui/mod_ui_internal.h"
 
 #include "core/log.h"
-#include "ui/retained_mui.h"
+#include "ui/retained_mui_screen_stack.h"
 
 #include <cmath>
 #include <memory>
@@ -134,6 +134,7 @@ struct HostState {
         !finite(widget.step) || widget.step < 0.0f || !finite(widget.value) ||
         widget.virtual_item_count < 0 || !finite(widget.virtual_item_extent) ||
         widget.virtual_item_extent <= 0.0f || widget.max_text_bytes == 0 ||
+        widget.min_text_lines == 0 ||
         widget.slot.count < 0 || !valid_insets(widget.nine_slice_borders)) {
         return invalid_argument(path + " has invalid control values");
     }
@@ -172,6 +173,7 @@ struct HostState {
                       widget.type == WidgetType::Button || widget.type == WidgetType::Image ||
                       widget.type == WidgetType::NineSlice ||
                       widget.type == WidgetType::TextInput ||
+                      widget.type == WidgetType::TextEditor ||
                       widget.type == WidgetType::Checkbox || widget.type == WidgetType::Slider ||
                       widget.type == WidgetType::Tooltip || widget.type == WidgetType::Slot;
     if (leaf && !widget.children.empty()) {
@@ -272,11 +274,8 @@ struct HostState {
     return {.value = std::string(key)};
 }
 
-[[nodiscard]] SlotState to_mod_slot(const HostState& state,
-                                    const snt::ui::SlotView::SlotState& slot) {
-    return {.item = local_resource_ref(state, slot.item_key),
-            .count = slot.count,
-            .selected = slot.selected};
+[[nodiscard]] SlotState to_mod_slot(const HostState& state, const UiDragPayload& payload) {
+    return {.item = local_resource_ref(state, payload.resource_key), .count = payload.count};
 }
 
 void apply_common(snt::ui::View& view, const Widget& widget) {
@@ -324,18 +323,18 @@ void dispatch_command(const std::weak_ptr<HostState>& weak_state,
     }
 }
 
-void dispatch_slot_command(const std::weak_ptr<HostState>& weak_state,
+void dispatch_drag_command(const std::weak_ptr<HostState>& weak_state,
                            const ScreenId& screen,
                            const WidgetId& widget,
                            const WidgetActions& actions,
-                           const UiSlotDragEvent& event) {
+                           const UiDragEvent& event) {
     const Command* declaration = nullptr;
     switch (event.type) {
-    case UiSlotDragEventType::Begin: declaration = &actions.drag_begin; break;
-    case UiSlotDragEventType::Enter: declaration = &actions.drag_enter; break;
-    case UiSlotDragEventType::Leave: declaration = &actions.drag_leave; break;
-    case UiSlotDragEventType::Drop: declaration = &actions.drop; break;
-    case UiSlotDragEventType::Cancel: declaration = &actions.drag_cancel; break;
+    case UiDragEventType::Begin: declaration = &actions.drag_begin; break;
+    case UiDragEventType::Enter: declaration = &actions.drag_enter; break;
+    case UiDragEventType::Leave: declaration = &actions.drag_leave; break;
+    case UiDragEventType::Drop: declaration = &actions.drop; break;
+    case UiDragEventType::Cancel: declaration = &actions.drag_cancel; break;
     }
     if (!declaration || declaration->name.empty()) return;
 
@@ -564,6 +563,17 @@ void prefix_widget_ids(Widget& widget, std::string_view prefix) {
         bind_text_input(*view, *state, widget, screen, weak_state);
         return std::unique_ptr<snt::ui::View>(std::move(view));
     }
+    case WidgetType::TextEditor: {
+        auto view = std::make_unique<snt::ui::TextEditor>(widget.id.value);
+        apply_common(*view, widget);
+        view->set_max_bytes(widget.max_text_bytes);
+        view->set_password(widget.password);
+        view->set_placeholder(widget.placeholder);
+        view->set_min_visible_lines(widget.min_text_lines);
+        view->set_text_silently(widget.text);
+        bind_text_input(*view, *state, widget, screen, weak_state);
+        return std::unique_ptr<snt::ui::View>(std::move(view));
+    }
     case WidgetType::Checkbox: {
         auto view = std::make_unique<snt::ui::Checkbox>(widget.id.value);
         apply_common(*view, widget);
@@ -641,8 +651,8 @@ void prefix_widget_ids(Widget& widget, std::string_view prefix) {
         const WidgetId widget_id = widget.id;
         const WidgetActions actions = widget.actions;
         view->set_drag_handler([weak_state, screen, widget_id, actions](
-                                   const UiSlotDragEvent& event) {
-            dispatch_slot_command(weak_state, screen, widget_id, actions, event);
+                                   const UiDragEvent& event) {
+            dispatch_drag_command(weak_state, screen, widget_id, actions, event);
         });
         return std::unique_ptr<snt::ui::View>(std::move(view));
     }

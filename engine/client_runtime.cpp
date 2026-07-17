@@ -26,7 +26,7 @@
 #include "render_backend/vulkan_pipeline.h"
 #include "render_backend/vulkan_swapchain.h"
 #include "ui/mui_renderer.h"
-#include "ui/retained_mui.h"
+#include "ui/retained_mui_runtime.h"
 #include "voxel/chunk_renderer.h"
 #include "voxel/chunk_render_system.h"
 
@@ -164,6 +164,22 @@ snt::ui::UiInputState make_ui_input_state(const snt::input::InputState& input,
     }
 
     if (!ui_input_enabled) return result;
+    const auto key_held = [&input](int scancode) {
+        return scancode >= 0 && scancode < static_cast<int>(snt::input::kKeyCount) &&
+            input.key_held[scancode];
+    };
+    if (key_held(SDL_SCANCODE_LSHIFT) || key_held(SDL_SCANCODE_RSHIFT)) {
+        result.modifiers = result.modifiers | snt::ui::UiKeyModifier::Shift;
+    }
+    if (key_held(SDL_SCANCODE_LCTRL) || key_held(SDL_SCANCODE_RCTRL)) {
+        result.modifiers = result.modifiers | snt::ui::UiKeyModifier::Control;
+    }
+    if (key_held(SDL_SCANCODE_LALT) || key_held(SDL_SCANCODE_RALT)) {
+        result.modifiers = result.modifiers | snt::ui::UiKeyModifier::Alt;
+    }
+    if (key_held(SDL_SCANCODE_LGUI) || key_held(SDL_SCANCODE_RGUI)) {
+        result.modifiers = result.modifiers | snt::ui::UiKeyModifier::Meta;
+    }
     const auto add_key = [&result, &input](int scancode, snt::ui::UiKey key) {
         if (scancode >= 0 && scancode < static_cast<int>(snt::input::kKeyCount) &&
             input.key_pressed[scancode]) {
@@ -182,6 +198,12 @@ snt::ui::UiInputState make_ui_input_state(const snt::input::InputState& input,
     add_key(SDL_SCANCODE_RIGHT, snt::ui::UiKey::Right);
     add_key(SDL_SCANCODE_UP, snt::ui::UiKey::Up);
     add_key(SDL_SCANCODE_DOWN, snt::ui::UiKey::Down);
+    add_key(SDL_SCANCODE_A, snt::ui::UiKey::A);
+    add_key(SDL_SCANCODE_C, snt::ui::UiKey::C);
+    add_key(SDL_SCANCODE_V, snt::ui::UiKey::V);
+    add_key(SDL_SCANCODE_X, snt::ui::UiKey::X);
+    add_key(SDL_SCANCODE_Y, snt::ui::UiKey::Y);
+    add_key(SDL_SCANCODE_Z, snt::ui::UiKey::Z);
     result.text_commits = input.text_commits;
     result.text_compositions.reserve(input.text_compositions.size());
     for (const snt::input::TextComposition& composition : input.text_compositions) {
@@ -193,6 +215,40 @@ snt::ui::UiInputState make_ui_input_state(const snt::input::InputState& input,
     }
     return result;
 }
+
+// Keeps concrete SDL/window services at the client-host boundary. Retained
+// widgets only interact with the stable UI interfaces below.
+class WindowUiTextServices final : public snt::ui::IUiClipboard,
+                                   public snt::ui::IUiTextInputPlatform {
+public:
+    explicit WindowUiTextServices(snt::platform::Window& window)
+        : window_(window) {}
+
+    snt::core::Expected<std::string> read_text() override {
+        return window_.clipboard_text();
+    }
+
+    snt::core::Expected<void> write_text(std::string_view text) override {
+        return window_.set_clipboard_text(text);
+    }
+
+    snt::core::Expected<void> set_text_input_active(bool active) override {
+        return window_.set_text_input_active(active);
+    }
+
+    snt::core::Expected<void> set_text_input_area(snt::ui::UiTextInputArea area) override {
+        return window_.set_text_input_area({
+            .x = area.x,
+            .y = area.y,
+            .width = area.width,
+            .height = area.height,
+            .cursor = area.cursor,
+        });
+    }
+
+private:
+    snt::platform::Window& window_;
+};
 
 }  // namespace
 
@@ -427,6 +483,9 @@ snt::core::Expected<void> ClientRuntime::init(
     text_config.locale = config.ui.locale;
     text_config.icu_data_path = config.ui.icu_data_path;
     impl_->ui_runtime = std::make_unique<snt::ui::UiRuntime>(paths, std::move(text_config));
+    auto ui_text_services = std::make_shared<WindowUiTextServices>(impl_->window);
+    impl_->ui_runtime->set_clipboard(ui_text_services);
+    impl_->ui_runtime->set_text_input_platform(std::move(ui_text_services));
     impl_->ui_user_scale = config.ui.scale;
     if (!impl_->ui_runtime->text_available()) {
         SNT_LOG_ERROR("MUI text initialization failed: %s",
@@ -692,9 +751,6 @@ void ClientUiContext::flush() {
             .images = impl.ui_runtime->images(),
         };
         const auto& extension_screens = impl.ui_runtime->layers().prepare_frame(frame_context);
-        for (const std::string& root_id : impl.ui_runtime->layers().take_invalidated_root_ids()) {
-            impl.ui_runtime->cancel_interaction_for_root(root_id);
-        }
         for (const snt::ui::UiScreenSubmission& screen : extension_screens) {
             if (!screen.root) continue;
             Submission submission;
@@ -710,7 +766,7 @@ void ClientUiContext::flush() {
             return submission.view_root() != nullptr;
         });
     if (!has_interactive_root) {
-        if (impl.ui_runtime) impl.ui_runtime->clear_interaction_state();
+        if (impl.ui_runtime) impl.ui_runtime->clear_interaction_state(active_roots_);
         // Arc2D-only HUD commands still need to render, so continue through
         // the paint pass with an empty retained interaction tree.
     }
@@ -725,14 +781,17 @@ void ClientUiContext::flush() {
                      });
 
     if (impl.ui_runtime) {
+        active_roots_.clear();
+        active_roots_.reserve(submissions_.size());
         for (Submission& submission : submissions_) {
             if (snt::ui::View* root = submission.view_root()) {
+                active_roots_.push_back(root);
                 impl.ui_runtime->layout(*root, viewport_.logical_size());
             }
         }
 
         impl.ui_runtime->begin_input_frame(make_ui_input_state(
-            impl.input_system.state(), viewport_, !runtime_->mouse_locked()));
+            impl.input_system.state(), viewport_, !runtime_->mouse_locked()), active_roots_);
 
         std::string focus_scope_root;
         for (auto it = submissions_.rbegin(); it != submissions_.rend(); ++it) {
@@ -741,7 +800,7 @@ void ClientUiContext::flush() {
                 break;
             }
         }
-        impl.ui_runtime->set_focus_scope(std::move(focus_scope_root));
+        impl.ui_runtime->set_focus_scope(std::move(focus_scope_root), active_roots_);
 
         for (auto it = submissions_.rbegin(); it != submissions_.rend(); ++it) {
             snt::ui::View* const root = it->view_root();
@@ -757,7 +816,7 @@ void ClientUiContext::flush() {
             if (claimed || it->input_policy.blocks_keyboard_below) break;
         }
 
-        impl.ui_runtime->end_input_frame();
+        impl.ui_runtime->end_input_frame(active_roots_);
 
         for (Submission& submission : submissions_) {
             if (snt::ui::View* root = submission.view_root()) {
@@ -766,36 +825,9 @@ void ClientUiContext::flush() {
         }
     }
 
-    std::optional<snt::ui::Rect> text_input_bounds;
-    if (impl.ui_runtime && !runtime_->mouse_locked()) {
-        for (Submission& submission : submissions_) {
-            snt::ui::View* const root = submission.view_root();
-            if (!root) continue;
-            text_input_bounds = impl.ui_runtime->focused_text_input_bounds(*root);
-            if (text_input_bounds) break;
-        }
-    }
-    if (auto result = impl.window.set_text_input_active(text_input_bounds.has_value()); !result) {
-        SNT_LOG_WARN("Platform text input activation failed: %s", result.error().format().c_str());
-    } else if (text_input_bounds && impl.window.text_input_active()) {
-        const snt::ui::Vec2 top_left = viewport_.logical_to_window(text_input_bounds->pos);
-        const snt::ui::Vec2 bottom_right = viewport_.logical_to_window({
-            .x = text_input_bounds->pos.x + text_input_bounds->size.x,
-            .y = text_input_bounds->pos.y + text_input_bounds->size.y,
-        });
-        const int left = static_cast<int>(std::floor(top_left.x));
-        const int top = static_cast<int>(std::floor(top_left.y));
-        const int right = static_cast<int>(std::ceil(bottom_right.x));
-        const int bottom = static_cast<int>(std::ceil(bottom_right.y));
-        if (auto result = impl.window.set_text_input_area({
-                .x = left,
-                .y = top,
-                .width = std::max(1, right - left),
-                .height = std::max(1, bottom - top),
-            }); !result) {
-            SNT_LOG_WARN("Platform text input area update failed: %s",
-                         result.error().format().c_str());
-        }
+    if (impl.ui_runtime) {
+        impl.ui_runtime->synchronize_text_input_platform(
+            active_roots_, !runtime_->mouse_locked());
     }
 
     for (Submission& submission : submissions_) {
@@ -808,6 +840,7 @@ void ClientUiContext::flush() {
         }
     }
     submissions_.clear();
+    active_roots_.clear();
 }
 
 bool ClientRuntime::mouse_locked() const noexcept { return impl_ && impl_->mouse_locked; }

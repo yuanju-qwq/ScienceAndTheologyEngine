@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <string_view>
 
 #include "core/expected.h"  // Expected<void> for create / create_vulkan_surface / set_relative_mouse_mode
@@ -119,6 +120,11 @@ public:
     snt::core::Expected<void> set_text_input_active(bool active);
     bool text_input_active() const;
     snt::core::Expected<void> set_text_input_area(TextInputArea area);
+
+    // Clipboard text stays in the platform layer for the same reason as IME:
+    // retained UI only sees its injectable UTF-8 service contract.
+    snt::core::Expected<std::string> clipboard_text() const;
+    snt::core::Expected<void> set_clipboard_text(std::string_view text);
 
 private:
     void* _window = nullptr;        // SDL_Window*

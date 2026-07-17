@@ -156,6 +156,13 @@ snt::core::Expected<UiWidgetType> parse_widget_type(std::string_view value,
     if (value == "frame") return UiWidgetType::Frame;
     if (value == "text") return UiWidgetType::Text;
     if (value == "button") return UiWidgetType::Button;
+    if (value == "text_input") return UiWidgetType::TextInput;
+    if (value == "text_editor") return UiWidgetType::TextEditor;
+    if (value == "checkbox") return UiWidgetType::Checkbox;
+    if (value == "slider") return UiWidgetType::Slider;
+    if (value == "virtual_list") return UiWidgetType::VirtualList;
+    if (value == "modal") return UiWidgetType::Modal;
+    if (value == "tooltip") return UiWidgetType::Tooltip;
     if (value == "image") return UiWidgetType::Image;
     if (value == "nine_slice") return UiWidgetType::NineSlice;
     if (value == "slot") return UiWidgetType::Slot;
@@ -342,6 +349,53 @@ snt::core::Expected<UiWidgetTemplate> parse_node(const json& value,
     if (auto result = read_optional_string(value, "text", node.text, path); !result) {
         return result.error();
     }
+    if (auto result = read_optional_string(value, "placeholder", node.placeholder, path);
+        !result) {
+        return result.error();
+    }
+    if (auto result = read_optional_bool(value, "password", node.password, path); !result) {
+        return result.error();
+    }
+    if (auto result = read_optional_int(value, "max_text_bytes", node.max_text_bytes, path);
+        !result) {
+        return result.error();
+    }
+    if (auto result = read_optional_int(value, "min_text_lines", node.min_text_lines, path);
+        !result) {
+        return result.error();
+    }
+    if (auto result = read_optional_bool(value, "checked", node.checked, path); !result) {
+        return result.error();
+    }
+    if (auto result = read_optional_float(value, "minimum", node.minimum, path); !result) {
+        return result.error();
+    }
+    if (auto result = read_optional_float(value, "maximum", node.maximum, path); !result) {
+        return result.error();
+    }
+    if (auto result = read_optional_float(value, "step", node.step, path); !result) {
+        return result.error();
+    }
+    if (auto result = read_optional_float(value, "value", node.value, path); !result) {
+        return result.error();
+    }
+    if (auto result = read_optional_int(value, "virtual_item_count",
+                                        node.virtual_item_count, path); !result) {
+        return result.error();
+    }
+    if (auto result = read_optional_float(value, "virtual_item_extent",
+                                          node.virtual_item_extent, path); !result) {
+        return result.error();
+    }
+    if (const auto backdrop = value.find("modal_backdrop"); backdrop != value.end()) {
+        auto parsed = parse_color(*backdrop, path + ".modal_backdrop");
+        if (!parsed) return parsed.error();
+        node.modal_backdrop = *parsed;
+    }
+    if (auto result = read_optional_bool(value, "dismiss_on_backdrop",
+                                         node.dismiss_on_backdrop, path); !result) {
+        return result.error();
+    }
     if (auto result = read_optional_string(value, "image", node.image_key, path); !result) {
         return result.error();
     }
@@ -491,15 +545,31 @@ snt::core::Expected<void> validate_node(const UiWidgetTemplate& node,
     if (!finite(node.text_style.size_px) || node.text_style.size_px <= 0.0f) {
         return invalid_argument(path + ".text_style.size must be positive");
     }
+    if (node.max_text_bytes <= 0 || node.min_text_lines <= 0) {
+        return invalid_argument(path + ".max_text_bytes and min_text_lines must be positive");
+    }
+    if (!finite(node.minimum) || !finite(node.maximum) || !finite(node.step) ||
+        !finite(node.value) || node.maximum < node.minimum || node.step < 0.0f) {
+        return invalid_argument(path + " has an invalid slider range");
+    }
+    if (node.virtual_item_count < 0 || !finite(node.virtual_item_extent) ||
+        node.virtual_item_extent <= 0.0f) {
+        return invalid_argument(path + " has an invalid virtual-list configuration");
+    }
+
 
     const bool leaf = node.type == UiWidgetType::View || node.type == UiWidgetType::Text ||
-                      node.type == UiWidgetType::Button || node.type == UiWidgetType::Image ||
-                      node.type == UiWidgetType::NineSlice || node.type == UiWidgetType::Slot;
+                      node.type == UiWidgetType::Button || node.type == UiWidgetType::TextInput ||
+                      node.type == UiWidgetType::TextEditor ||
+                      node.type == UiWidgetType::Checkbox || node.type == UiWidgetType::Slider ||
+                      node.type == UiWidgetType::Image || node.type == UiWidgetType::NineSlice ||
+                      node.type == UiWidgetType::Tooltip || node.type == UiWidgetType::Slot;
     if (leaf && !node.children.empty()) {
         return invalid_argument(path + " is a leaf widget and cannot have children");
     }
-    if (node.type == UiWidgetType::Scroll && node.children.size() > 1) {
-        return invalid_argument(path + " scroll widgets accept at most one content child");
+    if ((node.type == UiWidgetType::Scroll || node.type == UiWidgetType::VirtualList) &&
+        node.children.size() > 1) {
+        return invalid_argument(path + " scroll and virtual-list widgets accept at most one content child");
     }
     if ((node.type == UiWidgetType::Image || node.type == UiWidgetType::NineSlice) &&
         node.image_key.empty()) {
@@ -519,8 +589,13 @@ snt::core::Expected<void> validate_node(const UiWidgetTemplate& node,
          node.nine_slice_borders.right < 0.0f || node.nine_slice_borders.bottom < 0.0f)) {
         return invalid_argument(path + ".nine_slice borders must be non-negative");
     }
-    if (node.type != UiWidgetType::Button && !node.action_id.empty()) {
-        return invalid_argument(path + ".action is only valid on button widgets");
+    const bool action_capable = node.type == UiWidgetType::Button ||
+                                node.type == UiWidgetType::TextInput ||
+                                node.type == UiWidgetType::TextEditor ||
+                                node.type == UiWidgetType::Checkbox ||
+                                node.type == UiWidgetType::Slider || node.type == UiWidgetType::Modal;
+    if (!action_capable && !node.action_id.empty()) {
+        return invalid_argument(path + ".action is only valid on interactive widgets");
     }
     if (node.type == UiWidgetType::Slot && node.slot.count < 0) {
         return invalid_argument(path + ".slot.count must not be negative");
@@ -543,6 +618,11 @@ void apply_common_view_properties(View& view, const UiWidgetTemplate& node) {
     if (node.focusable) view.set_focusable(*node.focusable);
     if (node.background) view.set_background(*node.background, node.background_radius);
 }
+void prefix_widget_ids(UiWidgetTemplate& node, std::string_view prefix) {
+    node.id = std::string(prefix) + node.id;
+    for (UiWidgetTemplate& child : node.children) prefix_widget_ids(child, prefix);
+}
+
 
 snt::core::Expected<std::unique_ptr<View>> instantiate_node(
     const UiWidgetTemplate& node,
@@ -607,6 +687,108 @@ snt::core::Expected<std::unique_ptr<View>> instantiate_node(
             const UiWidgetActionDispatcher dispatcher = context.dispatch_action;
             view->set_on_activate([dispatcher, action_id] { dispatcher(action_id); });
         }
+        return std::unique_ptr<View>(std::move(view));
+    }
+    case UiWidgetType::TextInput: {
+        auto view = std::make_unique<TextInput>(node.id);
+        apply_common_view_properties(*view, node);
+        view->set_text_silently(node.text);
+        view->set_text_style(node.text_style);
+        view->set_placeholder(node.placeholder);
+        view->set_password(node.password);
+        view->set_max_bytes(static_cast<size_t>(node.max_text_bytes));
+        if (!node.action_id.empty() && context.dispatch_action) {
+            const std::string action_id = node.action_id;
+            const UiWidgetActionDispatcher dispatcher = context.dispatch_action;
+            view->set_on_submit([dispatcher, action_id](std::string_view) { dispatcher(action_id); });
+        }
+        return std::unique_ptr<View>(std::move(view));
+    }
+    case UiWidgetType::TextEditor: {
+        auto view = std::make_unique<TextEditor>(node.id);
+        apply_common_view_properties(*view, node);
+        view->set_text_silently(node.text);
+        view->set_text_style(node.text_style);
+        view->set_placeholder(node.placeholder);
+        view->set_password(node.password);
+        view->set_max_bytes(static_cast<size_t>(node.max_text_bytes));
+        view->set_min_visible_lines(static_cast<uint32_t>(node.min_text_lines));
+        if (!node.action_id.empty() && context.dispatch_action) {
+            const std::string action_id = node.action_id;
+            const UiWidgetActionDispatcher dispatcher = context.dispatch_action;
+            view->set_on_submit([dispatcher, action_id](std::string_view) { dispatcher(action_id); });
+        }
+        return std::unique_ptr<View>(std::move(view));
+    }
+    case UiWidgetType::Checkbox: {
+        auto view = std::make_unique<Checkbox>(node.id);
+        apply_common_view_properties(*view, node);
+        view->set_text(node.text);
+        view->set_text_style(node.text_style);
+        view->set_checked(node.checked);
+        if (!node.action_id.empty() && context.dispatch_action) {
+            const std::string action_id = node.action_id;
+            const UiWidgetActionDispatcher dispatcher = context.dispatch_action;
+            view->set_on_change([dispatcher, action_id](bool) { dispatcher(action_id); });
+        }
+        return std::unique_ptr<View>(std::move(view));
+    }
+    case UiWidgetType::Slider: {
+        auto view = std::make_unique<Slider>(node.id);
+        apply_common_view_properties(*view, node);
+        view->set_range(node.minimum, node.maximum);
+        view->set_step(node.step);
+        view->set_value(node.value);
+        if (!node.action_id.empty() && context.dispatch_action) {
+            const std::string action_id = node.action_id;
+            const UiWidgetActionDispatcher dispatcher = context.dispatch_action;
+            view->set_on_change([dispatcher, action_id](float) { dispatcher(action_id); });
+        }
+        return std::unique_ptr<View>(std::move(view));
+    }
+    case UiWidgetType::VirtualList: {
+        auto view = std::make_unique<VirtualListView>(node.id);
+        apply_common_view_properties(*view, node);
+        view->set_item_count(static_cast<size_t>(node.virtual_item_count));
+        view->set_item_extent(node.virtual_item_extent);
+        if (!node.children.empty()) {
+            const UiWidgetTemplate item_template = node.children.front();
+            const UiWidgetBuildContext item_context = context;
+            const std::string item_prefix = node.id + "[";
+            view->set_item_builder([item_template, item_context, item_prefix](size_t index)
+                                   -> std::unique_ptr<View> {
+                UiWidgetTemplate item = item_template;
+                prefix_widget_ids(item, item_prefix + std::to_string(index) + "]/");
+                auto built = instantiate_node(item, item_context);
+                if (!built) {
+                    SNT_LOG_ERROR("UiPackedScene virtual-list item mount failed: %s",
+                                  built.error().format().c_str());
+                    return nullptr;
+                }
+                return std::move(*built);
+            });
+        }
+        return std::unique_ptr<View>(std::move(view));
+    }
+    case UiWidgetType::Modal: {
+        auto view = std::make_unique<ModalView>(node.id);
+        apply_common_view_properties(*view, node);
+        view->set_padding(node.layout.padding);
+        view->set_backdrop(node.modal_backdrop);
+        view->set_dismiss_on_backdrop(node.dismiss_on_backdrop);
+        if (!node.action_id.empty() && context.dispatch_action) {
+            const std::string action_id = node.action_id;
+            const UiWidgetActionDispatcher dispatcher = context.dispatch_action;
+            view->set_on_dismiss([dispatcher, action_id] { dispatcher(action_id); });
+        }
+        if (auto result = add_children(*view); !result) return result.error();
+        return std::unique_ptr<View>(std::move(view));
+    }
+    case UiWidgetType::Tooltip: {
+        auto view = std::make_unique<TooltipView>(node.id);
+        apply_common_view_properties(*view, node);
+        view->set_text(node.text);
+        view->set_text_style(node.text_style);
         return std::unique_ptr<View>(std::move(view));
     }
     case UiWidgetType::Image: {

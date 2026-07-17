@@ -88,6 +88,7 @@ enum class WidgetType : uint8_t {
     Image,
     NineSlice,
     TextInput,
+    TextEditor,
     Checkbox,
     Slider,
     VirtualList,
@@ -179,6 +180,7 @@ struct Widget {
     bool checked = false;
     bool password = false;
     size_t max_text_bytes = 4096;
+    uint32_t min_text_lines = 3;
     float minimum = 0.0f;
     float maximum = 1.0f;
     float step = 0.0f;

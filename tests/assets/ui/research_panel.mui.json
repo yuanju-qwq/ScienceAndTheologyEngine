@@ -1,6 +1,6 @@
 {
   "format": "snt.ui.packed_scene",
-  "version": 1,
+  "version": 3,
   "root": {
     "type": "frame",
     "id": "research_root",

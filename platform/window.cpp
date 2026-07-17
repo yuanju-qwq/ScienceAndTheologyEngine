@@ -231,4 +231,32 @@ snt::core::Expected<void> Window::set_text_input_area(TextInputArea area) {
     return {};
 }
 
+snt::core::Expected<std::string> Window::clipboard_text() const {
+    if (!_window) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "clipboard_text: window not created"};
+    }
+    char* const text = SDL_GetClipboardText();
+    if (!text) {
+        return snt::core::Error{snt::core::ErrorCode::kPlatformInitFailed,
+                                std::format("SDL_GetClipboardText failed: {}", SDL_GetError())};
+    }
+    std::string result(text);
+    SDL_free(text);
+    return result;
+}
+
+snt::core::Expected<void> Window::set_clipboard_text(std::string_view text) {
+    if (!_window) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "set_clipboard_text: window not created"};
+    }
+    const std::string owned_text(text);
+    if (!SDL_SetClipboardText(owned_text.c_str())) {
+        return snt::core::Error{snt::core::ErrorCode::kPlatformInitFailed,
+                                std::format("SDL_SetClipboardText failed: {}", SDL_GetError())};
+    }
+    return {};
+}
+
 } // namespace snt::platform

@@ -1,6 +1,6 @@
 #include "core/path_utils.h"
 #include "ui/mod_ui_internal.h"
-#include "ui/retained_mui.h"
+#include "ui/retained_mui_runtime.h"
 #include "ui/ui_packed_scene.h"
 #include "ui/ui_packed_scene_catalog.h"
 
@@ -26,6 +26,22 @@ snt::core::Expected<snt::core::RuntimePathResolver> make_test_path_resolver() {
         .user_root = SNT_ENGINE_TEST_ROOT,
     });
 }
+
+class RecordingUiTextInputPlatform final : public IUiTextInputPlatform {
+public:
+    snt::core::Expected<void> set_text_input_active(bool active) override {
+        activations.push_back(active);
+        return {};
+    }
+
+    snt::core::Expected<void> set_text_input_area(UiTextInputArea area) override {
+        areas.push_back(area);
+        return {};
+    }
+
+    std::vector<bool> activations;
+    std::vector<UiTextInputArea> areas;
+};
 
 }  // namespace
 
@@ -304,6 +320,11 @@ TEST(RetainedMui, LayerStackNamespacedLifecycleMountsOnceAndUpdatesVisibleRoots)
     UiLayerStack layers;
     int mount_count = 0;
     int update_count = 0;
+    std::vector<std::string> invalidated_roots;
+    layers.set_retained_root_invalidator([&invalidated_roots](View& root) {
+        EXPECT_EQ(root.kind(), ViewKind::FrameLayout);
+        invalidated_roots.push_back(root.id());
+    });
 
     ASSERT_TRUE(layers.register_screen({
         .owner_id = "example_expansion",
@@ -356,7 +377,7 @@ TEST(RetainedMui, LayerStackNamespacedLifecycleMountsOnceAndUpdatesVisibleRoots)
 
     EXPECT_EQ(layers.unregister_owner("example_expansion"), 1u);
     EXPECT_FALSE(layers.is_registered("example_expansion", "research"));
-    EXPECT_EQ(layers.take_invalidated_root_ids(),
+    EXPECT_EQ(invalidated_roots,
               std::vector<std::string>{"example_expansion:research"});
     EXPECT_TRUE(layers.prepare_frame({.viewport = {1280.0f, 720.0f}, .images = images}).empty());
 }
@@ -365,7 +386,7 @@ TEST(RetainedMui, PackedSceneJsonInstantiatesWidgetsAndDispatchesActions) {
     constexpr std::string_view source = R"json(
 {
   "format": "snt.ui.packed_scene",
-  "version": 1,
+  "version": 3,
   "root": {
     "type": "frame",
     "id": "research_root",
@@ -418,6 +439,127 @@ TEST(RetainedMui, PackedSceneJsonInstantiatesWidgetsAndDispatchesActions) {
     ASSERT_NE(button, nullptr);
     EXPECT_TRUE(button->activate());
     EXPECT_EQ(dispatched_action, "research.claim");
+}
+
+TEST(RetainedMui, PackedSceneV3InstantiatesInteractiveControlsAndVirtualList) {
+    constexpr std::string_view source = R"json(
+{
+  "format": "snt.ui.packed_scene",
+  "version": 3,
+  "root": {
+    "type": "frame",
+    "id": "settings_root",
+    "layout": { "width": 0, "height": 0 },
+    "children": [
+      {
+        "type": "text_input",
+        "id": "display_name",
+        "placeholder": "Display name",
+        "max_text_bytes": 32,
+        "action": "profile.submit"
+      },
+      {
+        "type": "text_editor",
+        "id": "chat_draft",
+        "text": "first\nsecond",
+        "min_text_lines": 4,
+        "action": "chat.send"
+      },
+      {
+        "type": "checkbox",
+        "id": "fullscreen",
+        "text": "Fullscreen",
+        "checked": true,
+        "action": "video.fullscreen"
+      },
+      {
+        "type": "slider",
+        "id": "volume",
+        "minimum": 0,
+        "maximum": 1,
+        "step": 0.25,
+        "value": 0.5,
+        "action": "audio.volume"
+      },
+      {
+        "type": "virtual_list",
+        "id": "recent_servers",
+        "layout": { "width": 160, "height": 40 },
+        "virtual_item_count": 100,
+        "virtual_item_extent": 20,
+        "children": [
+          { "type": "text", "id": "server_row", "text": "Server" }
+        ]
+      },
+      {
+        "type": "modal",
+        "id": "confirm_dialog",
+        "dismiss_on_backdrop": true,
+        "action": "dialog.dismiss",
+        "children": [
+          { "type": "text", "id": "dialog_message", "text": "Apply settings?" }
+        ]
+      },
+      { "type": "tooltip", "id": "volume_tip", "text": "Master volume" }
+    ]
+  }
+}
+)json";
+
+    auto scene = parse_ui_packed_scene_json(source, "settings.mui.json");
+    ASSERT_TRUE(scene) << scene.error().format();
+
+    std::vector<std::string> actions;
+    auto root = instantiate_ui_packed_scene(*scene, {
+        .dispatch_action = [&actions](std::string_view action_id) {
+            actions.emplace_back(action_id);
+        },
+    });
+    ASSERT_TRUE(root) << root.error().format();
+    auto* group = dynamic_cast<ViewGroup*>(root->get());
+    ASSERT_NE(group, nullptr);
+
+    auto* input = dynamic_cast<TextInput*>(group->find("display_name"));
+    auto* editor = dynamic_cast<TextEditor*>(group->find("chat_draft"));
+    auto* checkbox = dynamic_cast<Checkbox*>(group->find("fullscreen"));
+    auto* slider = dynamic_cast<Slider*>(group->find("volume"));
+    auto* list = dynamic_cast<VirtualListView*>(group->find("recent_servers"));
+    auto* modal = dynamic_cast<ModalView*>(group->find("confirm_dialog"));
+    EXPECT_NE(dynamic_cast<TooltipView*>(group->find("volume_tip")), nullptr);
+    ASSERT_NE(input, nullptr);
+    ASSERT_NE(editor, nullptr);
+    ASSERT_NE(checkbox, nullptr);
+    ASSERT_NE(slider, nullptr);
+    ASSERT_NE(list, nullptr);
+    ASSERT_NE(modal, nullptr);
+    EXPECT_EQ(input->placeholder(), "Display name");
+    EXPECT_EQ(editor->text(), "first\nsecond");
+    EXPECT_EQ(editor->min_visible_lines(), 4u);
+    EXPECT_TRUE(checkbox->checked());
+    EXPECT_FLOAT_EQ(slider->value(), 0.5f);
+    EXPECT_EQ(list->item_count(), 100u);
+
+    input->on_input_event({.type = UiInputEventType::TextCommit, .text = "Ada"});
+    input->on_input_event({.type = UiInputEventType::KeyDown, .key = UiKey::Enter});
+    editor->on_input_event({.type = UiInputEventType::KeyDown, .key = UiKey::Enter});
+    EXPECT_EQ(editor->text(), "first\nsecond\n");
+    editor->on_input_event({.type = UiInputEventType::KeyDown,
+                            .key = UiKey::Enter,
+                            .modifiers = UiKeyModifier::Control});
+    checkbox->on_input_event({.type = UiInputEventType::PointerUp,
+                              .pointer_button = UiPointerButton::Primary,
+                              .activation = true});
+    slider->set_value(0.75f, true);
+    modal->on_input_event({.type = UiInputEventType::KeyDown, .key = UiKey::Escape});
+    EXPECT_EQ(actions, (std::vector<std::string>{
+        "profile.submit", "chat.send", "video.fullscreen", "audio.volume", "dialog.dismiss",
+    }));
+
+    auto paths = make_test_path_resolver();
+    ASSERT_TRUE(paths) << paths.error().format();
+    UiRuntime runtime(*paths);
+    runtime.layout(**root, {320.0f, 200.0f});
+    EXPECT_LT(list->children().size(), list->item_count());
 }
 
 TEST(RetainedMui, DynamicWidgetBuilderAndLayerStackShareOneTreePath) {
@@ -543,7 +685,7 @@ TEST(RetainedMui, PackedSceneRejectsDuplicateIdsAndInvalidScrollContent) {
     constexpr std::string_view duplicate_ids = R"json(
 {
   "format": "snt.ui.packed_scene",
-  "version": 1,
+  "version": 3,
   "root": {
     "type": "frame",
     "id": "root",
@@ -556,7 +698,7 @@ TEST(RetainedMui, PackedSceneRejectsDuplicateIdsAndInvalidScrollContent) {
     constexpr std::string_view invalid_scroll = R"json(
 {
   "format": "snt.ui.packed_scene",
-  "version": 1,
+  "version": 3,
   "root": {
     "type": "scroll",
     "id": "scroll",
@@ -644,6 +786,141 @@ TEST(RetainedMui, ViewModelSubscriptionDisconnectsWithoutDanglingCallbacks) {
     });
     model.set("nested.primary", int64_t{3});
     EXPECT_EQ(nested_notifications, 1);
+
+    model.set("reentrant.initial", int64_t{1});
+    int initial_notifications = 0;
+    ViewModel::Subscription nested_subscription;
+    auto reentrant = model.bind("reentrant.initial", [&](std::string_view,
+                                                            const BindingValue&) {
+        ++initial_notifications;
+        nested_subscription = model.bind("reentrant.initial", [](std::string_view,
+                                                                     const BindingValue&) {});
+    });
+    EXPECT_EQ(initial_notifications, 1);
+    EXPECT_TRUE(reentrant.connected());
+    EXPECT_TRUE(nested_subscription.connected());
+}
+
+TEST(RetainedMui, DragSessionCancelsSourceAndHoveredTargetWhenInputIsInterrupted) {
+    auto paths = make_test_path_resolver();
+    ASSERT_TRUE(paths) << paths.error().format();
+    UiRuntime runtime(*paths);
+
+    auto root = std::make_unique<FrameLayout>("inventory_root");
+    auto source = std::make_unique<SlotView>("source_slot");
+    auto target = std::make_unique<SlotView>("target_slot");
+    SlotView* const raw_source = source.get();
+    SlotView* const raw_target = target.get();
+    source->set_layout_params({.width = 36.0f, .height = 36.0f});
+    target->set_layout_params({.width = 36.0f,
+                               .height = 36.0f,
+                               .margin = {.left = 64.0f}});
+    source->set_slot_state({.item_key = "item.iron", .count = 4});
+
+    std::vector<UiDragEvent> source_events;
+    std::vector<UiDragEvent> target_events;
+    source->set_drag_handler([&source_events](const UiDragEvent& event) {
+        source_events.push_back(event);
+    });
+    target->set_drag_handler([&target_events](const UiDragEvent& event) {
+        target_events.push_back(event);
+    });
+    root->add_child(std::move(source));
+    root->add_child(std::move(target));
+    runtime.layout(*root, {160.0f, 80.0f});
+
+    std::array<View*, 1> active_roots{root.get()};
+    runtime.begin_input_frame({
+        .pointer_position = {12.0f, 12.0f},
+        .pointer_held = {true, false, false},
+        .pointer_pressed = {true, false, false},
+    }, active_roots);
+    ASSERT_TRUE(runtime.dispatch_pointer_input(*root));
+    ASSERT_NE(runtime.drag_session(), nullptr);
+    ASSERT_EQ(source_events.size(), 1u);
+    EXPECT_EQ(source_events.front().type, UiDragEventType::Begin);
+
+    runtime.begin_input_frame({
+        .pointer_position = {76.0f, 12.0f},
+        .pointer_held = {true, false, false},
+    }, active_roots);
+    ASSERT_TRUE(runtime.dispatch_pointer_input(*root));
+    ASSERT_EQ(target_events.size(), 1u);
+    EXPECT_EQ(target_events.front().type, UiDragEventType::Enter);
+    EXPECT_EQ(target_events.front().source_id, raw_source->id());
+
+    runtime.begin_input_frame({.pointer_enabled = false}, active_roots);
+    EXPECT_EQ(runtime.drag_session(), nullptr);
+    ASSERT_EQ(source_events.size(), 2u);
+    EXPECT_EQ(source_events.back().type, UiDragEventType::Cancel);
+    EXPECT_EQ(source_events.back().target_id, raw_target->id());
+    ASSERT_EQ(target_events.size(), 2u);
+    EXPECT_EQ(target_events.back().type, UiDragEventType::Cancel);
+    EXPECT_EQ(target_events.back().source_id, raw_source->id());
+}
+
+TEST(RetainedMui, SlotDragStartUsesSecondaryButtonForHalfStack) {
+    SlotView slot("slot");
+    slot.set_slot_state({.item_key = "item.iron", .count = 7});
+
+    const auto primary = slot.begin_drag({.pointer_button = UiPointerButton::Primary});
+    ASSERT_TRUE(primary.has_value());
+    EXPECT_EQ(primary->count, 7);
+
+    const auto secondary = slot.begin_drag({.pointer_button = UiPointerButton::Secondary});
+    ASSERT_TRUE(secondary.has_value());
+    EXPECT_EQ(secondary->count, 4);
+
+    slot.set_enabled(false);
+    EXPECT_FALSE(slot.begin_drag({.pointer_button = UiPointerButton::Primary}).has_value());
+    EXPECT_FALSE(slot.accepts_drop(*primary));
+}
+
+TEST(RetainedMui, LayerStackInvalidationDeliversFocusLostBeforeRetainedRootIsHidden) {
+    auto paths = make_test_path_resolver();
+    ASSERT_TRUE(paths) << paths.error().format();
+    UiRuntime runtime(*paths);
+    int focus_lost = 0;
+
+    ASSERT_TRUE(runtime.layers().register_screen({
+        .owner_id = "builtin",
+        .screen_id = "name_prompt",
+        .initially_visible = true,
+        .factory = [&focus_lost](const UiScreenMountContext&)
+            -> snt::core::Expected<UiScreenMount> {
+            auto root = std::make_unique<FrameLayout>("name_prompt_root");
+            auto editor = std::make_unique<TextInput>("name_editor");
+            editor->set_layout_params({.width = 180.0f, .height = 32.0f});
+            editor->set_input_handler([&focus_lost](const UiInputEvent& event) {
+                if (event.type == UiInputEventType::FocusLost) ++focus_lost;
+                return UiEventReply::Ignored;
+            });
+            root->add_child(std::move(editor));
+            return UiScreenMount{.root = std::move(root)};
+        },
+    }));
+
+    const auto& submissions = runtime.layers().prepare_frame({
+        .viewport = {240.0f, 80.0f},
+        .images = runtime.images(),
+    });
+    ASSERT_EQ(submissions.size(), 1u);
+    View* const root = submissions.front().root;
+    ASSERT_NE(root, nullptr);
+    runtime.layout(*root, {240.0f, 80.0f});
+    std::array<View*, 1> active_roots{root};
+
+    runtime.begin_input_frame({
+        .pointer_position = {12.0f, 12.0f},
+        .pointer_held = {true, false, false},
+        .pointer_pressed = {true, false, false},
+    }, active_roots);
+    ASSERT_TRUE(runtime.dispatch_pointer_input(*root));
+    EXPECT_TRUE(runtime.focused_text_input_bounds(*root).has_value());
+
+    ASSERT_TRUE(runtime.layers().set_visible("builtin", "name_prompt", false));
+    EXPECT_EQ(focus_lost, 1);
+    EXPECT_FALSE(runtime.focused_text_input_bounds(*root).has_value());
 }
 
 TEST(RetainedMui, PointerEventUsesCaptureTargetAndBubblePhases) {
@@ -731,6 +1008,207 @@ TEST(RetainedMui, ButtonRoutesPointerAndKeyboardActivation) {
     runtime.begin_input_frame({.pressed_keys = {UiKey::Enter}});
     EXPECT_TRUE(runtime.dispatch_keyboard_input(*root));
     EXPECT_EQ(activations, 2);
+}
+
+TEST(RetainedMui, TabFocusTraversalSkipsHiddenAndDisabledControls) {
+    auto paths = make_test_path_resolver();
+    ASSERT_TRUE(paths) << paths.error().format();
+    UiRuntime runtime(*paths);
+
+    FrameLayout root("focus_root");
+    std::vector<std::string> focus_events;
+    const auto record_focus = [&focus_events](std::string id) {
+        return [&focus_events, id = std::move(id)](const UiInputEvent& event) {
+            if (event.type == UiInputEventType::FocusGained) {
+                focus_events.push_back(id + ":gained");
+            } else if (event.type == UiInputEventType::FocusLost) {
+                focus_events.push_back(id + ":lost");
+            }
+            return UiEventReply::Ignored;
+        };
+    };
+
+    auto first = std::make_unique<Button>("first");
+    Button* const raw_first = first.get();
+    first->set_input_handler(record_focus("first"));
+
+    auto hidden = std::make_unique<Button>("hidden");
+    hidden->set_visibility(Visibility::Hidden);
+    hidden->set_input_handler(record_focus("hidden"));
+
+    auto disabled = std::make_unique<Button>("disabled");
+    disabled->set_enabled(false);
+    disabled->set_input_handler(record_focus("disabled"));
+
+    auto editor = std::make_unique<TextInput>("editor");
+    TextInput* const raw_editor = editor.get();
+    editor->set_input_handler(record_focus("editor"));
+
+    auto last = std::make_unique<Checkbox>("last");
+    Checkbox* const raw_last = last.get();
+    last->set_input_handler(record_focus("last"));
+
+    root.add_child(std::move(first));
+    root.add_child(std::move(hidden));
+    root.add_child(std::move(disabled));
+    root.add_child(std::move(editor));
+    root.add_child(std::move(last));
+    std::array<View*, 1> active_roots{&root};
+
+    runtime.begin_input_frame({.pressed_keys = {UiKey::Tab}}, active_roots);
+    EXPECT_TRUE(runtime.dispatch_keyboard_input(root));
+    runtime.synchronize_interaction_state(root);
+    EXPECT_TRUE(has_interaction_state(raw_first->interaction_state(), UiInteractionState::Focused));
+
+    runtime.begin_input_frame({.pressed_keys = {UiKey::Tab}}, active_roots);
+    EXPECT_TRUE(runtime.dispatch_keyboard_input(root));
+    runtime.synchronize_interaction_state(root);
+    EXPECT_TRUE(has_interaction_state(raw_editor->interaction_state(), UiInteractionState::Focused));
+
+    runtime.begin_input_frame({
+        .modifiers = UiKeyModifier::Shift,
+        .pressed_keys = {UiKey::Tab},
+    }, active_roots);
+    EXPECT_TRUE(runtime.dispatch_keyboard_input(root));
+    runtime.synchronize_interaction_state(root);
+    EXPECT_TRUE(has_interaction_state(raw_first->interaction_state(), UiInteractionState::Focused));
+
+    runtime.begin_input_frame({
+        .modifiers = UiKeyModifier::Shift,
+        .pressed_keys = {UiKey::Tab},
+    }, active_roots);
+    EXPECT_TRUE(runtime.dispatch_keyboard_input(root));
+    runtime.synchronize_interaction_state(root);
+    EXPECT_TRUE(has_interaction_state(raw_last->interaction_state(), UiInteractionState::Focused));
+
+    EXPECT_EQ(focus_events, (std::vector<std::string>{
+        "first:gained",
+        "first:lost", "editor:gained",
+        "editor:lost", "first:gained",
+        "first:lost", "last:gained",
+    }));
+}
+
+TEST(RetainedMui, FocusedTextInputReleasesImeWhenDisabledOrHidden) {
+    auto paths = make_test_path_resolver();
+    ASSERT_TRUE(paths) << paths.error().format();
+    UiRuntime runtime(*paths);
+    auto platform = std::make_shared<RecordingUiTextInputPlatform>();
+    runtime.set_text_input_platform(platform);
+
+    auto root = std::make_unique<FrameLayout>("focus_lifecycle_root");
+    auto container = std::make_unique<FrameLayout>("input_container");
+    FrameLayout* const raw_container = container.get();
+    container->set_layout_params({.width = 180.0f, .height = 32.0f});
+    auto input = std::make_unique<TextInput>("editor");
+    TextInput* const raw_input = input.get();
+    input->set_layout_params({.width = 180.0f, .height = 32.0f});
+    int focus_lost = 0;
+    input->set_input_handler([&focus_lost](const UiInputEvent& event) {
+        if (event.type == UiInputEventType::FocusLost) ++focus_lost;
+        return UiEventReply::Ignored;
+    });
+    container->add_child(std::move(input));
+    root->add_child(std::move(container));
+    runtime.layout(*root, {240.0f, 80.0f});
+    std::array<View*, 1> roots{root.get()};
+
+    runtime.begin_input_frame({
+        .pointer_position = {10.0f, 10.0f},
+        .pointer_held = {true, false, false},
+        .pointer_pressed = {true, false, false},
+    }, roots);
+    ASSERT_TRUE(runtime.dispatch_pointer_input(*root));
+    runtime.synchronize_text_input_platform(roots);
+    ASSERT_EQ(platform->activations, (std::vector<bool>{true}));
+
+    runtime.begin_input_frame({
+        .pointer_position = {10.0f, 10.0f},
+        .pointer_released = {true, false, false},
+    }, roots);
+    ASSERT_TRUE(runtime.dispatch_pointer_input(*root));
+
+    raw_input->set_enabled(false);
+    EXPECT_FALSE(runtime.focused_text_input_bounds(*root).has_value());
+    runtime.begin_input_frame({.text_commits = {"ignored"}}, roots);
+    EXPECT_FALSE(runtime.dispatch_keyboard_input(*root));
+    EXPECT_TRUE(raw_input->text().empty());
+    runtime.synchronize_interaction_state(*root);
+    runtime.synchronize_text_input_platform(roots);
+    EXPECT_EQ(focus_lost, 1);
+    EXPECT_EQ(platform->activations, (std::vector<bool>{true, false}));
+
+    raw_input->set_enabled(true);
+    runtime.begin_input_frame({
+        .pointer_position = {10.0f, 10.0f},
+        .pointer_held = {true, false, false},
+        .pointer_pressed = {true, false, false},
+    }, roots);
+    ASSERT_TRUE(runtime.dispatch_pointer_input(*root));
+    runtime.synchronize_text_input_platform(roots);
+    ASSERT_EQ(platform->activations, (std::vector<bool>{true, false, true}));
+
+    raw_container->set_visibility(Visibility::Hidden);
+    EXPECT_FALSE(runtime.focused_text_input_bounds(*root).has_value());
+    runtime.synchronize_interaction_state(*root);
+    runtime.synchronize_text_input_platform(roots);
+    EXPECT_EQ(focus_lost, 2);
+    EXPECT_EQ(platform->activations, (std::vector<bool>{true, false, true, false}));
+
+    runtime.synchronize_interaction_state(*root);
+    runtime.synchronize_text_input_platform(roots);
+    EXPECT_EQ(focus_lost, 2);
+    EXPECT_EQ(platform->activations, (std::vector<bool>{true, false, true, false}));
+}
+
+TEST(RetainedMui, ClickingNonFocusableTargetClearsFocusedView) {
+    auto paths = make_test_path_resolver();
+    ASSERT_TRUE(paths) << paths.error().format();
+    UiRuntime runtime(*paths);
+
+    auto root = std::make_unique<FrameLayout>("click_focus_root");
+    auto input = std::make_unique<TextInput>("editor");
+    input->set_layout_params({.width = 120.0f, .height = 32.0f});
+    int focus_lost = 0;
+    input->set_input_handler([&focus_lost](const UiInputEvent& event) {
+        if (event.type == UiInputEventType::FocusLost) ++focus_lost;
+        return UiEventReply::Ignored;
+    });
+    root->add_child(std::move(input));
+
+    auto non_focusable = std::make_unique<View>("background_target");
+    non_focusable->set_hit_test_visible(true);
+    non_focusable->set_layout_params({
+        .width = 80.0f,
+        .height = 32.0f,
+        .margin = {.left = 140.0f},
+    });
+    root->add_child(std::move(non_focusable));
+    runtime.layout(*root, {240.0f, 80.0f});
+    std::array<View*, 1> roots{root.get()};
+
+    runtime.begin_input_frame({
+        .pointer_position = {10.0f, 10.0f},
+        .pointer_held = {true, false, false},
+        .pointer_pressed = {true, false, false},
+    }, roots);
+    ASSERT_TRUE(runtime.dispatch_pointer_input(*root));
+    ASSERT_TRUE(runtime.focused_text_input_bounds(*root).has_value());
+
+    runtime.begin_input_frame({
+        .pointer_position = {10.0f, 10.0f},
+        .pointer_released = {true, false, false},
+    }, roots);
+    ASSERT_TRUE(runtime.dispatch_pointer_input(*root));
+
+    runtime.begin_input_frame({
+        .pointer_position = {160.0f, 10.0f},
+        .pointer_held = {true, false, false},
+        .pointer_pressed = {true, false, false},
+    }, roots);
+    ASSERT_TRUE(runtime.dispatch_pointer_input(*root));
+    EXPECT_EQ(focus_lost, 1);
+    EXPECT_FALSE(runtime.focused_text_input_bounds(*root).has_value());
 }
 
 TEST(RetainedMui, AnimationCompletesAndSetsFinalValue) {
@@ -905,6 +1383,159 @@ TEST(RetainedMui, TextInputReceivesImePreeditAndCommittedUtf8) {
     EXPECT_EQ(raw_editor->text(), std::string("\\xE4\\xBD\\xA0"));
 }
 
+TEST(RetainedMui, TextInputSelectionClipboardAndHistoryUseUtf8Boundaries) {
+    TextInput input("name");
+    input.set_text_silently(std::string("\xE4\xBD\xA0") + "A");
+    input.on_input_event({.type = UiInputEventType::KeyDown, .key = UiKey::Home});
+    input.on_input_event({.type = UiInputEventType::KeyDown,
+                          .key = UiKey::Right,
+                          .modifiers = UiKeyModifier::Shift});
+
+    ASSERT_TRUE(input.has_selection());
+    EXPECT_EQ(input.selected_text(), std::string("\xE4\xBD\xA0"));
+    UiMemoryClipboard clipboard;
+    ASSERT_TRUE(input.copy_selection(clipboard));
+    EXPECT_EQ(clipboard.text(), std::string("\xE4\xBD\xA0"));
+
+    ASSERT_TRUE(input.cut_selection(clipboard));
+    EXPECT_EQ(input.text(), "A");
+    EXPECT_TRUE(input.undo());
+    EXPECT_EQ(input.text(), std::string("\xE4\xBD\xA0") + "A");
+    EXPECT_TRUE(input.redo());
+    EXPECT_EQ(input.text(), "A");
+
+    ASSERT_TRUE(clipboard.write_text("Beta"));
+    input.select_all();
+    ASSERT_TRUE(input.paste_from(clipboard));
+    EXPECT_EQ(input.text(), "Beta");
+}
+
+TEST(RetainedMui, RuntimeRoutesSemanticClipboardShortcutsAndImePlatform) {
+    auto paths = make_test_path_resolver();
+    ASSERT_TRUE(paths) << paths.error().format();
+    UiRuntime runtime(*paths);
+    const UiViewport viewport{
+        .framebuffer_size = {2000.0f, 1000.0f},
+        .window_size = {1000.0f, 500.0f},
+        .dpi_scale = 2.0f,
+        .user_scale = 1.25f,
+    };
+    runtime.set_viewport(viewport);
+    auto clipboard = std::make_shared<UiMemoryClipboard>();
+    auto platform = std::make_shared<RecordingUiTextInputPlatform>();
+    runtime.set_clipboard(clipboard);
+    runtime.set_text_input_platform(platform);
+
+    auto root = std::make_unique<FrameLayout>("editor_root");
+    auto input = std::make_unique<TextInput>("editor");
+    TextInput* raw_input = input.get();
+    input->set_layout_params({.width = 180.0f, .height = 32.0f});
+    input->set_text_silently("old");
+    root->add_child(std::move(input));
+    runtime.layout(*root, viewport.logical_size());
+    std::array<View*, 1> roots{root.get()};
+
+    runtime.begin_input_frame({
+        .pointer_position = {10.0f, 10.0f},
+        .pointer_held = {true, false, false},
+        .pointer_pressed = {true, false, false},
+    }, roots);
+    ASSERT_TRUE(runtime.dispatch_pointer_input(*root));
+    runtime.synchronize_text_input_platform(roots);
+    ASSERT_EQ(platform->activations, (std::vector<bool>{true}));
+    ASSERT_EQ(platform->areas.size(), 1u);
+    EXPECT_EQ(platform->areas.front().width, 225);
+    EXPECT_EQ(platform->areas.front().height, 40);
+
+    runtime.begin_input_frame({
+        .modifiers = UiKeyModifier::Control,
+        .pressed_keys = {UiKey::A},
+    }, roots);
+    ASSERT_TRUE(runtime.dispatch_keyboard_input(*root));
+    EXPECT_TRUE(raw_input->has_selection());
+    runtime.begin_input_frame({
+        .modifiers = UiKeyModifier::Control,
+        .pressed_keys = {UiKey::C},
+    }, roots);
+    ASSERT_TRUE(runtime.dispatch_keyboard_input(*root));
+    EXPECT_EQ(clipboard->text(), "old");
+
+    ASSERT_TRUE(clipboard->write_text("new"));
+    runtime.begin_input_frame({
+        .modifiers = UiKeyModifier::Control,
+        .pressed_keys = {UiKey::V},
+    }, roots);
+    ASSERT_TRUE(runtime.dispatch_keyboard_input(*root));
+    EXPECT_EQ(raw_input->text(), "new");
+
+    runtime.clear_interaction_state(roots);
+    runtime.synchronize_text_input_platform(roots);
+    EXPECT_EQ(platform->activations, (std::vector<bool>{true, false}));
+}
+
+TEST(RetainedMui, InputRouterOwnsPointerFocusAndInteractionState) {
+    UiInputRouter router;
+    Button button("router_button");
+    button.layout({.pos = {0.0f, 0.0f}, .size = {120.0f, 40.0f}});
+
+    router.begin_frame({
+        .pointer_position = {16.0f, 16.0f},
+        .pointer_held = {true, false, false},
+        .pointer_pressed = {true, false, false},
+    });
+    ASSERT_TRUE(router.dispatch_pointer_input(button));
+    router.synchronize_interaction_state(button);
+    EXPECT_TRUE(has_interaction_state(button.interaction_state(), UiInteractionState::Pressed));
+    EXPECT_TRUE(has_interaction_state(button.interaction_state(), UiInteractionState::Focused));
+
+    router.begin_frame({
+        .pointer_position = {16.0f, 16.0f},
+        .pointer_released = {true, false, false},
+    });
+    ASSERT_TRUE(router.dispatch_pointer_input(button));
+    router.synchronize_interaction_state(button);
+    EXPECT_FALSE(has_interaction_state(button.interaction_state(), UiInteractionState::Pressed));
+    EXPECT_TRUE(has_interaction_state(button.interaction_state(), UiInteractionState::Focused));
+}
+
+TEST(RetainedMui, TextInputServiceOwnsClipboardAndNativePlatformState) {
+    UiTextInputService service;
+    auto clipboard = std::make_shared<UiMemoryClipboard>();
+    auto platform = std::make_shared<RecordingUiTextInputPlatform>();
+    service.set_clipboard(clipboard);
+    service.set_text_input_platform(platform);
+
+    TextInput input("service_input");
+    input.set_text_silently("old");
+    input.select_all();
+    EXPECT_TRUE(service.handle_clipboard_shortcut(
+        input, UiKey::C, UiKeyModifier::Control, "service_root", input.id()));
+    EXPECT_EQ(clipboard->text(), "old");
+
+    ASSERT_TRUE(clipboard->write_text("new"));
+    input.select_all();
+    EXPECT_TRUE(service.handle_clipboard_shortcut(
+        input, UiKey::V, UiKeyModifier::Control, "service_root", input.id()));
+    EXPECT_EQ(input.text(), "new");
+
+    const UiViewport viewport{
+        .framebuffer_size = {2000.0f, 1000.0f},
+        .window_size = {1000.0f, 500.0f},
+        .dpi_scale = 2.0f,
+        .user_scale = 1.25f,
+    };
+    service.synchronize_platform(viewport,
+                                 Rect{.pos = {0.0f, 0.0f}, .size = {180.0f, 32.0f}},
+                                 "service_root", input.id());
+    ASSERT_EQ(platform->activations, (std::vector<bool>{true}));
+    ASSERT_EQ(platform->areas.size(), 1u);
+    EXPECT_EQ(platform->areas.front().width, 225);
+    EXPECT_EQ(platform->areas.front().height, 40);
+
+    service.synchronize_platform(viewport, std::nullopt, {}, {});
+    EXPECT_EQ(platform->activations, (std::vector<bool>{true, false}));
+}
+
 TEST(RetainedMui, ModFacadeOwnsControlsModelsCommandsAndResources) {
     UiImageRegistry images;
     UiLayerStack layers;
@@ -945,6 +1576,16 @@ TEST(RetainedMui, ModFacadeOwnsControlsModelsCommandsAndResources) {
     editor.actions.change.name = "profile.changed";
     editor.actions.submit.name = "profile.submitted";
     controls_root.children.push_back(std::move(editor));
+
+    mod::Widget notes;
+    notes.type = mod::WidgetType::TextEditor;
+    notes.id = {.value = "notes"};
+    notes.layout.width = 220.0f;
+    notes.min_text_lines = 4;
+    notes.placeholder = "Notes";
+    notes.actions.change.name = "notes.changed";
+    notes.actions.submit.name = "notes.submitted";
+    controls_root.children.push_back(std::move(notes));
 
     mod::Widget checkbox;
     checkbox.type = mod::WidgetType::Checkbox;
@@ -1044,6 +1685,7 @@ TEST(RetainedMui, ModFacadeOwnsControlsModelsCommandsAndResources) {
     auto* controls_group = dynamic_cast<ViewGroup*>(controls_submission->root);
     ASSERT_NE(controls_group, nullptr);
     auto* retained_editor = dynamic_cast<TextInput*>(controls_group->find("editor"));
+    auto* retained_notes = dynamic_cast<TextEditor*>(controls_group->find("notes"));
     auto* retained_checkbox = dynamic_cast<Checkbox*>(controls_group->find("enabled"));
     auto* retained_slider = dynamic_cast<Slider*>(controls_group->find("volume"));
     auto* retained_button = dynamic_cast<Button*>(controls_group->find("run"));
@@ -1052,11 +1694,13 @@ TEST(RetainedMui, ModFacadeOwnsControlsModelsCommandsAndResources) {
     EXPECT_NE(dynamic_cast<ImageView*>(controls_group->find("icon_view")), nullptr);
     EXPECT_NE(dynamic_cast<NineSliceView*>(controls_group->find("panel_view")), nullptr);
     ASSERT_NE(retained_editor, nullptr);
+    ASSERT_NE(retained_notes, nullptr);
     ASSERT_NE(retained_checkbox, nullptr);
     ASSERT_NE(retained_slider, nullptr);
     ASSERT_NE(retained_button, nullptr);
     ASSERT_NE(retained_slot, nullptr);
     ASSERT_NE(retained_list, nullptr);
+    EXPECT_EQ(retained_notes->min_visible_lines(), 4u);
     EXPECT_EQ(retained_list->item_count(), 100u);
 
     const auto modal_submission = std::find_if(submissions.begin(), submissions.end(),
@@ -1070,20 +1714,27 @@ TEST(RetainedMui, ModFacadeOwnsControlsModelsCommandsAndResources) {
 
     retained_editor->on_input_event({.type = UiInputEventType::TextCommit, .text = "Ada"});
     retained_editor->on_input_event({.type = UiInputEventType::KeyDown, .key = UiKey::Enter});
+    retained_notes->on_input_event({.type = UiInputEventType::TextCommit, .text = "Line"});
+    retained_notes->on_input_event({.type = UiInputEventType::KeyDown, .key = UiKey::Enter});
+    retained_notes->on_input_event({.type = UiInputEventType::KeyDown,
+                                    .key = UiKey::Enter,
+                                    .modifiers = UiKeyModifier::Control});
     retained_checkbox->on_input_event({.type = UiInputEventType::PointerUp,
                                        .pointer_button = UiPointerButton::Primary,
                                        .activation = true});
     retained_slider->set_value(0.75f, true);
     EXPECT_TRUE(retained_button->activate());
-    retained_slot->dispatch_drag_event({
-        .type = UiSlotDragEventType::Drop,
+    retained_slot->on_drag_event({
+        .type = UiDragEventType::Drop,
         .source_id = "other_slot",
         .target_id = "inventory_slot",
-        .payload = {.item_key = "example_mod:icon", .count = 3},
+        .payload = {.type = "snt.item", .resource_key = "example_mod:icon", .count = 3},
     });
 
     ASSERT_NE(find_mod_command(sink.commands, "profile.changed"), nullptr);
     ASSERT_NE(find_mod_command(sink.commands, "profile.submitted"), nullptr);
+    ASSERT_NE(find_mod_command(sink.commands, "notes.changed"), nullptr);
+    ASSERT_NE(find_mod_command(sink.commands, "notes.submitted"), nullptr);
     ASSERT_NE(find_mod_command(sink.commands, "enabled.changed"), nullptr);
     ASSERT_NE(find_mod_command(sink.commands, "volume.changed"), nullptr);
     ASSERT_NE(find_mod_command(sink.commands, "run.clicked"), nullptr);

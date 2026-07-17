@@ -9,7 +9,7 @@
 #pragma once
 
 #include "core/expected.h"
-#include "ui/retained_mui.h"
+#include "ui/retained_mui_screen_stack.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -29,6 +29,13 @@ enum class UiWidgetType : uint8_t {
     Frame,
     Text,
     Button,
+    TextInput,
+    TextEditor,
+    Checkbox,
+    Slider,
+    VirtualList,
+    Modal,
+    Tooltip,
     Image,
     NineSlice,
     Slot,
@@ -75,6 +82,21 @@ struct UiWidgetTemplate {
     std::optional<Color> background;
     float background_radius = 0.0f;
     std::string text;
+    // P2 control state is declarative. Runtime interaction stays in the
+    // retained instance, while screen hosts choose how to react to action_id.
+    std::string placeholder;
+    bool password = false;
+    int32_t max_text_bytes = 4096;
+    int32_t min_text_lines = 3;
+    bool checked = false;
+    float minimum = 0.0f;
+    float maximum = 1.0f;
+    float step = 0.0f;
+    float value = 0.0f;
+    int32_t virtual_item_count = 0;
+    float virtual_item_extent = 32.0f;
+    Color modal_backdrop{0, 0, 0, 150};
+    bool dismiss_on_backdrop = false;
     TextStyle text_style{};
     std::string image_key;
     Color image_tint{255, 255, 255, 255};
@@ -92,7 +114,7 @@ struct UiWidgetTree {
 // dynamic builders work with the stable tree shape without pretending their
 // in-memory output originated from an asset file.
 struct UiPackedScene {
-    static constexpr uint32_t kCurrentFormatVersion = 1;
+    static constexpr uint32_t kCurrentFormatVersion = 3;
 
     uint32_t format_version = kCurrentFormatVersion;
     UiWidgetTree tree;

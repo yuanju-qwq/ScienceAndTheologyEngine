@@ -10,7 +10,7 @@
 #include "ecs/entity_guid.h"
 #include "engine/simulation_services.h"
 #include "input/input_state.h"
-#include "ui/retained_mui.h"
+#include "ui/retained_mui_screen_stack.h"
 
 #include <cstdint>
 #include <memory>
@@ -143,6 +143,9 @@ private:
     snt::ui::UiViewport viewport_{};
     uint64_t next_submission_order_ = 0;
     std::vector<Submission> submissions_;
+    // Reused while routing one retained input frame. Keeping this separate
+    // from submissions avoids granting Arc2D-only overlays a UI lifecycle.
+    std::vector<snt::ui::View*> active_roots_;
 };
 
 }  // namespace snt::engine
