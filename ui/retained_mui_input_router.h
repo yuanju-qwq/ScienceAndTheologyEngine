@@ -23,6 +23,14 @@ struct UiFocusedTextInput {
     Rect bounds;
 };
 
+// Borrowed only during the current host frame. UiRuntime uses it to resolve
+// declarative hover services such as automatic Tooltip without leaking a
+// retained View pointer outside the UI subsystem.
+struct UiHoveredView {
+    std::string_view root_id;
+    const View* view = nullptr;
+};
+
 class UiInputRouter {
 public:
     UiInputRouter();
@@ -41,6 +49,7 @@ public:
     std::optional<Rect> focused_text_input_bounds(const View& root) const;
     std::optional<UiFocusedTextInput> focused_text_input(
         std::span<View*> active_roots) const;
+    std::optional<UiHoveredView> hovered_view(std::span<View*> active_roots) const;
 
     void set_focus_scope(std::string root_id, std::span<View*> active_roots = {});
     void cancel_interaction_for_root(View& root);

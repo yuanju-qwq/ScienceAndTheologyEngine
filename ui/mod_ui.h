@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <variant>
@@ -124,6 +125,23 @@ enum class ScrollAxis : uint8_t {
     Both,
 };
 
+enum class TooltipPlacement : uint8_t {
+    Auto,
+    Top,
+    Bottom,
+    Left,
+    Right,
+};
+
+// Tooltip belongs to its anchor widget. The runtime supplies the retained
+// popup, delay, viewport clamping, and non-interactive Tooltip layer.
+struct TooltipConfig {
+    std::string text;
+    float delay_seconds = 0.45f;
+    float offset = 8.0f;
+    TooltipPlacement placement = TooltipPlacement::Auto;
+};
+
 struct Insets {
     float left = 0.0f;
     float top = 0.0f;
@@ -159,8 +177,9 @@ struct Layout {
 
 // Declarative widget representation. actions emits typed commands; a
 // view_model plus value_key binds a mutable widget value to a namespaced
-// store owned by the facade. VirtualList accepts at most one child template
-// and realizes only visible indexed instances internally.
+// store owned by the facade. tooltip is declared on its anchor widget;
+// VirtualList accepts at most one child template and realizes only visible
+// indexed instances internally with variable measured row heights.
 struct Widget {
     WidgetType type = WidgetType::View;
     WidgetId id;
@@ -186,7 +205,8 @@ struct Widget {
     float step = 0.0f;
     float value = 0.0f;
     int32_t virtual_item_count = 0;
-    float virtual_item_extent = 32.0f;
+    float virtual_item_estimate = 32.0f;
+    std::optional<TooltipConfig> tooltip;
     SlotState slot{};
     Color modal_backdrop{0, 0, 0, 150};
     bool dismiss_on_backdrop = false;
@@ -231,6 +251,24 @@ public:
                                                             Value value) = 0;
     virtual snt::core::Expected<void> register_image(ImageResource image) = 0;
     virtual snt::core::Expected<void> unregister_owner() = 0;
+};
+
+// Host-side lifetime gateway for one graphical client runtime. The game or
+// package loader uses this to hand a Mod its IModUiHost; the Mod never
+// receives the layer stack, image registry, renderer, ECS, or a borrowed
+// native object. Shared ownership keeps the command endpoint alive until the
+// UI contribution has been detached.
+class IModUiRuntime {
+public:
+    virtual ~IModUiRuntime() = default;
+
+    [[nodiscard]] virtual snt::core::Expected<std::shared_ptr<IModUiHost>> attach(
+        OwnerId owner,
+        std::shared_ptr<IModUiCommandSink> command_sink) = 0;
+    // Detach is idempotent so unload and runtime shutdown can both invoke it.
+    virtual snt::core::Expected<void> detach(OwnerId owner) = 0;
+    [[nodiscard]] virtual bool is_attached(const OwnerId& owner) const noexcept = 0;
+    virtual void detach_all() noexcept = 0;
 };
 
 }  // namespace snt::ui::mod

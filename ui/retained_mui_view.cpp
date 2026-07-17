@@ -1658,26 +1658,47 @@ VirtualListView::VirtualListView(std::string id)
 void VirtualListView::set_item_count(size_t count) {
     if (item_count_ == count) return;
     item_count_ = count;
+    reset_item_heights();
+    children_.clear();
+    realized_indices_.clear();
+    realized_begin_ = 0;
+    realized_end_ = 0;
     mark_layout_dirty();
 }
 
-void VirtualListView::set_item_extent(float extent) {
-    const float clamped = std::max(1.0f, extent);
-    if (item_extent_ == clamped) return;
-    item_extent_ = clamped;
+void VirtualListView::set_item_estimate(float height) {
+    const float clamped = std::isfinite(height) ? std::max(1.0f, height) : 1.0f;
+    if (item_estimate_ == clamped) return;
+    item_estimate_ = clamped;
+    reset_item_heights();
+    mark_layout_dirty();
+}
+
+void VirtualListView::set_item_height_provider(ItemHeightProvider provider) {
+    item_height_provider_ = std::move(provider);
+    reset_item_heights();
+    mark_layout_dirty();
+}
+
+void VirtualListView::invalidate_item_heights() {
+    reset_item_heights();
     mark_layout_dirty();
 }
 
 void VirtualListView::set_item_builder(ItemBuilder builder) {
     item_builder_ = std::move(builder);
     children_.clear();
-    first_realized_ = 0;
+    realized_indices_.clear();
+    realized_begin_ = 0;
+    realized_end_ = 0;
+    reset_item_heights();
     mark_layout_dirty();
 }
 
 void VirtualListView::set_scroll_offset(float offset) {
     scroll_offset_ = offset;
     clamp_scroll_offset();
+    layout_realized_children();
     mark_layout_dirty();
 }
 
@@ -1685,36 +1706,110 @@ void VirtualListView::measure(MeasureSpec width, MeasureSpec height, TextEngine&
     if (visibility_ == Visibility::Gone) {
         measured_size_ = {};
         children_.clear();
+        realized_indices_.clear();
+        realized_begin_ = 0;
+        realized_end_ = 0;
         return;
     }
+
+    if (item_heights_.size() != item_count_ || item_offsets_.size() != item_count_ + 1) {
+        reset_item_heights();
+    }
+
     const float desired_width = 120.0f;
-    const float desired_height = std::min(
-        static_cast<float>(item_count_) * item_extent_, 240.0f);
     measured_size_.x = resolve_axis(layout_params_.width, width, desired_width);
-    measured_size_.y = resolve_axis(layout_params_.height, height, desired_height);
-    viewport_height_ = std::max(0.0f, measured_size_.y);
-    max_scroll_offset_ = std::max(0.0f, static_cast<float>(item_count_) * item_extent_ -
-                                            viewport_height_);
-    clamp_scroll_offset();
-    realize_visible(text_engine, measured_size_.x);
+
+    if (!item_height_provider_ && std::fabs(measured_item_width_ - measured_size_.x) > 0.01f) {
+        measured_item_width_ = measured_size_.x;
+        reset_item_heights();
+    }
+    (void)refresh_item_heights_from_provider();
+
+    const auto refresh_viewport = [this, height] {
+        const float desired_height = std::min(content_height(), 240.0f);
+        measured_size_.y = resolve_axis(layout_params_.height, height, desired_height);
+        viewport_height_ = std::max(0.0f, measured_size_.y);
+        refresh_scroll_limits();
+    };
+    refresh_viewport();
+
+    // Measuring a newly realized row can replace its initial estimate. Repeat
+    // a small bounded number of times so the range converges when a tall row
+    // enters or leaves the viewport without turning layout into an O(n) mount.
+    for (size_t pass = 0; pass < 3; ++pass) {
+        if (!realize_visible(text_engine, measured_size_.x)) break;
+        refresh_viewport();
+    }
 }
 
-void VirtualListView::realize_visible(TextEngine& text_engine, float available_width) {
+void VirtualListView::reset_item_heights() {
+    item_heights_.assign(item_count_, item_estimate_);
+    item_offsets_.assign(item_count_ + 1, 0.0f);
+    rebuild_item_offsets();
+    refresh_scroll_limits();
+}
+
+bool VirtualListView::refresh_item_heights_from_provider() {
+    if (!item_height_provider_) return false;
+
+    bool changed = false;
+    for (size_t index = 0; index < item_count_; ++index) {
+        const float supplied = item_height_provider_(index);
+        const float next = std::isfinite(supplied) ? std::max(1.0f, supplied) : item_estimate_;
+        if (std::fabs(item_heights_[index] - next) <= 0.01f) continue;
+        item_heights_[index] = next;
+        changed = true;
+    }
+    if (changed) {
+        rebuild_item_offsets();
+        refresh_scroll_limits();
+    }
+    return changed;
+}
+
+void VirtualListView::rebuild_item_offsets() {
+    if (item_offsets_.size() != item_count_ + 1) item_offsets_.assign(item_count_ + 1, 0.0f);
+    item_offsets_.front() = 0.0f;
+    for (size_t index = 0; index < item_count_; ++index) {
+        item_offsets_[index + 1] = item_offsets_[index] + item_heights_[index];
+    }
+}
+
+void VirtualListView::refresh_scroll_limits() {
+    max_scroll_offset_ = std::max(0.0f, content_height() - viewport_height_);
+    clamp_scroll_offset();
+}
+
+size_t VirtualListView::item_index_at_offset(float offset) const {
+    if (item_count_ == 0) return 0;
+    const float upper = std::max(0.0f, content_height() - 0.001f);
+    const float clamped = std::clamp(offset, 0.0f, upper);
+    const auto found = std::upper_bound(item_offsets_.begin(), item_offsets_.end(), clamped);
+    const size_t after = static_cast<size_t>(std::distance(item_offsets_.begin(), found));
+    return std::min(item_count_ - 1, after == 0 ? 0 : after - 1);
+}
+
+bool VirtualListView::realize_visible(TextEngine& text_engine, float available_width) {
     if (!item_builder_ || item_count_ == 0) {
         children_.clear();
-        first_realized_ = 0;
-        return;
+        realized_indices_.clear();
+        realized_begin_ = 0;
+        realized_end_ = 0;
+        return false;
     }
-    const size_t first = std::min(item_count_ - 1,
-        static_cast<size_t>(std::floor(scroll_offset_ / item_extent_)));
-    const size_t visible = static_cast<size_t>(std::ceil(viewport_height_ / item_extent_));
+
+    const size_t first = item_index_at_offset(scroll_offset_);
+    const float visible_end = std::max(scroll_offset_,
+                                       scroll_offset_ + viewport_height_ - 0.001f);
+    const size_t last = item_index_at_offset(visible_end);
     const size_t begin = first > 1 ? first - 1 : 0;
-    const size_t end = std::min(item_count_, first + visible + 2);
-    const size_t count = end > begin ? end - begin : 0;
-    const bool matches = first_realized_ == begin && children_.size() == count;
+    const size_t end = std::min(item_count_, last + 2);
+    const bool matches = realized_begin_ == begin && realized_end_ == end;
     if (!matches) {
         children_.clear();
-        first_realized_ = begin;
+        realized_indices_.clear();
+        realized_begin_ = begin;
+        realized_end_ = end;
         for (size_t index = begin; index < end; ++index) {
             std::unique_ptr<View> child = item_builder_(index);
             if (!child) {
@@ -1724,29 +1819,51 @@ void VirtualListView::realize_visible(TextEngine& text_engine, float available_w
             }
             LayoutParams params = child->layout_params();
             params.width = 0.0f;
-            params.height = item_extent_;
+            params.height = item_height_provider_ ? item_heights_[index] : -1.0f;
             params.margin = {};
             child->set_layout_params(params);
             add_child(std::move(child));
+            realized_indices_.push_back(index);
         }
     }
-    for (auto& child : children_) {
-        child->measure({.size = std::max(0.0f, available_width), .mode = MeasureMode::Exactly},
-                       {.size = item_extent_, .mode = MeasureMode::Exactly}, text_engine);
+    bool changed = false;
+    for (size_t child_index = 0; child_index < children_.size(); ++child_index) {
+        const size_t item_index = realized_indices_[child_index];
+        const MeasureSpec item_height = item_height_provider_
+            ? MeasureSpec{.size = item_heights_[item_index], .mode = MeasureMode::Exactly}
+            : MeasureSpec{};
+        View& child = *children_[child_index];
+        child.measure({.size = std::max(0.0f, available_width), .mode = MeasureMode::Exactly},
+                      item_height, text_engine);
+        if (item_height_provider_) continue;
+        const float measured = std::max(1.0f, child.measured_size().y);
+        if (std::fabs(item_heights_[item_index] - measured) <= 0.01f) continue;
+        item_heights_[item_index] = measured;
+        changed = true;
     }
+    if (changed) {
+        rebuild_item_offsets();
+        refresh_scroll_limits();
+    }
+    return changed;
 }
 
 void VirtualListView::layout(Rect bounds) {
     View::layout(bounds);
     viewport_height_ = std::max(0.0f, bounds.size.y);
-    max_scroll_offset_ = std::max(0.0f, static_cast<float>(item_count_) * item_extent_ -
-                                            viewport_height_);
-    clamp_scroll_offset();
-    for (size_t index = 0; index < children_.size(); ++index) {
-        const float y = bounds.pos.y +
-            static_cast<float>(first_realized_ + index) * item_extent_ - scroll_offset_;
-        children_[index]->layout({.pos = {bounds.pos.x, y},
-                                  .size = {std::max(0.0f, bounds.size.x), item_extent_}});
+    refresh_scroll_limits();
+    layout_realized_children();
+}
+
+void VirtualListView::layout_realized_children() {
+    if (realized_indices_.size() != children_.size()) return;
+    for (size_t child_index = 0; child_index < children_.size(); ++child_index) {
+        const size_t item_index = realized_indices_[child_index];
+        const float y = bounds_.pos.y + item_offsets_[item_index] - scroll_offset_;
+        children_[child_index]->layout({
+            .pos = {bounds_.pos.x, y},
+            .size = {std::max(0.0f, bounds_.size.x), item_heights_[item_index]},
+        });
     }
 }
 
@@ -1786,7 +1903,10 @@ bool VirtualListView::scroll_by(float delta) {
     scroll_offset_ += delta;
     clamp_scroll_offset();
     const bool changed = before != scroll_offset_;
-    if (changed) mark_layout_dirty();
+    if (changed) {
+        layout_realized_children();
+        mark_layout_dirty();
+    }
     return changed;
 }
 

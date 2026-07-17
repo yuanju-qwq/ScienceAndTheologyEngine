@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -69,6 +70,26 @@ enum class ScrollAxis : uint8_t {
     Vertical,
     Horizontal,
     Both,
+};
+
+// Tooltip placement is a retained UI policy, not a renderer detail. The
+// runtime chooses a fitting edge for Auto and keeps the popup inside the
+// logical viewport.
+enum class UiTooltipPlacement : uint8_t {
+    Auto,
+    Top,
+    Bottom,
+    Left,
+    Right,
+};
+
+struct UiTooltipConfig {
+    std::string text;
+    float delay_seconds = 0.45f;
+    float offset = 8.0f;
+    UiTooltipPlacement placement = UiTooltipPlacement::Auto;
+
+    bool operator==(const UiTooltipConfig&) const = default;
 };
 
 // Maps one platform window to the UI coordinate system. `window_size` is in
@@ -243,6 +264,9 @@ struct UiTextComposition {
 // button values, mapped key edges, committed UTF-8, and IME composition.
 struct UiInputState {
     bool pointer_enabled = true;
+    // Time since the previous host UI frame. Timed retained policies such as
+    // Tooltip use this rather than platform-specific clocks.
+    float delta_seconds = 0.0f;
     Vec2 pointer_position{};
     std::array<bool, 3> pointer_held{};
     std::array<bool, 3> pointer_pressed{};

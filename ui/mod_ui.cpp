@@ -39,7 +39,7 @@ struct HostState {
     OwnerId owner;
     UiLayerStack* layers = nullptr;
     UiImageRegistry* images = nullptr;
-    IModUiCommandSink* command_sink = nullptr;
+    std::shared_ptr<IModUiCommandSink> command_sink;
     std::unordered_map<std::string, ViewModel> view_models;
     std::unordered_set<std::string> image_keys;
     bool active = true;
@@ -65,6 +65,25 @@ struct HostState {
     return finite(value.left) && finite(value.top) && finite(value.right) &&
            finite(value.bottom) && value.left >= 0.0f && value.top >= 0.0f &&
            value.right >= 0.0f && value.bottom >= 0.0f;
+}
+
+[[nodiscard]] bool valid_tooltip_placement(TooltipPlacement placement) noexcept {
+    switch (placement) {
+    case TooltipPlacement::Auto:
+    case TooltipPlacement::Top:
+    case TooltipPlacement::Bottom:
+    case TooltipPlacement::Left:
+    case TooltipPlacement::Right:
+        return true;
+    }
+    return false;
+}
+
+[[nodiscard]] bool valid_tooltip(const std::optional<TooltipConfig>& tooltip) noexcept {
+    if (!tooltip) return true;
+    return !tooltip->text.empty() && finite(tooltip->delay_seconds) &&
+           tooltip->delay_seconds >= 0.0f && finite(tooltip->offset) &&
+           tooltip->offset >= 0.0f && valid_tooltip_placement(tooltip->placement);
 }
 
 [[nodiscard]] Expected<void> validate_value(const Value& value,
@@ -138,11 +157,14 @@ struct HostState {
     if (!finite(widget.background_radius) || widget.background_radius < 0.0f ||
         !finite(widget.minimum) || !finite(widget.maximum) || widget.maximum < widget.minimum ||
         !finite(widget.step) || widget.step < 0.0f || !finite(widget.value) ||
-        widget.virtual_item_count < 0 || !finite(widget.virtual_item_extent) ||
-        widget.virtual_item_extent <= 0.0f || widget.max_text_bytes == 0 ||
+        widget.virtual_item_count < 0 || !finite(widget.virtual_item_estimate) ||
+        widget.virtual_item_estimate <= 0.0f || widget.max_text_bytes == 0 ||
         widget.min_text_lines == 0 ||
         widget.slot.count < 0 || !valid_insets(widget.nine_slice_borders)) {
         return invalid_argument(path + " has invalid control values");
+    }
+    if (!valid_tooltip(widget.tooltip)) {
+        return invalid_argument(path + ".tooltip has invalid values");
     }
     if ((widget.nine_slice_borders.left < 0.0f || widget.nine_slice_borders.top < 0.0f ||
          widget.nine_slice_borders.right < 0.0f || widget.nine_slice_borders.bottom < 0.0f)) {
@@ -253,6 +275,27 @@ struct HostState {
     return snt::ui::ScrollAxis::Vertical;
 }
 
+[[nodiscard]] snt::ui::UiTooltipPlacement to_ui_tooltip_placement(
+    TooltipPlacement value) {
+    switch (value) {
+    case TooltipPlacement::Auto: return snt::ui::UiTooltipPlacement::Auto;
+    case TooltipPlacement::Top: return snt::ui::UiTooltipPlacement::Top;
+    case TooltipPlacement::Bottom: return snt::ui::UiTooltipPlacement::Bottom;
+    case TooltipPlacement::Left: return snt::ui::UiTooltipPlacement::Left;
+    case TooltipPlacement::Right: return snt::ui::UiTooltipPlacement::Right;
+    }
+    return snt::ui::UiTooltipPlacement::Auto;
+}
+
+[[nodiscard]] snt::ui::UiTooltipConfig to_ui_tooltip_config(const TooltipConfig& value) {
+    return {
+        .text = value.text,
+        .delay_seconds = value.delay_seconds,
+        .offset = value.offset,
+        .placement = to_ui_tooltip_placement(value.placement),
+    };
+}
+
 [[nodiscard]] snt::ui::UiLayer to_ui_layer(Layer value) {
     switch (value) {
     case Layer::Hud: return snt::ui::UiLayer::Hud;
@@ -294,6 +337,7 @@ void apply_common(snt::ui::View& view, const Widget& widget) {
     if (widget.has_background) {
         view.set_background(to_ui_color(widget.background), widget.background_radius);
     }
+    if (widget.tooltip) view.set_tooltip(to_ui_tooltip_config(*widget.tooltip));
 }
 
 void set_model_value(const std::weak_ptr<HostState>& weak_state,
@@ -315,7 +359,9 @@ void dispatch_command(const std::weak_ptr<HostState>& weak_state,
                       std::optional<SlotState> slot = std::nullopt) {
     if (declaration.name.empty()) return;
     const auto state = weak_state.lock();
-    if (!state || !state->active || !state->command_sink) return;
+    if (!state || !state->active) return;
+    const std::shared_ptr<IModUiCommandSink> command_sink = state->command_sink;
+    if (!command_sink) return;
 
     declaration.screen = std::move(screen);
     declaration.widget = std::move(widget);
@@ -323,7 +369,7 @@ void dispatch_command(const std::weak_ptr<HostState>& weak_state,
     if (dynamic_value) declaration.value = std::move(*dynamic_value);
     if (slot) declaration.slot = std::move(*slot);
 
-    if (auto result = state->command_sink->dispatch(std::move(declaration)); !result) {
+    if (auto result = command_sink->dispatch(std::move(declaration)); !result) {
         SNT_LOG_WARN("Mod UI command dispatch failed for owner='%s': %s",
                      state->owner.value.c_str(), result.error().format().c_str());
     }
@@ -595,7 +641,7 @@ void prefix_widget_ids(Widget& widget, std::string_view prefix) {
         auto view = std::make_unique<snt::ui::VirtualListView>(widget.id.value);
         apply_common(*view, widget);
         view->set_item_count(static_cast<size_t>(widget.virtual_item_count));
-        view->set_item_extent(widget.virtual_item_extent);
+        view->set_item_estimate(widget.virtual_item_estimate);
         if (!widget.children.empty()) {
             const Widget item_template = widget.children.front();
             const std::string item_prefix = widget.id.value + "[";
@@ -658,6 +704,39 @@ void prefix_widget_ids(Widget& widget, std::string_view prefix) {
     }
     }
     return invalid_argument("Mod UI contains an unsupported widget type").error();
+}
+
+// Releases every retained resource owned by one facade host. Both explicit
+// unload and the host destructor reach this function, so it is deliberately
+// idempotent and severs the command endpoint before tearing down Views.
+[[nodiscard]] Expected<void> unregister_host_state(HostState& state) {
+    if (!state.active) return {};
+
+    state.active = false;
+    state.command_sink.reset();
+    if (state.layers) {
+        (void)state.layers->unregister_owner(state.owner.value);
+    }
+
+    std::optional<Error> first_error;
+    if (state.images) {
+        for (const std::string& key : state.image_keys) {
+            if (auto result = state.images->unregister_image(key); !result && !first_error) {
+                first_error = result.error();
+            }
+        }
+    }
+    const size_t image_count = state.image_keys.size();
+    state.image_keys.clear();
+    state.view_models.clear();
+    state.layers = nullptr;
+    state.images = nullptr;
+
+    if (first_error) return std::move(*first_error);
+
+    SNT_LOG_INFO("Mod UI owner detached: owner='%s' images=%zu",
+                 state.owner.value.c_str(), image_count);
+    return {};
 }
 
 class ModUiHost final : public IModUiHost {
@@ -770,25 +849,12 @@ public:
     }
 
     Expected<void> unregister_owner() override {
-        if (!state_ || !state_->active) return {};
-        state_->active = false;
-        (void)state_->layers->unregister_owner(state_->owner.value);
-
-        std::optional<Error> first_error;
-        for (const std::string& key : state_->image_keys) {
-            if (auto result = state_->images->unregister_image(key); !result && !first_error) {
-                first_error = result.error();
-            }
+        if (!state_) return {};
+        if (auto result = unregister_host_state(*state_); !result) {
+            auto error = result.error();
+            error.with_context("ModUiHost::unregister_owner(" + state_->owner.value + ")");
+            return error;
         }
-        const size_t image_count = state_->image_keys.size();
-        state_->image_keys.clear();
-        state_->view_models.clear();
-        if (first_error) {
-            first_error->with_context("ModUiHost::unregister_owner(" + state_->owner.value + ")");
-            return std::move(*first_error);
-        }
-        SNT_LOG_INFO("Mod UI owner unregistered: owner='%s' images=%zu",
-                     state_->owner.value.c_str(), image_count);
         return {};
     }
 
@@ -796,22 +862,104 @@ private:
     std::shared_ptr<HostState> state_;
 };
 
+// Runtime-owned registry for Mod UI contributions. It retains only weak
+// references so a Mod can still release its host through normal RAII; an
+// explicit detach remains available for package unload and client shutdown.
+class ModUiRuntime final : public IModUiRuntime {
+public:
+    ModUiRuntime(UiLayerStack& layers, UiImageRegistry& images)
+        : layers_(&layers), images_(&images) {}
+
+    ~ModUiRuntime() override { detach_all(); }
+
+    Expected<std::shared_ptr<IModUiHost>> attach(
+        OwnerId owner,
+        std::shared_ptr<IModUiCommandSink> command_sink) override {
+        if (!valid_scope_key(owner.value)) {
+            return Error{ErrorCode::kInvalidArgument,
+                         "Mod UI owner ID is required and cannot contain ':'"};
+        }
+        if (!command_sink) {
+            return Error{ErrorCode::kInvalidArgument,
+                         "Mod UI attach requires a command sink"};
+        }
+
+        if (const auto found = attachments_.find(owner.value); found != attachments_.end()) {
+            if (const auto state = found->second.state.lock(); state && state->active) {
+                return Error{ErrorCode::kInvalidState,
+                             "Mod UI owner is already attached: " + owner.value};
+            }
+            attachments_.erase(found);
+        }
+
+        auto state = std::make_shared<HostState>();
+        state->owner = std::move(owner);
+        state->layers = layers_;
+        state->images = images_;
+        state->command_sink = std::move(command_sink);
+        auto host = std::make_shared<ModUiHost>(state);
+        attachments_.emplace(state->owner.value,
+                             Attachment{.host = host, .state = state});
+        SNT_LOG_INFO("Mod UI owner attached: owner='%s'", state->owner.value.c_str());
+        return std::shared_ptr<IModUiHost>(std::move(host));
+    }
+
+    Expected<void> detach(OwnerId owner) override {
+        if (!valid_scope_key(owner.value)) {
+            return Error{ErrorCode::kInvalidArgument,
+                         "Mod UI owner ID is required and cannot contain ':'"};
+        }
+
+        const auto found = attachments_.find(owner.value);
+        if (found == attachments_.end()) return {};
+        const std::shared_ptr<HostState> state = found->second.state.lock();
+        attachments_.erase(found);
+        if (!state || !state->active) return {};
+
+        if (auto result = unregister_host_state(*state); !result) {
+            auto error = result.error();
+            error.with_context("ModUiRuntime::detach(" + owner.value + ")");
+            return error;
+        }
+        return {};
+    }
+
+    bool is_attached(const OwnerId& owner) const noexcept override {
+        const auto found = attachments_.find(owner.value);
+        if (found == attachments_.end()) return false;
+        const auto host = found->second.host.lock();
+        const auto state = found->second.state.lock();
+        return host && state && state->active;
+    }
+
+    void detach_all() noexcept override {
+        for (const auto& [owner, attachment] : attachments_) {
+            const auto state = attachment.state.lock();
+            if (!state || !state->active) continue;
+            if (auto result = unregister_host_state(*state); !result) {
+                SNT_LOG_WARN("Mod UI owner teardown failed for owner='%s': %s",
+                             owner.c_str(), result.error().format().c_str());
+            }
+        }
+        attachments_.clear();
+    }
+
+private:
+    struct Attachment {
+        std::weak_ptr<ModUiHost> host;
+        std::weak_ptr<HostState> state;
+    };
+
+    UiLayerStack* layers_ = nullptr;
+    UiImageRegistry* images_ = nullptr;
+    std::unordered_map<std::string, Attachment> attachments_;
+};
+
 }  // namespace
 
-Expected<std::unique_ptr<IModUiHost>> create_mod_ui_host(OwnerId owner,
-                                                          UiLayerStack& layers,
-                                                          UiImageRegistry& images,
-                                                          IModUiCommandSink& command_sink) {
-    if (!valid_scope_key(owner.value)) {
-        return Error{ErrorCode::kInvalidArgument,
-                     "Mod UI owner ID is required and cannot contain ':'"};
-    }
-    auto state = std::make_shared<HostState>();
-    state->owner = std::move(owner);
-    state->layers = &layers;
-    state->images = &images;
-    state->command_sink = &command_sink;
-    return std::unique_ptr<IModUiHost>(std::make_unique<ModUiHost>(std::move(state)));
+Expected<std::unique_ptr<IModUiRuntime>> create_mod_ui_runtime(UiLayerStack& layers,
+                                                                UiImageRegistry& images) {
+    return std::unique_ptr<IModUiRuntime>(std::make_unique<ModUiRuntime>(layers, images));
 }
 
 }  // namespace snt::ui::mod::internal

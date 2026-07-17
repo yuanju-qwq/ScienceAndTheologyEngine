@@ -674,6 +674,23 @@ std::optional<UiFocusedTextInput> UiInputRouter::focused_text_input(
     };
 }
 
+std::optional<UiHoveredView> UiInputRouter::hovered_view(
+    std::span<View*> active_roots) const {
+    if (hovered_.empty()) return std::nullopt;
+    View* const root = find_active_root(active_roots, hovered_.root);
+    if (!root) return std::nullopt;
+
+    std::vector<const View*> path;
+    path.reserve(8);
+    if (!build_path_to_id(static_cast<const View&>(*root), hovered_.view, path) || path.empty()) {
+        return std::nullopt;
+    }
+    return UiHoveredView{
+        .root_id = hovered_.root,
+        .view = path.back(),
+    };
+}
+
 void UiInputRouter::set_focus_scope(std::string root_id, std::span<View*> active_roots) {
     if (focus_scope_root_ == root_id) return;
     focus_scope_root_ = std::move(root_id);

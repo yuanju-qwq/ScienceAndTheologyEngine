@@ -321,6 +321,44 @@ TEST(RetainedMui, NestedScrollViewsKeepWheelInputAtNearestMovableViewport) {
     EXPECT_FLOAT_EQ(raw_outer->scroll_offset().y, 36.0f);
 }
 
+TEST(RetainedMui, VirtualListSupportsVariableHeightsAndVirtualizesVisibleRange) {
+    auto paths = make_test_path_resolver();
+    ASSERT_TRUE(paths) << paths.error().format();
+    UiRuntime runtime(*paths);
+
+    auto root = std::make_unique<FrameLayout>("virtual_list_root");
+    auto list = std::make_unique<VirtualListView>("variable_list");
+    VirtualListView* const raw_list = list.get();
+    list->set_layout_params({.width = 100.0f, .height = 50.0f});
+    list->set_item_count(5);
+    list->set_item_estimate(10.0f);
+    constexpr std::array<float, 5> kItemHeights{10.0f, 30.0f, 20.0f, 40.0f, 15.0f};
+    list->set_item_height_provider([item_heights = kItemHeights](size_t index) {
+        return item_heights[index];
+    });
+    list->set_item_builder([](size_t index) {
+        auto row = std::make_unique<View>("row_" + std::to_string(index));
+        row->set_background({40, 55, 70, 255});
+        return row;
+    });
+    root->add_child(std::move(list));
+
+    runtime.layout(*root, {160.0f, 120.0f});
+    EXPECT_FLOAT_EQ(raw_list->content_height(), 115.0f);
+    EXPECT_FLOAT_EQ(raw_list->max_scroll_offset(), 65.0f);
+    EXPECT_EQ(raw_list->first_realized_index(), 0u);
+    EXPECT_LT(raw_list->children().size(), raw_list->item_count());
+
+    raw_list->set_scroll_offset(55.0f);
+    runtime.layout(*root, {160.0f, 120.0f});
+    EXPECT_EQ(raw_list->first_realized_index(), 1u);
+    ASSERT_EQ(raw_list->children().size(), 4u);
+    View* const third_row = raw_list->find("row_2");
+    ASSERT_NE(third_row, nullptr);
+    EXPECT_FLOAT_EQ(third_row->bounds().pos.y, -15.0f);
+    EXPECT_FLOAT_EQ(third_row->bounds().size.y, 20.0f);
+}
+
 TEST(RetainedMui, LayerStackNamespacedLifecycleMountsOnceAndUpdatesVisibleRoots) {
     UiImageRegistry images;
     UiLayerStack layers;
@@ -392,7 +430,7 @@ TEST(RetainedMui, PackedSceneJsonInstantiatesWidgetsAndDispatchesActions) {
     constexpr std::string_view source = R"json(
 {
   "format": "snt.ui.packed_scene",
-  "version": 3,
+  "version": 4,
   "root": {
     "type": "frame",
     "id": "research_root",
@@ -447,11 +485,11 @@ TEST(RetainedMui, PackedSceneJsonInstantiatesWidgetsAndDispatchesActions) {
     EXPECT_EQ(dispatched_action, "research.claim");
 }
 
-TEST(RetainedMui, PackedSceneV3InstantiatesInteractiveControlsAndVirtualList) {
+TEST(RetainedMui, PackedSceneV4InstantiatesInteractiveControlsAndVirtualList) {
     constexpr std::string_view source = R"json(
 {
   "format": "snt.ui.packed_scene",
-  "version": 3,
+  "version": 4,
   "root": {
     "type": "frame",
     "id": "settings_root",
@@ -485,6 +523,12 @@ TEST(RetainedMui, PackedSceneV3InstantiatesInteractiveControlsAndVirtualList) {
         "maximum": 1,
         "step": 0.25,
         "value": 0.5,
+        "tooltip": {
+          "text": "Adjust master volume",
+          "delay_seconds": 0.2,
+          "offset": 6,
+          "placement": "right"
+        },
         "action": "audio.volume"
       },
       {
@@ -492,7 +536,7 @@ TEST(RetainedMui, PackedSceneV3InstantiatesInteractiveControlsAndVirtualList) {
         "id": "recent_servers",
         "layout": { "width": 160, "height": 40 },
         "virtual_item_count": 100,
-        "virtual_item_extent": 20,
+        "virtual_item_estimate": 20,
         "children": [
           { "type": "text", "id": "server_row", "text": "Server" }
         ]
@@ -543,7 +587,13 @@ TEST(RetainedMui, PackedSceneV3InstantiatesInteractiveControlsAndVirtualList) {
     EXPECT_EQ(editor->min_visible_lines(), 4u);
     EXPECT_TRUE(checkbox->checked());
     EXPECT_FLOAT_EQ(slider->value(), 0.5f);
+    ASSERT_TRUE(slider->tooltip().has_value());
+    EXPECT_EQ(slider->tooltip()->text, "Adjust master volume");
+    EXPECT_FLOAT_EQ(slider->tooltip()->delay_seconds, 0.2f);
+    EXPECT_FLOAT_EQ(slider->tooltip()->offset, 6.0f);
+    EXPECT_EQ(slider->tooltip()->placement, UiTooltipPlacement::Right);
     EXPECT_EQ(list->item_count(), 100u);
+    EXPECT_FLOAT_EQ(list->item_estimate(), 20.0f);
 
     input->on_input_event({.type = UiInputEventType::TextCommit, .text = "Ada"});
     input->on_input_event({.type = UiInputEventType::KeyDown, .key = UiKey::Enter});
@@ -691,7 +741,7 @@ TEST(RetainedMui, PackedSceneRejectsDuplicateIdsAndInvalidScrollContent) {
     constexpr std::string_view duplicate_ids = R"json(
 {
   "format": "snt.ui.packed_scene",
-  "version": 3,
+  "version": 4,
   "root": {
     "type": "frame",
     "id": "root",
@@ -704,7 +754,7 @@ TEST(RetainedMui, PackedSceneRejectsDuplicateIdsAndInvalidScrollContent) {
     constexpr std::string_view invalid_scroll = R"json(
 {
   "format": "snt.ui.packed_scene",
-  "version": 3,
+  "version": 4,
   "root": {
     "type": "scroll",
     "id": "scroll",
@@ -716,6 +766,33 @@ TEST(RetainedMui, PackedSceneRejectsDuplicateIdsAndInvalidScrollContent) {
 }
 )json";
     EXPECT_FALSE(parse_ui_packed_scene_json(invalid_scroll, "invalid_scroll.mui.json"));
+
+    constexpr std::string_view removed_virtual_item_extent = R"json(
+{
+  "format": "snt.ui.packed_scene",
+  "version": 4,
+  "root": {
+    "type": "virtual_list",
+    "id": "servers",
+    "virtual_item_extent": 20
+  }
+}
+)json";
+    EXPECT_FALSE(parse_ui_packed_scene_json(removed_virtual_item_extent,
+                                            "removed_virtual_item_extent.mui.json"));
+
+    constexpr std::string_view invalid_tooltip = R"json(
+{
+  "format": "snt.ui.packed_scene",
+  "version": 4,
+  "root": {
+    "type": "button",
+    "id": "help",
+    "tooltip": { "text": "", "delay_seconds": -1 }
+  }
+}
+)json";
+    EXPECT_FALSE(parse_ui_packed_scene_json(invalid_tooltip, "invalid_tooltip.mui.json"));
 }
 
 TEST(RetainedMui, MixedBidiAndJoinedEmojiProduceGlyphs) {
@@ -1504,6 +1581,53 @@ TEST(RetainedMui, InputRouterOwnsPointerFocusAndInteractionState) {
     EXPECT_TRUE(has_interaction_state(button.interaction_state(), UiInteractionState::Focused));
 }
 
+TEST(RetainedMui, AutomaticTooltipDelaysAnchorsAndHidesWhenPointerLeaves) {
+    auto paths = make_test_path_resolver();
+    ASSERT_TRUE(paths) << paths.error().format();
+    UiRuntime runtime(*paths);
+    runtime.set_viewport({.framebuffer_size = {160.0f, 100.0f},
+                          .window_size = {160.0f, 100.0f}});
+
+    auto root = std::make_unique<FrameLayout>("tooltip_root");
+    auto anchor = std::make_unique<Button>("tooltip_anchor");
+    Button* const raw_anchor = anchor.get();
+    anchor->set_layout_params({.width = 60.0f,
+                               .height = 20.0f,
+                               .margin = {.left = 20.0f, .top = 70.0f}});
+    anchor->set_tooltip({.text = "More details",
+                         .delay_seconds = 0.5f,
+                         .offset = 4.0f,
+                         .placement = UiTooltipPlacement::Auto});
+    root->add_child(std::move(anchor));
+    runtime.layout(*root, {160.0f, 100.0f});
+    std::array<View*, 1> roots{root.get()};
+
+    const auto hover = [&](float delta_seconds) {
+        runtime.begin_input_frame({.delta_seconds = delta_seconds,
+                                   .pointer_position = {30.0f, 80.0f}}, roots);
+        EXPECT_TRUE(runtime.dispatch_pointer_input(*root));
+        runtime.end_input_frame(roots);
+    };
+    hover(0.20f);
+    EXPECT_FALSE(runtime.automatic_tooltip_visible());
+    hover(0.29f);
+    EXPECT_FALSE(runtime.automatic_tooltip_visible());
+    hover(0.02f);
+    ASSERT_TRUE(runtime.automatic_tooltip_visible());
+
+    const auto tooltip_bounds = runtime.automatic_tooltip_bounds();
+    ASSERT_TRUE(tooltip_bounds.has_value());
+    EXPECT_LE(tooltip_bounds->pos.y + tooltip_bounds->size.y,
+              raw_anchor->bounds().pos.y - 3.99f);
+    EXPECT_FALSE(runtime.paint_automatic_tooltip().vertices.empty());
+
+    runtime.begin_input_frame({.delta_seconds = 0.01f,
+                               .pointer_position = {140.0f, 80.0f}}, roots);
+    EXPECT_FALSE(runtime.dispatch_pointer_input(*root));
+    runtime.end_input_frame(roots);
+    EXPECT_FALSE(runtime.automatic_tooltip_visible());
+}
+
 TEST(RetainedMui, TextInputServiceOwnsClipboardAndNativePlatformState) {
     UiTextInputService service;
     auto clipboard = std::make_shared<UiMemoryClipboard>();
@@ -1545,11 +1669,18 @@ TEST(RetainedMui, TextInputServiceOwnsClipboardAndNativePlatformState) {
 TEST(RetainedMui, ModFacadeOwnsControlsModelsCommandsAndResources) {
     UiImageRegistry images;
     UiLayerStack layers;
-    CapturingModUiCommandSink sink;
-    auto host_result = mod::internal::create_mod_ui_host(
-        {.value = "example_mod"}, layers, images, sink);
+    auto runtime_result = mod::internal::create_mod_ui_runtime(layers, images);
+    ASSERT_TRUE(runtime_result) << runtime_result.error().format();
+    std::unique_ptr<mod::IModUiRuntime> mod_runtime = std::move(*runtime_result);
+
+    auto sink = std::make_shared<CapturingModUiCommandSink>();
+    std::weak_ptr<CapturingModUiCommandSink> sink_lifetime = sink;
+    auto host_result = mod_runtime->attach({.value = "example_mod"}, sink);
     ASSERT_TRUE(host_result) << host_result.error().format();
-    std::unique_ptr<mod::IModUiHost> host = std::move(*host_result);
+    std::shared_ptr<mod::IModUiHost> host = std::move(*host_result);
+    EXPECT_TRUE(mod_runtime->is_attached({.value = "example_mod"}));
+    const auto duplicate = mod_runtime->attach({.value = "example_mod"}, sink);
+    EXPECT_FALSE(static_cast<bool>(duplicate));
 
     ASSERT_TRUE(host->register_image({
         .ref = {.value = "icon"},
@@ -1609,6 +1740,12 @@ TEST(RetainedMui, ModFacadeOwnsControlsModelsCommandsAndResources) {
     slider.maximum = 1.0f;
     slider.step = 0.25f;
     slider.value = 0.5f;
+    slider.tooltip = {
+        .text = "Adjust master volume",
+        .delay_seconds = 0.2f,
+        .offset = 6.0f,
+        .placement = mod::TooltipPlacement::Right,
+    };
     slider.view_model = {.value = "profile"};
     slider.value_key = "volume";
     slider.actions.change.name = "volume.changed";
@@ -1647,7 +1784,7 @@ TEST(RetainedMui, ModFacadeOwnsControlsModelsCommandsAndResources) {
     list.layout.width = 220.0f;
     list.layout.height = 48.0f;
     list.virtual_item_count = 100;
-    list.virtual_item_extent = 20.0f;
+    list.virtual_item_estimate = 20.0f;
     mod::Widget row;
     row.type = mod::WidgetType::Text;
     row.id = {.value = "row"};
@@ -1708,6 +1845,12 @@ TEST(RetainedMui, ModFacadeOwnsControlsModelsCommandsAndResources) {
     ASSERT_NE(retained_list, nullptr);
     EXPECT_EQ(retained_notes->min_visible_lines(), 4u);
     EXPECT_EQ(retained_list->item_count(), 100u);
+    EXPECT_FLOAT_EQ(retained_list->item_estimate(), 20.0f);
+    ASSERT_TRUE(retained_slider->tooltip().has_value());
+    EXPECT_EQ(retained_slider->tooltip()->text, "Adjust master volume");
+    EXPECT_FLOAT_EQ(retained_slider->tooltip()->delay_seconds, 0.2f);
+    EXPECT_FLOAT_EQ(retained_slider->tooltip()->offset, 6.0f);
+    EXPECT_EQ(retained_slider->tooltip()->placement, UiTooltipPlacement::Right);
 
     const auto modal_submission = std::find_if(submissions.begin(), submissions.end(),
         [](const UiScreenSubmission& submission) { return submission.layer == UiLayer::Modal; });
@@ -1737,14 +1880,14 @@ TEST(RetainedMui, ModFacadeOwnsControlsModelsCommandsAndResources) {
         .payload = {.type = "snt.item", .resource_key = "example_mod:icon", .count = 3},
     });
 
-    ASSERT_NE(find_mod_command(sink.commands, "profile.changed"), nullptr);
-    ASSERT_NE(find_mod_command(sink.commands, "profile.submitted"), nullptr);
-    ASSERT_NE(find_mod_command(sink.commands, "notes.changed"), nullptr);
-    ASSERT_NE(find_mod_command(sink.commands, "notes.submitted"), nullptr);
-    ASSERT_NE(find_mod_command(sink.commands, "enabled.changed"), nullptr);
-    ASSERT_NE(find_mod_command(sink.commands, "volume.changed"), nullptr);
-    ASSERT_NE(find_mod_command(sink.commands, "run.clicked"), nullptr);
-    const mod::Command* drop = find_mod_command(sink.commands, "inventory.drop");
+    ASSERT_NE(find_mod_command(sink->commands, "profile.changed"), nullptr);
+    ASSERT_NE(find_mod_command(sink->commands, "profile.submitted"), nullptr);
+    ASSERT_NE(find_mod_command(sink->commands, "notes.changed"), nullptr);
+    ASSERT_NE(find_mod_command(sink->commands, "notes.submitted"), nullptr);
+    ASSERT_NE(find_mod_command(sink->commands, "enabled.changed"), nullptr);
+    ASSERT_NE(find_mod_command(sink->commands, "volume.changed"), nullptr);
+    ASSERT_NE(find_mod_command(sink->commands, "run.clicked"), nullptr);
+    const mod::Command* drop = find_mod_command(sink->commands, "inventory.drop");
     ASSERT_NE(drop, nullptr);
     EXPECT_EQ(drop->screen.value, "controls");
     EXPECT_EQ(drop->widget.value, "inventory_slot");
@@ -1765,7 +1908,99 @@ TEST(RetainedMui, ModFacadeOwnsControlsModelsCommandsAndResources) {
     runtime.layout(*controls_submission->root, {320.0f, 200.0f});
     EXPECT_LT(retained_list->children().size(), retained_list->item_count());
 
-    ASSERT_TRUE(host->unregister_owner());
+    sink.reset();
+    EXPECT_FALSE(sink_lifetime.expired());
+    ASSERT_TRUE(mod_runtime->detach({.value = "example_mod"}));
+    EXPECT_FALSE(mod_runtime->is_attached({.value = "example_mod"}));
+    EXPECT_FALSE(host->set_screen_visible({.value = "controls"}, true));
+    ASSERT_TRUE(mod_runtime->detach({.value = "example_mod"}));
     EXPECT_TRUE(layers.prepare_frame({.viewport = {320.0f, 200.0f}, .images = images}).empty());
     EXPECT_EQ(images.image_count(), 0u);
+    EXPECT_TRUE(sink_lifetime.expired());
+}
+
+TEST(RetainedMui, ModRuntimeDetachAllRevokesEveryAttachedOwner) {
+    UiImageRegistry images;
+    UiLayerStack layers;
+    auto runtime_result = mod::internal::create_mod_ui_runtime(layers, images);
+    ASSERT_TRUE(runtime_result) << runtime_result.error().format();
+    std::unique_ptr<mod::IModUiRuntime> mod_runtime = std::move(*runtime_result);
+
+    auto first_sink = std::make_shared<CapturingModUiCommandSink>();
+    auto first_result = mod_runtime->attach({.value = "first_mod"}, first_sink);
+    ASSERT_TRUE(first_result) << first_result.error().format();
+    std::shared_ptr<mod::IModUiHost> first_host = std::move(*first_result);
+    auto second_sink = std::make_shared<CapturingModUiCommandSink>();
+    auto second_result = mod_runtime->attach({.value = "second_mod"}, second_sink);
+    ASSERT_TRUE(second_result) << second_result.error().format();
+    std::shared_ptr<mod::IModUiHost> second_host = std::move(*second_result);
+
+    ASSERT_TRUE(first_host->register_image({
+        .ref = {.value = "icon"},
+        .width = 2,
+        .height = 2,
+        .rgba = std::vector<uint8_t>(2u * 2u * 4u, 255u),
+    }));
+    ASSERT_TRUE(second_host->register_image({
+        .ref = {.value = "icon"},
+        .width = 2,
+        .height = 2,
+        .rgba = std::vector<uint8_t>(2u * 2u * 4u, 200u),
+    }));
+
+    mod::Screen screen;
+    screen.id = {.value = "main"};
+    screen.initially_visible = true;
+    screen.root.type = mod::WidgetType::Image;
+    screen.root.id = {.value = "root"};
+    screen.root.resource = {.value = "icon"};
+    ASSERT_TRUE(first_host->replace_screens({std::move(screen)}));
+    ASSERT_EQ(layers.prepare_frame({.viewport = {160.0f, 90.0f}, .images = images}).size(), 1u);
+
+    mod_runtime->detach_all();
+
+    EXPECT_FALSE(mod_runtime->is_attached({.value = "first_mod"}));
+    EXPECT_FALSE(mod_runtime->is_attached({.value = "second_mod"}));
+    EXPECT_FALSE(first_host->set_screen_visible({.value = "main"}, true));
+    EXPECT_FALSE(second_host->set_view_model_value(
+        {.value = "settings"}, "enabled", true));
+    EXPECT_TRUE(layers.prepare_frame({.viewport = {160.0f, 90.0f}, .images = images}).empty());
+    EXPECT_EQ(images.image_count(), 0u);
+}
+
+TEST(RetainedMui, ModRuntimeHostReleasePerformsRaiiTeardown) {
+    UiImageRegistry images;
+    UiLayerStack layers;
+    auto runtime_result = mod::internal::create_mod_ui_runtime(layers, images);
+    ASSERT_TRUE(runtime_result) << runtime_result.error().format();
+    std::unique_ptr<mod::IModUiRuntime> mod_runtime = std::move(*runtime_result);
+    auto sink = std::make_shared<CapturingModUiCommandSink>();
+
+    {
+        auto host_result = mod_runtime->attach({.value = "raii_mod"}, sink);
+        ASSERT_TRUE(host_result) << host_result.error().format();
+        std::shared_ptr<mod::IModUiHost> host = std::move(*host_result);
+        ASSERT_TRUE(host->register_image({
+            .ref = {.value = "icon"},
+            .width = 2,
+            .height = 2,
+            .rgba = std::vector<uint8_t>(2u * 2u * 4u, 255u),
+        }));
+
+        mod::Screen screen;
+        screen.id = {.value = "main"};
+        screen.initially_visible = true;
+        screen.root.type = mod::WidgetType::Image;
+        screen.root.id = {.value = "root"};
+        screen.root.resource = {.value = "icon"};
+        ASSERT_TRUE(host->replace_screens({std::move(screen)}));
+        ASSERT_EQ(layers.prepare_frame({.viewport = {160.0f, 90.0f}, .images = images}).size(), 1u);
+    }
+
+    EXPECT_FALSE(mod_runtime->is_attached({.value = "raii_mod"}));
+    EXPECT_TRUE(layers.prepare_frame({.viewport = {160.0f, 90.0f}, .images = images}).empty());
+    EXPECT_EQ(images.image_count(), 0u);
+
+    auto replacement = mod_runtime->attach({.value = "raii_mod"}, sink);
+    EXPECT_TRUE(replacement) << replacement.error().format();
 }

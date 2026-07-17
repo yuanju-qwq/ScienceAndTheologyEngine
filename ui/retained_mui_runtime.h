@@ -15,6 +15,8 @@
 
 namespace snt::ui {
 
+class TooltipView;
+
 struct UiFrameResult {
     Arc2DCommandBuffer commands;
     UiDrawData draw_data;
@@ -25,6 +27,7 @@ public:
     UiRuntime(const snt::core::RuntimePathResolver& paths,
               TextEngineConfig config = {},
               UiTheme theme = {});
+    ~UiRuntime();
 
     TextEngine& text_engine() { return text_engine_; }
     const TextEngine& text_engine() const { return text_engine_; }
@@ -84,6 +87,11 @@ public:
                                          bool enabled = true);
     UiFrameResult paint(View& root);
     UiDrawData build_draw_data(const Arc2DCommandBuffer& commands);
+    // Automatic Tooltip is painted after every registered layer. It remains
+    // visual-only and therefore never participates in hit testing.
+    [[nodiscard]] bool automatic_tooltip_visible() const noexcept;
+    [[nodiscard]] std::optional<Rect> automatic_tooltip_bounds() const;
+    UiDrawData paint_automatic_tooltip();
     void set_focus_scope(std::string root_id, std::span<View*> active_roots = {});
     // UiLayerStack invokes this while `root` is still valid. It delivers
     // FocusLost and DragCancel before clearing retained interaction state.
@@ -91,6 +99,20 @@ public:
     void clear_interaction_state(std::span<View*> active_roots = {});
 
 private:
+    struct TooltipState {
+        const View* anchor = nullptr;
+        std::string root_id;
+        std::string view_id;
+        UiTooltipConfig config{};
+        float elapsed_seconds = 0.0f;
+        bool visible = false;
+    };
+
+    void update_automatic_tooltip(std::span<View*> active_roots);
+    void hide_automatic_tooltip() noexcept;
+    void layout_automatic_tooltip(const Rect& anchor, const UiTooltipConfig& config);
+    void clear_automatic_tooltip_for_root(std::string_view root_id) noexcept;
+
     UnicodeTextEngine text_engine_;
     UiImageRegistry images_;
     UiLayerStack layers_;
@@ -99,6 +121,10 @@ private:
     UiViewport viewport_{};
     UiInputRouter input_router_;
     UiTextInputService text_input_service_;
+    std::unique_ptr<TooltipView> automatic_tooltip_;
+    TooltipState tooltip_state_{};
+    bool tooltip_pointer_enabled_ = false;
+    float tooltip_delta_seconds_ = 0.0f;
 };
 
 }  // namespace snt::ui

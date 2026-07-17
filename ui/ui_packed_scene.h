@@ -95,7 +95,10 @@ struct UiWidgetTemplate {
     float step = 0.0f;
     float value = 0.0f;
     int32_t virtual_item_count = 0;
-    float virtual_item_extent = 32.0f;
+    // Fallback height until a realized row measures itself. It is not a
+    // fixed row height and lets resource-authored lists mix item sizes.
+    float virtual_item_estimate = 32.0f;
+    std::optional<UiTooltipConfig> tooltip;
     Color modal_backdrop{0, 0, 0, 150};
     bool dismiss_on_backdrop = false;
     TextStyle text_style{};
@@ -115,7 +118,7 @@ struct UiWidgetTree {
 // dynamic builders work with the stable tree shape without pretending their
 // in-memory output originated from an asset file.
 struct UiPackedScene {
-    static constexpr uint32_t kCurrentFormatVersion = 3;
+    static constexpr uint32_t kCurrentFormatVersion = 4;
 
     uint32_t format_version = kCurrentFormatVersion;
     UiWidgetTree tree;

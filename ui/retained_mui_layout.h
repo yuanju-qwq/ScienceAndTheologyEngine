@@ -185,24 +185,32 @@ private:
     Vec2 max_scroll_offset_{};
 };
 
-// A fixed-extent list that retains only visible item views plus a small
-// overscan range. Item construction is internal to the UI layer; callers use
-// stable indices and never retain a raw child pointer across a scroll.
+// A variable-height list that retains only visible item views plus a small
+// overscan range. It caches measured row heights and can accept an exact
+// height provider when data already knows each item's size. Item construction
+// remains internal; callers use stable indices and never retain child views.
 class VirtualListView final : public ViewGroup {
 public:
     using ItemBuilder = std::function<std::unique_ptr<View>(size_t index)>;
+    using ItemHeightProvider = std::function<float(size_t index)>;
 
     explicit VirtualListView(std::string id = {});
     ViewKind kind() const override { return ViewKind::VirtualList; }
 
     void set_item_count(size_t count);
     size_t item_count() const { return item_count_; }
-    void set_item_extent(float extent);
-    float item_extent() const { return item_extent_; }
+    void set_item_estimate(float height);
+    float item_estimate() const { return item_estimate_; }
+    // When supplied, this is the exact logical height for each row. Without
+    // it, realized rows measure themselves and unreached rows use estimate.
+    void set_item_height_provider(ItemHeightProvider provider);
+    void invalidate_item_heights();
     void set_item_builder(ItemBuilder builder);
     void set_scroll_offset(float offset);
     float scroll_offset() const { return scroll_offset_; }
     float max_scroll_offset() const { return max_scroll_offset_; }
+    float content_height() const { return item_offsets_.empty() ? 0.0f : item_offsets_.back(); }
+    size_t first_realized_index() const { return realized_begin_; }
 
     void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
     void layout(Rect bounds) override;
@@ -213,14 +221,26 @@ public:
     bool accepts_child_input(Vec2 point) const override;
 
 private:
-    void realize_visible(TextEngine& text_engine, float available_width);
+    void reset_item_heights();
+    bool refresh_item_heights_from_provider();
+    void rebuild_item_offsets();
+    void refresh_scroll_limits();
+    size_t item_index_at_offset(float offset) const;
+    bool realize_visible(TextEngine& text_engine, float available_width);
+    void layout_realized_children();
     void clamp_scroll_offset();
     bool scroll_by(float delta);
 
     ItemBuilder item_builder_;
+    ItemHeightProvider item_height_provider_;
     size_t item_count_ = 0;
-    size_t first_realized_ = 0;
-    float item_extent_ = 32.0f;
+    size_t realized_begin_ = 0;
+    size_t realized_end_ = 0;
+    std::vector<size_t> realized_indices_;
+    std::vector<float> item_heights_;
+    std::vector<float> item_offsets_;
+    float item_estimate_ = 32.0f;
+    float measured_item_width_ = -1.0f;
     float viewport_height_ = 0.0f;
     float scroll_offset_ = 0.0f;
     float max_scroll_offset_ = 0.0f;

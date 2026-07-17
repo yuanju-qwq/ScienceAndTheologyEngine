@@ -22,6 +22,9 @@ class AssetManager;
 namespace snt::ui {
 class UiImageRegistry;
 }
+namespace snt::ui::mod {
+class IModUiRuntime;
+}
 namespace snt::input {
 class InputSystem;
 }
@@ -51,6 +54,9 @@ public:
     snt::assets::AssetManager& assets() const noexcept;
     snt::ui::UiImageRegistry& ui_images() const noexcept;
     snt::ui::UiLayerStack& ui_layers() const noexcept;
+    // Package loaders use this narrow facade to attach Mod UI. It never
+    // exposes retained Views, renderer handles, ECS, or client internals.
+    snt::ui::mod::IModUiRuntime& mod_ui() const noexcept;
     snt::input::InputSystem& input() const noexcept;
     snt::voxel::ChunkRenderSystem& chunk_render_system() const noexcept;
 
@@ -131,9 +137,10 @@ private:
     ClientUiContext(ClientRuntime& runtime,
                     SimulationServices& services,
                     ClientWorldSession& world,
-                    snt::ui::UiViewport viewport)
+                    snt::ui::UiViewport viewport,
+                    float delta_seconds)
         : runtime_(&runtime), services_(&services), world_(&world),
-          viewport_(std::move(viewport)) {}
+          viewport_(std::move(viewport)), delta_seconds_(delta_seconds) {}
 
     void flush();
 
@@ -141,6 +148,7 @@ private:
     SimulationServices* services_ = nullptr;
     ClientWorldSession* world_ = nullptr;
     snt::ui::UiViewport viewport_{};
+    float delta_seconds_ = 0.0f;
     uint64_t next_submission_order_ = 0;
     std::vector<Submission> submissions_;
     // Reused while routing one retained input frame. Keeping this separate

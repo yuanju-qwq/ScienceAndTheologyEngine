@@ -25,6 +25,7 @@
 #include "render_backend/vulkan_mesh.h"
 #include "render_backend/vulkan_pipeline.h"
 #include "render_backend/vulkan_swapchain.h"
+#include "ui/mod_ui_internal.h"
 #include "ui/mui_renderer.h"
 #include "ui/retained_mui_runtime.h"
 #include "voxel/chunk_renderer.h"
@@ -146,9 +147,11 @@ void append_draw_data(snt::ui::UiDrawData& destination,
 
 snt::ui::UiInputState make_ui_input_state(const snt::input::InputState& input,
                                           const snt::ui::UiViewport& viewport,
-                                          bool ui_input_enabled) {
+                                          bool ui_input_enabled,
+                                          float delta_seconds) {
     snt::ui::UiInputState result;
     result.pointer_enabled = ui_input_enabled;
+    result.delta_seconds = delta_seconds;
     const snt::ui::Vec2 window_pointer{
         static_cast<float>(input.mouse_x),
         static_cast<float>(input.mouse_y),
@@ -273,6 +276,7 @@ struct ClientRuntime::Impl {
 
     std::unique_ptr<snt::ui::MuiRenderer> mui_renderer;
     std::unique_ptr<snt::ui::UiRuntime> ui_runtime;
+    std::unique_ptr<snt::ui::mod::IModUiRuntime> mod_ui_runtime;
     snt::ui::UiDrawData ui_draw_data;
 
     FpsTracker fps_tracker;
@@ -491,6 +495,14 @@ snt::core::Expected<void> ClientRuntime::init(
         SNT_LOG_ERROR("MUI text initialization failed: %s",
                       impl_->ui_runtime->text_initialization_error().c_str());
     }
+    auto mod_ui_runtime = snt::ui::mod::internal::create_mod_ui_runtime(
+        impl_->ui_runtime->layers(), impl_->ui_runtime->images());
+    if (!mod_ui_runtime) {
+        auto error = mod_ui_runtime.error();
+        error.with_context("ClientRuntime::init(mod UI runtime)");
+        return error;
+    }
+    impl_->mod_ui_runtime = std::move(*mod_ui_runtime);
 
     impl_->mui_renderer = std::make_unique<snt::ui::MuiRenderer>();
     if (auto result = impl_->mui_renderer->init(
@@ -596,7 +608,7 @@ void ClientRuntime::run() {
             .user_scale = impl_->ui_user_scale,
         };
         ClientUiContext ui_context(*this, simulation_.services(), *impl_->world_session,
-                                   ui_viewport);
+                                   ui_viewport, delta_seconds);
         impl_->session->build_ui(ui_context);
         ui_context.flush();
 
@@ -657,6 +669,10 @@ void ClientRuntime::shutdown() {
         impl_->mui_renderer->destroy();
         impl_->mui_renderer.reset();
     }
+    if (impl_->mod_ui_runtime) {
+        impl_->mod_ui_runtime->detach_all();
+        impl_->mod_ui_runtime.reset();
+    }
     impl_->ui_runtime.reset();
     impl_->world_session.reset();
 
@@ -698,6 +714,9 @@ snt::ui::UiImageRegistry& ClientWorldSession::ui_images() const noexcept {
 }
 snt::ui::UiLayerStack& ClientWorldSession::ui_layers() const noexcept {
     return runtime_->impl_->ui_runtime->layers();
+}
+snt::ui::mod::IModUiRuntime& ClientWorldSession::mod_ui() const noexcept {
+    return *runtime_->impl_->mod_ui_runtime;
 }
 snt::input::InputSystem& ClientWorldSession::input() const noexcept {
     return runtime_->impl_->input_system;
@@ -791,7 +810,8 @@ void ClientUiContext::flush() {
         }
 
         impl.ui_runtime->begin_input_frame(make_ui_input_state(
-            impl.input_system.state(), viewport_, !runtime_->mouse_locked()), active_roots_);
+            impl.input_system.state(), viewport_, !runtime_->mouse_locked(), delta_seconds_),
+            active_roots_);
 
         std::string focus_scope_root;
         for (auto it = submissions_.rbegin(); it != submissions_.rend(); ++it) {
@@ -838,6 +858,9 @@ void ClientUiContext::flush() {
             append_draw_data(impl.ui_draw_data,
                              impl.ui_runtime->build_draw_data(*submission.commands));
         }
+    }
+    if (impl.ui_runtime) {
+        append_draw_data(impl.ui_draw_data, impl.ui_runtime->paint_automatic_tooltip());
     }
     submissions_.clear();
     active_roots_.clear();

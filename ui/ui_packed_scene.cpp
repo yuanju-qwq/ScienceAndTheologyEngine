@@ -222,6 +222,50 @@ snt::core::Expected<Visibility> parse_visibility(std::string_view value,
                             std::string(path) + " has an unknown visibility value"};
 }
 
+snt::core::Expected<UiTooltipPlacement> parse_tooltip_placement(
+    std::string_view value,
+    std::string_view path) {
+    if (value == "auto") return UiTooltipPlacement::Auto;
+    if (value == "top") return UiTooltipPlacement::Top;
+    if (value == "bottom") return UiTooltipPlacement::Bottom;
+    if (value == "left") return UiTooltipPlacement::Left;
+    if (value == "right") return UiTooltipPlacement::Right;
+    return invalid_argument(std::string(path) +
+                            " must be 'auto', 'top', 'bottom', 'left', or 'right'");
+}
+
+snt::core::Expected<void> parse_tooltip(const json& value,
+                                         std::optional<UiTooltipConfig>& destination,
+                                         std::string_view path) {
+    if (!value.is_object()) return invalid_argument(std::string(path) + " must be an object");
+
+    const auto text = value.find("text");
+    if (text == value.end() || !text->is_string()) {
+        return invalid_argument(std::string(path) + ".text must be a string");
+    }
+
+    UiTooltipConfig tooltip;
+    tooltip.text = text->get<std::string>();
+    if (auto result = read_optional_float(value, "delay_seconds", tooltip.delay_seconds, path);
+        !result) {
+        return result.error();
+    }
+    if (auto result = read_optional_float(value, "offset", tooltip.offset, path); !result) {
+        return result.error();
+    }
+    if (const auto placement = value.find("placement"); placement != value.end()) {
+        if (!placement->is_string()) {
+            return invalid_argument(std::string(path) + ".placement must be a string");
+        }
+        auto parsed = parse_tooltip_placement(placement->get<std::string>(),
+                                              std::string(path) + ".placement");
+        if (!parsed) return parsed.error();
+        tooltip.placement = *parsed;
+    }
+    destination = std::move(tooltip);
+    return {};
+}
+
 snt::core::Expected<void> parse_layout(const json& value,
                                         UiWidgetLayout& layout,
                                         std::string_view path) {
@@ -388,9 +432,17 @@ snt::core::Expected<UiWidgetTemplate> parse_node(const json& value,
                                         node.virtual_item_count, path); !result) {
         return result.error();
     }
-    if (auto result = read_optional_float(value, "virtual_item_extent",
-                                          node.virtual_item_extent, path); !result) {
+    if (value.contains("virtual_item_extent")) {
+        return invalid_argument(path + ".virtual_item_extent was removed; use virtual_item_estimate");
+    }
+    if (auto result = read_optional_float(value, "virtual_item_estimate",
+                                          node.virtual_item_estimate, path); !result) {
         return result.error();
+    }
+    if (const auto tooltip = value.find("tooltip"); tooltip != value.end()) {
+        if (auto result = parse_tooltip(*tooltip, node.tooltip, path + ".tooltip"); !result) {
+            return result.error();
+        }
     }
     if (const auto backdrop = value.find("modal_backdrop"); backdrop != value.end()) {
         auto parsed = parse_color(*backdrop, path + ".modal_backdrop");
@@ -557,9 +609,26 @@ snt::core::Expected<void> validate_node(const UiWidgetTemplate& node,
         !finite(node.value) || node.maximum < node.minimum || node.step < 0.0f) {
         return invalid_argument(path + " has an invalid slider range");
     }
-    if (node.virtual_item_count < 0 || !finite(node.virtual_item_extent) ||
-        node.virtual_item_extent <= 0.0f) {
+    if (node.virtual_item_count < 0 || !finite(node.virtual_item_estimate) ||
+        node.virtual_item_estimate <= 0.0f) {
         return invalid_argument(path + " has an invalid virtual-list configuration");
+    }
+    if (node.tooltip) {
+        const UiTooltipConfig& tooltip = *node.tooltip;
+        if (tooltip.text.empty() || !finite(tooltip.delay_seconds) ||
+            tooltip.delay_seconds < 0.0f || !finite(tooltip.offset) || tooltip.offset < 0.0f) {
+            return invalid_argument(path + ".tooltip has invalid values");
+        }
+        switch (tooltip.placement) {
+        case UiTooltipPlacement::Auto:
+        case UiTooltipPlacement::Top:
+        case UiTooltipPlacement::Bottom:
+        case UiTooltipPlacement::Left:
+        case UiTooltipPlacement::Right:
+            break;
+        default:
+            return invalid_argument(path + ".tooltip.placement is invalid");
+        }
     }
 
 
@@ -622,6 +691,7 @@ void apply_common_view_properties(View& view, const UiWidgetTemplate& node) {
     if (node.hit_test_visible) view.set_hit_test_visible(*node.hit_test_visible);
     if (node.focusable) view.set_focusable(*node.focusable);
     if (node.background) view.set_background(*node.background, node.background_radius);
+    if (node.tooltip) view.set_tooltip(*node.tooltip);
 }
 void prefix_widget_ids(UiWidgetTemplate& node, std::string_view prefix) {
     node.id = std::string(prefix) + node.id;
@@ -755,7 +825,7 @@ snt::core::Expected<std::unique_ptr<View>> instantiate_node(
         auto view = std::make_unique<VirtualListView>(node.id);
         apply_common_view_properties(*view, node);
         view->set_item_count(static_cast<size_t>(node.virtual_item_count));
-        view->set_item_extent(node.virtual_item_extent);
+        view->set_item_estimate(node.virtual_item_estimate);
         if (!node.children.empty()) {
             const UiWidgetTemplate item_template = node.children.front();
             const UiWidgetBuildContext item_context = context;

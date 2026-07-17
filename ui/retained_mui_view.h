@@ -54,6 +54,9 @@ public:
     bool focusable() const { return focusable_; }
     UiInteractionState interaction_state() const { return interaction_state_; }
     void set_input_handler(InputHandler handler) { input_handler_ = std::move(handler); }
+    void set_tooltip(UiTooltipConfig tooltip) { tooltip_ = std::move(tooltip); }
+    void clear_tooltip() { tooltip_.reset(); }
+    const std::optional<UiTooltipConfig>& tooltip() const { return tooltip_; }
 
     Vec2 measured_size() const { return measured_size_; }
     Rect bounds() const { return bounds_; }
@@ -105,6 +108,7 @@ protected:
     Rect bounds_{};
     std::optional<DrawRectCommand> background_;
     InputHandler input_handler_;
+    std::optional<UiTooltipConfig> tooltip_;
     std::vector<ViewModel::Subscription> bindings_;
     View* parent_ = nullptr;
     bool layout_dirty_ = true;
