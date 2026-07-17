@@ -47,6 +47,10 @@ struct VoxelConfig {
 };
 
 struct UiConfig {
+    // User-selected multiplier applied after the platform display scale.
+    // Layout stays in logical UI units while the renderer receives physical
+    // framebuffer pixels through UiViewport.
+    float scale = 1.0f;
     std::vector<std::string> font_paths{
         "C:/Windows/Fonts/arial.ttf",
         "C:/Windows/Fonts/msyh.ttc",

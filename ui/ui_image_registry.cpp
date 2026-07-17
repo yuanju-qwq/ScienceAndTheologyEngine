@@ -34,7 +34,7 @@ snt::core::Expected<void> UiImageRegistry::register_file(std::string key,
     auto image = texture_cache_.load_rgba(path);
     if (!image) {
         auto error = image.error();
-        error.with_context("UiImageRegistry::register_file('" + key + "')");
+        error.with_context("UiImageRegistry::register_file(  + key +  )");
         return error;
     }
     const std::string stable_key = key;
@@ -61,28 +61,65 @@ snt::core::Expected<void> UiImageRegistry::register_rgba(std::string key,
                                 "UiImageRegistry::register_rgba: payload is not RGBA"};
     }
 
-    if (auto existing = regions_.find(key); existing != regions_.end()) {
+    const std::string stable_key = key;
+    if (auto existing = regions_.find(stable_key); existing != regions_.end()) {
         if (existing->second.width != width || existing->second.height != height) {
             return snt::core::Error{
                 snt::core::ErrorCode::kInvalidState,
                 "UiImageRegistry::register_rgba: existing key has a different image size"};
         }
-        write_region(existing->second, width, height, rgba);
+        source_paths_.erase(stable_key);
+        auto [stored, inserted] = stored_images_.try_emplace(stable_key);
+        stored->second.width = width;
+        stored->second.height = height;
+        stored->second.rgba = std::move(rgba);
+        if (inserted) image_order_.push_back(stable_key);
+        write_region(existing->second, width, height, stored->second.rgba);
         ++atlas_->revision;
-        SNT_LOG_INFO("MUI image payload updated: key='%s' size=%ux%u revision=%llu",
-                     key.c_str(), width, height,
+        SNT_LOG_INFO("MUI image payload updated: key= %s size=%ux%u revision=%llu",
+                     stable_key.c_str(), width, height,
                      static_cast<unsigned long long>(atlas_->revision));
         return {};
     }
 
     auto region = allocate(width, height);
     if (!region) return region.error();
-    write_region(*region, width, height, rgba);
-    regions_.emplace(key, *region);
+    source_paths_.erase(stable_key);
+    auto [stored, inserted] = stored_images_.emplace(
+        stable_key, StoredImage{.width = width, .height = height, .rgba = std::move(rgba)});
+    if (!inserted) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "UiImageRegistry::register_rgba: image storage is inconsistent"};
+    }
+    regions_.emplace(stable_key, *region);
+    image_order_.push_back(stable_key);
+    write_region(*region, width, height, stored->second.rgba);
     ++atlas_->revision;
-    SNT_LOG_INFO("MUI image registered: key='%s' size=%ux%u revision=%llu",
-                 key.c_str(), width, height,
+    SNT_LOG_INFO("MUI image registered: key=%s size=%ux%u revision=%llu",
+                 stable_key.c_str(), width, height,
                  static_cast<unsigned long long>(atlas_->revision));
+    return {};
+}
+
+snt::core::Expected<void> UiImageRegistry::unregister_image(std::string_view key) {
+    const std::string stable_key(key);
+    if (!regions_.contains(stable_key)) return {};
+
+    regions_.erase(stable_key);
+    stored_images_.erase(stable_key);
+    source_paths_.erase(stable_key);
+    missing_key_log_once_.erase(stable_key);
+    image_order_.erase(std::remove(image_order_.begin(), image_order_.end(), stable_key),
+                       image_order_.end());
+    if (fallback_key_ == stable_key) fallback_key_.clear();
+
+    if (auto result = rebuild_atlas(); !result) {
+        auto error = result.error();
+        error.with_context("UiImageRegistry::unregister_image( + stable_key + )");
+        return error;
+    }
+    SNT_LOG_INFO("MUI image unregistered: key=%s revision=%llu",
+                 stable_key.c_str(), static_cast<unsigned long long>(atlas_->revision));
     return {};
 }
 
@@ -91,7 +128,7 @@ const UiImageRegion* UiImageRegistry::resolve(std::string_view key) {
         return &found->second;
     }
     if (!key.empty() && missing_key_log_once_.insert(std::string(key)).second) {
-        SNT_LOG_WARN("MUI image key is not registered: '%.*s'",
+        SNT_LOG_WARN("MUI image key is not registered: %.*s",
                      static_cast<int>(key.size()), key.data());
     }
     if (const auto fallback = regions_.find(fallback_key_); fallback != regions_.end()) {
@@ -106,7 +143,7 @@ snt::core::Expected<void> UiImageRegistry::set_fallback(std::string key) {
                                 "UiImageRegistry::set_fallback: key is not registered"};
     }
     fallback_key_ = std::move(key);
-    SNT_LOG_INFO("MUI image fallback set to '%s'", fallback_key_.c_str());
+    SNT_LOG_INFO("MUI image fallback set to %s", fallback_key_.c_str());
     return {};
 }
 
@@ -141,6 +178,26 @@ snt::core::Expected<UiImageRegion> UiImageRegistry::allocate(uint32_t width,
         .width = width,
         .height = height,
     };
+}
+
+snt::core::Expected<void> UiImageRegistry::rebuild_atlas() {
+    atlas_->rgba.assign(static_cast<size_t>(atlas_->width) * atlas_->height * 4u, 0u);
+    regions_.clear();
+    pack_x_ = kPadding;
+    pack_y_ = kPadding;
+    pack_row_height_ = 0;
+
+    for (const std::string& key : image_order_) {
+        const auto stored = stored_images_.find(key);
+        if (stored == stored_images_.end()) continue;
+        auto region = allocate(stored->second.width, stored->second.height);
+        if (!region) return region.error();
+        write_region(*region, stored->second.width, stored->second.height,
+                     stored->second.rgba);
+        regions_.emplace(key, *region);
+    }
+    ++atlas_->revision;
+    return {};
 }
 
 void UiImageRegistry::write_region(const UiImageRegion& region,

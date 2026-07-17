@@ -54,6 +54,67 @@ enum class Orientation : uint8_t {
     Vertical,
 };
 
+// One-axis flex alignment. FlexLayout deliberately does not implement wrap:
+// dense game UI uses GridLayout for two-dimensional placement, while flex is
+// the predictable row/column primitive used for panels and toolbars.
+enum class FlexJustify : uint8_t {
+    Start,
+    Center,
+    End,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+};
+
+enum class FlexAlign : uint8_t {
+    Start,
+    Center,
+    End,
+    Stretch,
+};
+
+// Maps one platform window to the UI coordinate system. `window_size` is in
+// SDL window units, `framebuffer_size` is Vulkan pixel units, and all
+// retained layout/input APIs use logical UI units. The final Arc2D output is
+// multiplied by pixels_per_ui_unit() immediately before rendering.
+struct UiViewport {
+    Vec2 framebuffer_size{};
+    Vec2 window_size{};
+    float dpi_scale = 1.0f;
+    float user_scale = 1.0f;
+
+    [[nodiscard]] float pixels_per_ui_unit() const {
+        return std::max(0.01f, dpi_scale) * std::max(0.01f, user_scale);
+    }
+    [[nodiscard]] Vec2 logical_size() const {
+        const float scale = pixels_per_ui_unit();
+        return {framebuffer_size.x / scale, framebuffer_size.y / scale};
+    }
+    [[nodiscard]] Vec2 window_to_logical(Vec2 point) const {
+        const float framebuffer_x = window_size.x > 0.0f
+            ? point.x * framebuffer_size.x / window_size.x : point.x;
+        const float framebuffer_y = window_size.y > 0.0f
+            ? point.y * framebuffer_size.y / window_size.y : point.y;
+        const float scale = pixels_per_ui_unit();
+        return {framebuffer_x / scale, framebuffer_y / scale};
+    }
+    [[nodiscard]] Vec2 logical_to_window(Vec2 point) const {
+        const float scale = pixels_per_ui_unit();
+        const float framebuffer_x = point.x * scale;
+        const float framebuffer_y = point.y * scale;
+        return {
+            framebuffer_size.x > 0.0f ? framebuffer_x * window_size.x / framebuffer_size.x
+                                      : framebuffer_x,
+            framebuffer_size.y > 0.0f ? framebuffer_y * window_size.y / framebuffer_size.y
+                                      : framebuffer_y,
+        };
+    }    [[nodiscard]] bool valid() const {
+        return framebuffer_size.x > 0.0f && framebuffer_size.y > 0.0f &&
+               window_size.x > 0.0f && window_size.y > 0.0f &&
+               dpi_scale > 0.0f && user_scale > 0.0f;
+    }
+};
+
 enum class Visibility : uint8_t {
     Visible,
     Hidden,
@@ -98,6 +159,10 @@ enum class UiKey : uint8_t {
     Space,
     Escape,
     Tab,
+    Backspace,
+    Delete,
+    Home,
+    End,
     Left,
     Right,
     Up,
@@ -110,6 +175,8 @@ enum class UiInputEventType : uint8_t {
     PointerUp,
     PointerScroll,
     KeyDown,
+    TextCommit,
+    TextComposition,
     FocusGained,
     FocusLost,
 };
@@ -133,13 +200,22 @@ struct UiInputEvent {
     Vec2 scroll_delta{};
     UiPointerButton pointer_button = UiPointerButton::None;
     UiKey key = UiKey::Unknown;
+    std::string text;
+    int32_t composition_start = -1;
+    int32_t composition_length = -1;
     // True only when a pointer-up lands on the same captured control.
     bool activation = false;
 };
 
+struct UiTextComposition {
+    std::string text;
+    int32_t start = -1;
+    int32_t length = -1;
+};
+
 // One host frame of platform-neutral input. UI runtime state derives release
 // edges from held state, so hosts only need to provide current held/pressed
-// button values and mapped key edges.
+// button values, mapped key edges, committed UTF-8, and IME composition.
 struct UiInputState {
     bool pointer_enabled = true;
     Vec2 pointer_position{};
@@ -148,6 +224,8 @@ struct UiInputState {
     std::array<bool, 3> pointer_released{};
     Vec2 scroll_delta{};
     std::vector<UiKey> pressed_keys;
+    std::vector<std::string> text_commits;
+    std::vector<UiTextComposition> text_compositions;
 };
 
 enum class UiInteractionState : uint8_t {
@@ -183,12 +261,19 @@ struct UiTheme {
 enum class ViewKind : uint8_t {
     View,
     ViewGroup,
-    LinearLayout,
+    FlexLayout,
     GridLayout,
     FrameLayout,
     TextView,
     Button,
     ImageView,
+    NineSliceView,
+    TextInput,
+    Checkbox,
+    Slider,
+    VirtualList,
+    Modal,
+    Tooltip,
     SlotView,
     ScrollView,
 };
@@ -372,6 +457,15 @@ struct DrawImageCommand {
     Color tint{255, 255, 255, 255};
 };
 
+// Image-space border widths for a classic nine-slice. The renderer preserves
+// all four borders and stretches only the center/edge spans.
+struct DrawNineSliceCommand {
+    Rect rect{};
+    std::string image_key;
+    Insets borders{};
+    Color tint{255, 255, 255, 255};
+};
+
 struct PushClipCommand {
     Rect rect{};
 };
@@ -379,7 +473,7 @@ struct PushClipCommand {
 struct PopClipCommand {};
 
 using ArcDrawCommand = std::variant<DrawRectCommand, DrawTextCommand, DrawImageCommand,
-                                    PushClipCommand, PopClipCommand>;
+                                    DrawNineSliceCommand, PushClipCommand, PopClipCommand>;
 
 class Arc2DCommandBuffer {
 public:
@@ -387,6 +481,7 @@ public:
     void rect(Rect rect, Color color, float radius = 0.0f);
     void text(Rect rect, std::string text, TextStyle style, TextLayout layout);
     void image(Rect rect, std::string image_key, Color tint = {});
+    void nine_slice(Rect rect, std::string image_key, Insets borders, Color tint = {});
     void push_clip(Rect rect);
     void pop_clip();
 
@@ -412,6 +507,8 @@ private:
                                   UiClipRect clip);
     void append_image(UiDrawData& out, const DrawImageCommand& image,
                       UiClipRect clip) const;
+    void append_nine_slice(UiDrawData& out, const DrawNineSliceCommand& image,
+                           UiClipRect clip) const;
 
     UiImageRegistry* images_ = nullptr;
 };
@@ -461,6 +558,10 @@ public:
     const std::string& bound_text_key() const { return bound_text_key_; }
 
     void bind_text(ViewModel& model, std::string key);
+    // RAII value binding for controls that do not expose text. The
+    // subscription is owned by this retained View and is disconnected before
+    // the concrete widget is destroyed.
+    void bind_value(ViewModel& model, std::string key, ViewModel::Observer observer);
 
     virtual void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine);
     virtual void layout(Rect bounds);
@@ -561,6 +662,114 @@ private:
     ActivateHandler activate_handler_;
 };
 
+// Single-line UTF-8 editor. Platform text commits and IME preedit state are
+// delivered through UiInputEvent, keeping SDL out of retained widgets and
+// retaining cursor/composition state across frames.
+class TextInput final : public TextView {
+public:
+    using ChangeHandler = std::function<void(std::string_view)>;
+    using SubmitHandler = std::function<void(std::string_view)>;
+
+    explicit TextInput(std::string id = {});
+    ViewKind kind() const override { return ViewKind::TextInput; }
+
+    void set_text(std::string text);
+    void set_text_silently(std::string text);
+    void set_placeholder(std::string placeholder) {
+        placeholder_ = std::move(placeholder);
+        mark_layout_dirty();
+    }
+    const std::string& placeholder() const { return placeholder_; }
+    void set_max_bytes(size_t max_bytes) { max_bytes_ = max_bytes; }
+    size_t max_bytes() const { return max_bytes_; }
+    void set_password(bool password) { password_ = password; }
+    bool password() const { return password_; }
+    void set_on_change(ChangeHandler handler) { change_handler_ = std::move(handler); }
+    void set_on_submit(SubmitHandler handler) { submit_handler_ = std::move(handler); }
+    size_t cursor_byte_offset() const { return cursor_; }
+    Rect ime_bounds() const { return bounds(); }
+
+    void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
+    void paint(Arc2DCommandBuffer& out,
+               TextEngine& text_engine,
+               const UiTheme& theme) const override;
+    UiEventReply on_input_event(const UiInputEvent& event) override;
+
+private:
+    void replace_text(std::string text, bool notify);
+    void insert_text(std::string_view text);
+    void erase_previous_codepoint();
+    void erase_next_codepoint();
+    void move_cursor_left();
+    void move_cursor_right();
+    std::string display_text() const;
+
+    std::string placeholder_;
+    std::string composition_;
+    int32_t composition_start_ = -1;
+    int32_t composition_length_ = -1;
+    size_t cursor_ = 0;
+    size_t max_bytes_ = 4096;
+    bool password_ = false;
+    ChangeHandler change_handler_;
+    SubmitHandler submit_handler_;
+};
+
+class Checkbox final : public TextView {
+public:
+    using ChangeHandler = std::function<void(bool)>;
+
+    explicit Checkbox(std::string id = {});
+    ViewKind kind() const override { return ViewKind::Checkbox; }
+
+    void set_checked(bool checked, bool notify = false);
+    bool checked() const { return checked_; }
+    void set_on_change(ChangeHandler handler) { change_handler_ = std::move(handler); }
+
+    void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
+    void paint(Arc2DCommandBuffer& out,
+               TextEngine& text_engine,
+               const UiTheme& theme) const override;
+    UiEventReply on_input_event(const UiInputEvent& event) override;
+
+private:
+    bool checked_ = false;
+    ChangeHandler change_handler_;
+};
+
+class Slider final : public View {
+public:
+    using ChangeHandler = std::function<void(float)>;
+
+    explicit Slider(std::string id = {});
+    ViewKind kind() const override { return ViewKind::Slider; }
+
+    void set_range(float minimum, float maximum);
+    float minimum() const { return minimum_; }
+    float maximum() const { return maximum_; }
+    void set_step(float step) { step_ = std::max(0.0f, step); }
+    float step() const { return step_; }
+    void set_value(float value, bool notify = false);
+    float value() const { return value_; }
+    void set_on_change(ChangeHandler handler) { change_handler_ = std::move(handler); }
+
+    void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
+    void paint(Arc2DCommandBuffer& out,
+               TextEngine& text_engine,
+               const UiTheme& theme) const override;
+    UiEventReply on_input_event(const UiInputEvent& event) override;
+
+private:
+    void set_value_from_pointer(float x);
+    float normalized_value() const;
+
+    float minimum_ = 0.0f;
+    float maximum_ = 1.0f;
+    float step_ = 0.0f;
+    float value_ = 0.0f;
+    ChangeHandler change_handler_;
+};
+
 class ImageView : public View {
 public:
     explicit ImageView(std::string id = {});
@@ -581,6 +790,34 @@ private:
     Color tint_{255, 255, 255, 255};
 };
 
+// A stretchable panel/image whose source-space corners remain crisp at any
+// destination size. Borders are logical UI units so they scale with the
+// active DPI and user scale together with the rest of the layout.
+class NineSliceView : public View {
+public:
+    explicit NineSliceView(std::string id = {});
+    ViewKind kind() const override { return ViewKind::NineSliceView; }
+
+    void set_image_key(std::string image_key) { image_key_ = std::move(image_key); }
+    const std::string& image_key() const { return image_key_; }
+    void set_borders(Insets borders) { borders_ = borders; mark_layout_dirty(); }
+    Insets borders() const { return borders_; }
+    void set_tint(Color tint) { tint_ = tint; }
+    Color tint() const { return tint_; }
+
+    void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
+    void paint(Arc2DCommandBuffer& out,
+               TextEngine& text_engine,
+               const UiTheme& theme) const override;
+
+private:
+    std::string image_key_;
+    Insets borders_{};
+    Color tint_{255, 255, 255, 255};
+};
+
+struct UiSlotDragEvent;
+
 class SlotView : public View {
 public:
     struct SlotState {
@@ -588,6 +825,7 @@ public:
         int32_t count = 0;
         bool selected = false;
     };
+    using DragHandler = std::function<void(const UiSlotDragEvent&)>;
 
     explicit SlotView(std::string id = {});
     ViewKind kind() const override { return ViewKind::SlotView; }
@@ -600,14 +838,38 @@ public:
         state_ = std::move(state);
     }
     const SlotState& slot_state() const { return state_; }
+    void set_drag_handler(DragHandler handler) { drag_handler_ = std::move(handler); }
+    void set_drag_source(bool value) { drag_source_ = value; }
+    void set_drag_hovered(bool value) { drag_hovered_ = value; }
 
     void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
     void paint(Arc2DCommandBuffer& out,
                TextEngine& text_engine,
                const UiTheme& theme) const override;
+    void dispatch_drag_event(const UiSlotDragEvent& event) const;
 
 private:
     SlotState state_{};
+    DragHandler drag_handler_;
+    bool drag_source_ = false;
+    bool drag_hovered_ = false;
+};
+
+enum class UiSlotDragEventType : uint8_t {
+    Begin,
+    Enter,
+    Leave,
+    Drop,
+    Cancel,
+};
+
+// Slot drag state belongs to UiRuntime. SlotView merely renders and receives
+// notifications, so an unloaded screen cannot leave a raw pointer captured.
+struct UiSlotDragEvent {
+    UiSlotDragEventType type = UiSlotDragEventType::Begin;
+    std::string source_id;
+    std::string target_id;
+    SlotView::SlotState payload{};
 };
 
 class ViewGroup : public View {
@@ -632,10 +894,10 @@ protected:
     std::vector<std::unique_ptr<View>> children_;
 };
 
-class LinearLayout : public ViewGroup {
+class FlexLayout : public ViewGroup {
 public:
-    explicit LinearLayout(std::string id = {});
-    ViewKind kind() const override { return ViewKind::LinearLayout; }
+    explicit FlexLayout(std::string id = {});
+    ViewKind kind() const override { return ViewKind::FlexLayout; }
 
     void set_orientation(Orientation orientation) {
         if (orientation_ == orientation) return;
@@ -643,6 +905,18 @@ public:
         mark_layout_dirty();
     }
     Orientation orientation() const { return orientation_; }
+    void set_justify(FlexJustify justify) {
+        if (justify_ == justify) return;
+        justify_ = justify;
+        mark_layout_dirty();
+    }
+    FlexJustify justify() const { return justify_; }
+    void set_align(FlexAlign align) {
+        if (align_ == align) return;
+        align_ = align;
+        mark_layout_dirty();
+    }
+    FlexAlign align() const { return align_; }
     void set_spacing(float spacing) {
         if (spacing_ == spacing) return;
         spacing_ = spacing;
@@ -659,6 +933,8 @@ public:
 
 private:
     Orientation orientation_ = Orientation::Vertical;
+    FlexJustify justify_ = FlexJustify::Start;
+    FlexAlign align_ = FlexAlign::Stretch;
     float spacing_ = 0.0f;
     Insets padding_{};
 };
@@ -770,6 +1046,78 @@ private:
     Vec2 max_scroll_offset_{};
 };
 
+// A fixed-extent list that retains only visible item views plus a small
+// overscan range. Item construction is internal to the UI layer; callers use
+// stable indices and never retain a raw child pointer across a scroll.
+class VirtualListView final : public ViewGroup {
+public:
+    using ItemBuilder = std::function<std::unique_ptr<View>(size_t index)>;
+
+    explicit VirtualListView(std::string id = {});
+    ViewKind kind() const override { return ViewKind::VirtualList; }
+
+    void set_item_count(size_t count);
+    size_t item_count() const { return item_count_; }
+    void set_item_extent(float extent);
+    float item_extent() const { return item_extent_; }
+    void set_item_builder(ItemBuilder builder);
+    void set_scroll_offset(float offset);
+    float scroll_offset() const { return scroll_offset_; }
+    float max_scroll_offset() const { return max_scroll_offset_; }
+
+    void measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) override;
+    void layout(Rect bounds) override;
+    void paint(Arc2DCommandBuffer& out,
+               TextEngine& text_engine,
+               const UiTheme& theme) const override;
+    UiEventReply on_input_event(const UiInputEvent& event) override;
+    bool accepts_child_input(Vec2 point) const override;
+
+private:
+    void realize_visible(TextEngine& text_engine, float available_width);
+    void clamp_scroll_offset();
+    bool scroll_by(float delta);
+
+    ItemBuilder item_builder_;
+    size_t item_count_ = 0;
+    size_t first_realized_ = 0;
+    float item_extent_ = 32.0f;
+    float viewport_height_ = 0.0f;
+    float scroll_offset_ = 0.0f;
+    float max_scroll_offset_ = 0.0f;
+    float scroll_step_ = 36.0f;
+};
+
+// Full-viewport modal surface. UiLayerStack supplies the blocking policy;
+// this view owns the visual backdrop and optional backdrop-dismiss command.
+class ModalView final : public FrameLayout {
+public:
+    using DismissHandler = std::function<void()>;
+
+    explicit ModalView(std::string id = {});
+    ViewKind kind() const override { return ViewKind::Modal; }
+
+    void set_backdrop(Color color) { backdrop_ = color; }
+    void set_dismiss_on_backdrop(bool value) { dismiss_on_backdrop_ = value; }
+    void set_on_dismiss(DismissHandler handler) { dismiss_handler_ = std::move(handler); }
+
+    void paint(Arc2DCommandBuffer& out,
+               TextEngine& text_engine,
+               const UiTheme& theme) const override;
+    UiEventReply on_input_event(const UiInputEvent& event) override;
+
+private:
+    Color backdrop_{0, 0, 0, 150};
+    bool dismiss_on_backdrop_ = false;
+    DismissHandler dismiss_handler_;
+};
+
+class TooltipView final : public TextView {
+public:
+    explicit TooltipView(std::string id = {});
+    ViewKind kind() const override { return ViewKind::Tooltip; }
+};
+
 class Animation {
 public:
     using Setter = std::function<void(float)>;
@@ -806,12 +1154,14 @@ using UiActionDispatcher = std::function<void(std::string_view action_id)>;
 
 struct UiScreenMountContext {
     Vec2 viewport{};
+    UiViewport ui_viewport{};
     UiImageRegistry& images;
     UiActionDispatcher dispatch_action;
 };
 
 struct UiScreenFrameContext {
     Vec2 viewport{};
+    UiViewport ui_viewport{};
     UiImageRegistry& images;
 };
 
@@ -930,6 +1280,13 @@ public:
     void set_theme(UiTheme theme) { theme_ = std::move(theme); }
     const UiTheme& theme() const { return theme_; }
 
+    // The host updates this whenever framebuffer size, display DPI, or the
+    // user preference changes. Existing retained roots relayout lazily on the
+    // next layout call when the logical viewport differs.
+    void set_viewport(UiViewport viewport);
+    const UiViewport& viewport() const { return viewport_; }
+    void set_user_scale(float scale);
+
     // Hosts first layout all submitted roots, route one input frame from the
     // highest interactive layer downward, then synchronize states and paint.
     // Root and child ids must be unique within their UI layer so transient
@@ -945,6 +1302,9 @@ public:
     // once after all layer policies have been evaluated for the frame.
     void end_input_frame();
     void synchronize_interaction_state(View& root);
+    // The client host uses this to place the native IME candidate window. It
+    // returns no value unless this root owns the currently focused TextInput.
+    std::optional<Rect> focused_text_input_bounds(const View& root) const;
     UiFrameResult paint(View& root);
     UiDrawData build_draw_data(const Arc2DCommandBuffer& commands);
     void set_focus_scope(std::string root_id);
@@ -963,17 +1323,28 @@ private:
         void clear() { root.clear(); view.clear(); }
     };
 
+    struct SlotDragState {
+        ElementId source;
+        ElementId hovered;
+        SlotView::SlotState payload;
+    };
+
+    void update_slot_drag_hover(View& root, const std::vector<View*>& hit_path);
+    void cancel_slot_drag_for_root(std::string_view root_id);
+
     UnicodeTextEngine text_engine_;
     UiImageRegistry images_;
     UiLayerStack layers_;
     Arc2DRenderer renderer_;
     UiTheme theme_{};
+    UiViewport viewport_{};
     UiInputState input_{};
     std::array<bool, 3> previous_pointer_held_{};
     std::array<bool, 3> pointer_released_{};
     ElementId hovered_;
     ElementId focused_;
     ElementId pointer_capture_;
+    std::optional<SlotDragState> slot_drag_;
     std::string focus_scope_root_;
     // Main-thread routing scratch storage. Retaining these avoids allocating a
     // hit/event path for every submitted root on every input frame.

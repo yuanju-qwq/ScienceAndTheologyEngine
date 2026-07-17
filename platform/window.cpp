@@ -14,6 +14,8 @@
 // no function prototypes. VK_NULL_HANDLE + VkSurfaceKHR become available.
 #include <vulkan/vulkan.h>
 
+#include <algorithm>
+#include <cmath>
 #include <format>
 
 namespace snt::platform {
@@ -114,6 +116,25 @@ WindowSize Window::size() const {
     return WindowSize{w, h};
 }
 
+WindowMetrics Window::metrics() const {
+    WindowMetrics result{};
+    result.window_size = size();
+    result.pixel_size = result.window_size;
+    if (!_window) return result;
+
+    auto* const window = static_cast<SDL_Window*>(_window);
+    int pixel_width = result.window_size.width;
+    int pixel_height = result.window_size.height;
+    if (SDL_GetWindowSizeInPixels(window, &pixel_width, &pixel_height)) {
+        result.pixel_size = {pixel_width, pixel_height};
+    }
+    const float display_scale = SDL_GetWindowDisplayScale(window);
+    if (std::isfinite(display_scale) && display_scale > 0.0f) {
+        result.display_scale = display_scale;
+    }
+    return result;
+}
+
 // ---------------------------------------------------------------------------
 // Vulkan surface creation (P1.3).
 // SDL3 provides SDL_Vulkan_CreateSurface() which handles the platform-
@@ -168,6 +189,46 @@ snt::core::Expected<void> Window::set_relative_mouse_mode(bool enabled) {
 bool Window::relative_mouse_mode() const {
     if (!_window) return false;
     return SDL_GetWindowRelativeMouseMode(static_cast<SDL_Window*>(_window));
+}
+
+snt::core::Expected<void> Window::set_text_input_active(bool active) {
+    if (!_window) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "set_text_input_active: window not created"};
+    }
+    auto* const window = static_cast<SDL_Window*>(_window);
+    const bool currently_active = SDL_TextInputActive(window);
+    if (currently_active == active) return {};
+    const bool success = active ? SDL_StartTextInput(window) : SDL_StopTextInput(window);
+    if (!success) {
+        return snt::core::Error{snt::core::ErrorCode::kPlatformInitFailed,
+                                std::format("SDL text input update failed: {}", SDL_GetError())};
+    }
+    SNT_LOG_INFO("Platform text input %s", active ? "enabled" : "disabled");
+    return {};
+}
+
+bool Window::text_input_active() const {
+    return _window && SDL_TextInputActive(static_cast<SDL_Window*>(_window));
+}
+
+snt::core::Expected<void> Window::set_text_input_area(TextInputArea area) {
+    if (!_window) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "set_text_input_area: window not created"};
+    }
+    const SDL_Rect rect{
+        .x = area.x,
+        .y = area.y,
+        .w = std::max(0, area.width),
+        .h = std::max(0, area.height),
+    };
+    if (!SDL_SetTextInputArea(static_cast<SDL_Window*>(_window), &rect,
+                              std::max(0, area.cursor))) {
+        return snt::core::Error{snt::core::ErrorCode::kPlatformInitFailed,
+                                std::format("SDL_SetTextInputArea failed: {}", SDL_GetError())};
+    }
+    return {};
 }
 
 } // namespace snt::platform

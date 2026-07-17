@@ -20,6 +20,8 @@ void InputSystem::new_frame() {
     state_.mouse_dy = 0.0f;
     state_.mouse_wheel_x = 0.0f;
     state_.mouse_wheel_y = 0.0f;
+    state_.text_commits.clear();
+    state_.text_compositions.clear();
     state_.esc_pressed = false;
     state_.wants_mouse_lock = false;
 }
@@ -99,6 +101,20 @@ void InputSystem::process_event(const void* sdl_event) {
             state_.mouse_y = event.motion.y;
             break;
         }
+
+        case SDL_EVENT_TEXT_INPUT:
+            if (event.text.text && event.text.text[0] != '\0') {
+                state_.text_commits.emplace_back(event.text.text);
+            }
+            break;
+
+        case SDL_EVENT_TEXT_EDITING:
+            state_.text_compositions.push_back({
+                .text = event.edit.text ? std::string(event.edit.text) : std::string{},
+                .start = event.edit.start,
+                .length = event.edit.length,
+            });
+            break;
 
         case SDL_EVENT_MOUSE_WHEEL:
             state_.mouse_wheel_x += event.wheel.x;

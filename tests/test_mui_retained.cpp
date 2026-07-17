@@ -1,4 +1,5 @@
 #include "core/path_utils.h"
+#include "ui/mod_ui_internal.h"
 #include "ui/retained_mui.h"
 #include "ui/ui_packed_scene.h"
 #include "ui/ui_packed_scene_catalog.h"
@@ -199,7 +200,7 @@ TEST(RetainedMui, ScrollViewScrollsWheelInputAndEmitsViewportClip) {
     scroll_params.height = 40.0f;
     scroll->set_layout_params(scroll_params);
 
-    auto content = std::make_unique<LinearLayout>("content");
+    auto content = std::make_unique<FlexLayout>("content");
     content->set_orientation(Orientation::Vertical);
     std::array<View*, 3> rows{};
     for (size_t index = 0; index < rows.size(); ++index) {
@@ -252,13 +253,13 @@ TEST(RetainedMui, NestedScrollViewsKeepWheelInputAtNearestMovableViewport) {
     ScrollView* raw_outer = outer.get();
     outer->set_layout_params({.width = 120.0f, .height = 80.0f});
 
-    auto outer_content = std::make_unique<LinearLayout>("outer_content");
+    auto outer_content = std::make_unique<FlexLayout>("outer_content");
     outer_content->set_orientation(Orientation::Vertical);
 
     auto inner = std::make_unique<ScrollView>("inner_scroll");
     ScrollView* raw_inner = inner.get();
     inner->set_layout_params({.width = 120.0f, .height = 40.0f});
-    auto inner_content = std::make_unique<LinearLayout>("inner_content");
+    auto inner_content = std::make_unique<FlexLayout>("inner_content");
     inner_content->set_orientation(Orientation::Vertical);
     for (int index = 0; index < 3; ++index) {
         auto row = std::make_unique<View>("inner_row_" + std::to_string(index));
@@ -372,7 +373,7 @@ TEST(RetainedMui, PackedSceneJsonInstantiatesWidgetsAndDispatchesActions) {
     "background": { "color": [14, 20, 30, 240], "radius": 6 },
     "children": [
       {
-        "type": "linear",
+        "type": "flex",
         "id": "research_panel",
         "layout": { "orientation": "vertical", "spacing": 6 },
         "children": [
@@ -420,7 +421,7 @@ TEST(RetainedMui, PackedSceneJsonInstantiatesWidgetsAndDispatchesActions) {
 }
 
 TEST(RetainedMui, DynamicWidgetBuilderAndLayerStackShareOneTreePath) {
-    UiWidgetTreeBuilder builder(UiWidgetType::Linear, "dynamic_root");
+    UiWidgetTreeBuilder builder(UiWidgetType::Flex, "dynamic_root");
     builder.root().layout.orientation = Orientation::Vertical;
     builder.root().layout.spacing = 4.0f;
     builder.root().background = Color{20, 28, 40, 255};
@@ -651,7 +652,7 @@ TEST(RetainedMui, PointerEventUsesCaptureTargetAndBubblePhases) {
     UiRuntime runtime(*paths);
 
     auto root = std::make_unique<FrameLayout>("root");
-    auto parent = std::make_unique<LinearLayout>("parent");
+    auto parent = std::make_unique<FlexLayout>("parent");
     auto button = std::make_unique<Button>("target");
     button->set_layout_params({.width = 120.0f, .height = 40.0f});
 
@@ -747,4 +748,367 @@ TEST(RetainedMui, AnimationCompletesAndSetsFinalValue) {
     animator.update(0.5f);
     EXPECT_FLOAT_EQ(value, 10.0f);
     EXPECT_TRUE(animator.empty());
+}
+
+namespace {
+
+namespace mod = snt::ui::mod;
+
+class CapturingModUiCommandSink final : public mod::IModUiCommandSink {
+public:
+    snt::core::Expected<void> dispatch(mod::Command command) override {
+        commands.push_back(std::move(command));
+        return {};
+    }
+
+    std::vector<mod::Command> commands;
+};
+
+const mod::Command* find_mod_command(const std::vector<mod::Command>& commands,
+                                     std::string_view name) {
+    const auto found = std::find_if(commands.begin(), commands.end(),
+        [name](const mod::Command& command) { return command.name == name; });
+    return found == commands.end() ? nullptr : &*found;
+}
+
+}  // namespace
+
+TEST(RetainedMui, FlexLayoutResolvesWeightsJustifyAndAlignment) {
+    auto paths = make_test_path_resolver();
+    ASSERT_TRUE(paths) << paths.error().format();
+    UiRuntime runtime(*paths);
+
+    auto weighted = std::make_unique<FlexLayout>("weighted");
+    weighted->set_orientation(Orientation::Horizontal);
+    weighted->set_align(FlexAlign::Center);
+    auto first = std::make_unique<View>("first");
+    auto second = std::make_unique<View>("second");
+    View* raw_first = first.get();
+    View* raw_second = second.get();
+    first->set_layout_params({.width = 0.0f, .height = 20.0f, .weight = 1.0f});
+    second->set_layout_params({.width = 0.0f, .height = 20.0f, .weight = 2.0f});
+    weighted->add_child(std::move(first));
+    weighted->add_child(std::move(second));
+    runtime.layout(*weighted, {300.0f, 60.0f});
+
+    EXPECT_FLOAT_EQ(raw_first->bounds().size.x, 100.0f);
+    EXPECT_FLOAT_EQ(raw_second->bounds().size.x, 200.0f);
+    EXPECT_FLOAT_EQ(raw_first->bounds().pos.x, 0.0f);
+    EXPECT_FLOAT_EQ(raw_second->bounds().pos.x, 100.0f);
+    EXPECT_FLOAT_EQ(raw_first->bounds().pos.y, 20.0f);
+    EXPECT_FLOAT_EQ(raw_second->bounds().pos.y, 20.0f);
+
+    auto spaced = std::make_unique<FlexLayout>("spaced");
+    spaced->set_orientation(Orientation::Horizontal);
+    spaced->set_justify(FlexJustify::SpaceBetween);
+    auto left = std::make_unique<View>("left");
+    auto right = std::make_unique<View>("right");
+    View* raw_left = left.get();
+    View* raw_right = right.get();
+    left->set_layout_params({.width = 20.0f, .height = 20.0f});
+    right->set_layout_params({.width = 20.0f, .height = 20.0f});
+    spaced->add_child(std::move(left));
+    spaced->add_child(std::move(right));
+    runtime.layout(*spaced, {100.0f, 30.0f});
+
+    EXPECT_FLOAT_EQ(raw_left->bounds().pos.x, 0.0f);
+    EXPECT_FLOAT_EQ(raw_right->bounds().pos.x, 80.0f);
+}
+
+TEST(RetainedMui, NineSliceEmitsNineImagePatches) {
+    UiImageRegistry images;
+    ASSERT_TRUE(images.register_rgba("panel", 8, 8, std::vector<uint8_t>(8u * 8u * 4u, 255u)));
+
+    Arc2DCommandBuffer commands;
+    commands.nine_slice({.pos = {10.0f, 20.0f}, .size = {120.0f, 60.0f}}, "panel",
+                        {.left = 2.0f, .top = 2.0f, .right = 2.0f, .bottom = 2.0f});
+    Arc2DRenderer renderer(images);
+    const UiDrawData data = renderer.build_draw_data(commands);
+
+    EXPECT_EQ(data.vertices.size(), 36u);
+    EXPECT_EQ(data.indices.size(), 54u);
+    EXPECT_TRUE(std::all_of(data.vertices.begin(), data.vertices.end(),
+        [](const UiVertex& vertex) { return vertex.texture_mode == UiTextureMode::Image; }));
+}
+
+TEST(RetainedMui, ViewportUsesOneScaleForInputAndDrawData) {
+    const UiViewport viewport{
+        .framebuffer_size = {2000.0f, 1000.0f},
+        .window_size = {1000.0f, 500.0f},
+        .dpi_scale = 2.0f,
+        .user_scale = 1.25f,
+    };
+    EXPECT_FLOAT_EQ(viewport.pixels_per_ui_unit(), 2.5f);
+    const Vec2 logical_size = viewport.logical_size();
+    const Vec2 logical_point = viewport.window_to_logical({500.0f, 250.0f});
+    const Vec2 window_point = viewport.logical_to_window({400.0f, 200.0f});
+    EXPECT_FLOAT_EQ(logical_size.x, 800.0f);
+    EXPECT_FLOAT_EQ(logical_size.y, 400.0f);
+    EXPECT_FLOAT_EQ(logical_point.x, 400.0f);
+    EXPECT_FLOAT_EQ(logical_point.y, 200.0f);
+    EXPECT_FLOAT_EQ(window_point.x, 500.0f);
+    EXPECT_FLOAT_EQ(window_point.y, 250.0f);
+
+    auto paths = make_test_path_resolver();
+    ASSERT_TRUE(paths) << paths.error().format();
+    UiRuntime runtime(*paths);
+    runtime.set_viewport(viewport);
+    auto root = std::make_unique<View>("scaled_root");
+    root->set_background({40, 60, 80, 255});
+    runtime.layout(*root, viewport.logical_size());
+    const UiFrameResult frame = runtime.paint(*root);
+    ASSERT_FALSE(frame.draw_data.vertices.empty());
+
+    float maximum_x = 0.0f;
+    float maximum_y = 0.0f;
+    for (const UiVertex& vertex : frame.draw_data.vertices) {
+        maximum_x = std::max(maximum_x, vertex.position[0]);
+        maximum_y = std::max(maximum_y, vertex.position[1]);
+    }
+    EXPECT_FLOAT_EQ(maximum_x, 2000.0f);
+    EXPECT_FLOAT_EQ(maximum_y, 1000.0f);
+}
+
+TEST(RetainedMui, TextInputReceivesImePreeditAndCommittedUtf8) {
+    auto paths = make_test_path_resolver();
+    ASSERT_TRUE(paths) << paths.error().format();
+    UiRuntime runtime(*paths);
+
+    auto root = std::make_unique<FrameLayout>("ime_root");
+    auto editor = std::make_unique<TextInput>("editor");
+    TextInput* raw_editor = editor.get();
+    editor->set_layout_params({.width = 180.0f, .height = 32.0f});
+    root->add_child(std::move(editor));
+    runtime.layout(*root, {240.0f, 80.0f});
+
+    runtime.begin_input_frame({
+        .pointer_position = {10.0f, 10.0f},
+        .pointer_held = {true, false, false},
+        .pointer_pressed = {true, false, false},
+    });
+    ASSERT_TRUE(runtime.dispatch_pointer_input(*root));
+    runtime.begin_input_frame({
+        .text_compositions = {{.text = "ni", .start = 0, .length = 2}},
+    });
+    ASSERT_TRUE(runtime.dispatch_keyboard_input(*root));
+    const UiFrameResult preedit = runtime.paint(*root);
+    EXPECT_TRUE(std::any_of(preedit.commands.commands().begin(), preedit.commands.commands().end(),
+        [](const ArcDrawCommand& command) {
+            const auto* text = std::get_if<DrawTextCommand>(&command);
+            return text && text->text == "ni";
+        }));
+
+    runtime.begin_input_frame({
+        .text_commits = {std::string("\\xE4\\xBD\\xA0")},
+    });
+    ASSERT_TRUE(runtime.dispatch_keyboard_input(*root));
+    EXPECT_EQ(raw_editor->text(), std::string("\\xE4\\xBD\\xA0"));
+}
+
+TEST(RetainedMui, ModFacadeOwnsControlsModelsCommandsAndResources) {
+    UiImageRegistry images;
+    UiLayerStack layers;
+    CapturingModUiCommandSink sink;
+    auto host_result = mod::internal::create_mod_ui_host(
+        {.value = "example_mod"}, layers, images, sink);
+    ASSERT_TRUE(host_result) << host_result.error().format();
+    std::unique_ptr<mod::IModUiHost> host = std::move(*host_result);
+
+    ASSERT_TRUE(host->register_image({
+        .ref = {.value = "icon"},
+        .width = 4,
+        .height = 4,
+        .rgba = std::vector<uint8_t>(4u * 4u * 4u, 255u),
+    }));
+    ASSERT_TRUE(host->register_image({
+        .ref = {.value = "panel"},
+        .width = 4,
+        .height = 4,
+        .rgba = std::vector<uint8_t>(4u * 4u * 4u, 180u),
+    }));
+
+    mod::Widget controls_root;
+    controls_root.type = mod::WidgetType::Flex;
+    controls_root.id = {.value = "controls_root"};
+    controls_root.layout.width = 0.0f;
+    controls_root.layout.height = 0.0f;
+    controls_root.layout.spacing = 4.0f;
+
+    mod::Widget editor;
+    editor.type = mod::WidgetType::TextInput;
+    editor.id = {.value = "editor"};
+    editor.layout.width = 220.0f;
+    editor.layout.height = 32.0f;
+    editor.placeholder = "Name";
+    editor.view_model = {.value = "profile"};
+    editor.value_key = "name";
+    editor.actions.change.name = "profile.changed";
+    editor.actions.submit.name = "profile.submitted";
+    controls_root.children.push_back(std::move(editor));
+
+    mod::Widget checkbox;
+    checkbox.type = mod::WidgetType::Checkbox;
+    checkbox.id = {.value = "enabled"};
+    checkbox.text = "Enabled";
+    checkbox.view_model = {.value = "profile"};
+    checkbox.value_key = "enabled";
+    checkbox.actions.change.name = "enabled.changed";
+    controls_root.children.push_back(std::move(checkbox));
+
+    mod::Widget slider;
+    slider.type = mod::WidgetType::Slider;
+    slider.id = {.value = "volume"};
+    slider.minimum = 0.0f;
+    slider.maximum = 1.0f;
+    slider.step = 0.25f;
+    slider.value = 0.5f;
+    slider.view_model = {.value = "profile"};
+    slider.value_key = "volume";
+    slider.actions.change.name = "volume.changed";
+    controls_root.children.push_back(std::move(slider));
+
+    mod::Widget button;
+    button.type = mod::WidgetType::Button;
+    button.id = {.value = "run"};
+    button.text = "Run";
+    button.actions.activate.name = "run.clicked";
+    controls_root.children.push_back(std::move(button));
+
+    mod::Widget icon;
+    icon.type = mod::WidgetType::Image;
+    icon.id = {.value = "icon_view"};
+    icon.resource = {.value = "icon"};
+    controls_root.children.push_back(std::move(icon));
+
+    mod::Widget panel;
+    panel.type = mod::WidgetType::NineSlice;
+    panel.id = {.value = "panel_view"};
+    panel.resource = {.value = "panel"};
+    panel.nine_slice_borders = {.left = 1.0f, .top = 1.0f, .right = 1.0f, .bottom = 1.0f};
+    controls_root.children.push_back(std::move(panel));
+
+    mod::Widget slot;
+    slot.type = mod::WidgetType::Slot;
+    slot.id = {.value = "inventory_slot"};
+    slot.slot = {.item = {.value = "icon"}, .count = 3};
+    slot.actions.drop.name = "inventory.drop";
+    controls_root.children.push_back(std::move(slot));
+
+    mod::Widget list;
+    list.type = mod::WidgetType::VirtualList;
+    list.id = {.value = "items"};
+    list.layout.width = 220.0f;
+    list.layout.height = 48.0f;
+    list.virtual_item_count = 100;
+    list.virtual_item_extent = 20.0f;
+    mod::Widget row;
+    row.type = mod::WidgetType::Text;
+    row.id = {.value = "row"};
+    row.text = "Item";
+    list.children.push_back(std::move(row));
+    controls_root.children.push_back(std::move(list));
+
+    mod::Screen controls;
+    controls.id = {.value = "controls"};
+    controls.initially_visible = true;
+    controls.root = std::move(controls_root);
+
+    mod::Screen modal;
+    modal.id = {.value = "dialog"};
+    modal.layer = mod::Layer::Modal;
+    modal.initially_visible = true;
+    modal.root.type = mod::WidgetType::Modal;
+    modal.root.id = {.value = "dialog_root"};
+    modal.root.actions.dismiss.name = "dialog.dismiss";
+    mod::Widget modal_text;
+    modal_text.type = mod::WidgetType::Text;
+    modal_text.id = {.value = "dialog_text"};
+    modal_text.text = "Dialog";
+    modal.root.children.push_back(std::move(modal_text));
+
+    mod::Screen tooltip;
+    tooltip.id = {.value = "tip"};
+    tooltip.layer = mod::Layer::Tooltip;
+    tooltip.initially_visible = true;
+    tooltip.root.type = mod::WidgetType::Tooltip;
+    tooltip.root.id = {.value = "tip_root"};
+    tooltip.root.text = "Tip";
+
+    ASSERT_TRUE(host->replace_screens({std::move(controls), std::move(modal), std::move(tooltip)}));
+    const auto& submissions = layers.prepare_frame({.viewport = {320.0f, 200.0f}, .images = images});
+    ASSERT_EQ(submissions.size(), 3u);
+
+    const auto controls_submission = std::find_if(submissions.begin(), submissions.end(),
+        [](const UiScreenSubmission& submission) { return submission.layer == UiLayer::Screen; });
+    ASSERT_NE(controls_submission, submissions.end());
+    auto* controls_group = dynamic_cast<ViewGroup*>(controls_submission->root);
+    ASSERT_NE(controls_group, nullptr);
+    auto* retained_editor = dynamic_cast<TextInput*>(controls_group->find("editor"));
+    auto* retained_checkbox = dynamic_cast<Checkbox*>(controls_group->find("enabled"));
+    auto* retained_slider = dynamic_cast<Slider*>(controls_group->find("volume"));
+    auto* retained_button = dynamic_cast<Button*>(controls_group->find("run"));
+    auto* retained_slot = dynamic_cast<SlotView*>(controls_group->find("inventory_slot"));
+    auto* retained_list = dynamic_cast<VirtualListView*>(controls_group->find("items"));
+    EXPECT_NE(dynamic_cast<ImageView*>(controls_group->find("icon_view")), nullptr);
+    EXPECT_NE(dynamic_cast<NineSliceView*>(controls_group->find("panel_view")), nullptr);
+    ASSERT_NE(retained_editor, nullptr);
+    ASSERT_NE(retained_checkbox, nullptr);
+    ASSERT_NE(retained_slider, nullptr);
+    ASSERT_NE(retained_button, nullptr);
+    ASSERT_NE(retained_slot, nullptr);
+    ASSERT_NE(retained_list, nullptr);
+    EXPECT_EQ(retained_list->item_count(), 100u);
+
+    const auto modal_submission = std::find_if(submissions.begin(), submissions.end(),
+        [](const UiScreenSubmission& submission) { return submission.layer == UiLayer::Modal; });
+    ASSERT_NE(modal_submission, submissions.end());
+    EXPECT_EQ(modal_submission->root->kind(), ViewKind::Modal);
+    const auto tooltip_submission = std::find_if(submissions.begin(), submissions.end(),
+        [](const UiScreenSubmission& submission) { return submission.layer == UiLayer::Tooltip; });
+    ASSERT_NE(tooltip_submission, submissions.end());
+    EXPECT_EQ(tooltip_submission->root->kind(), ViewKind::Tooltip);
+
+    retained_editor->on_input_event({.type = UiInputEventType::TextCommit, .text = "Ada"});
+    retained_editor->on_input_event({.type = UiInputEventType::KeyDown, .key = UiKey::Enter});
+    retained_checkbox->on_input_event({.type = UiInputEventType::PointerUp,
+                                       .pointer_button = UiPointerButton::Primary,
+                                       .activation = true});
+    retained_slider->set_value(0.75f, true);
+    EXPECT_TRUE(retained_button->activate());
+    retained_slot->dispatch_drag_event({
+        .type = UiSlotDragEventType::Drop,
+        .source_id = "other_slot",
+        .target_id = "inventory_slot",
+        .payload = {.item_key = "example_mod:icon", .count = 3},
+    });
+
+    ASSERT_NE(find_mod_command(sink.commands, "profile.changed"), nullptr);
+    ASSERT_NE(find_mod_command(sink.commands, "profile.submitted"), nullptr);
+    ASSERT_NE(find_mod_command(sink.commands, "enabled.changed"), nullptr);
+    ASSERT_NE(find_mod_command(sink.commands, "volume.changed"), nullptr);
+    ASSERT_NE(find_mod_command(sink.commands, "run.clicked"), nullptr);
+    const mod::Command* drop = find_mod_command(sink.commands, "inventory.drop");
+    ASSERT_NE(drop, nullptr);
+    EXPECT_EQ(drop->screen.value, "controls");
+    EXPECT_EQ(drop->widget.value, "inventory_slot");
+    EXPECT_EQ(drop->related_widget.value, "other_slot");
+    EXPECT_EQ(drop->slot.item.value, "icon");
+    EXPECT_EQ(drop->slot.count, 3);
+
+    ASSERT_TRUE(host->set_view_model_value({.value = "profile"}, "name", std::string("Grace")));
+    ASSERT_TRUE(host->set_view_model_value({.value = "profile"}, "enabled", true));
+    ASSERT_TRUE(host->set_view_model_value({.value = "profile"}, "volume", 0.25));
+    EXPECT_EQ(retained_editor->text(), "Grace");
+    EXPECT_TRUE(retained_checkbox->checked());
+    EXPECT_FLOAT_EQ(retained_slider->value(), 0.25f);
+
+    auto paths = make_test_path_resolver();
+    ASSERT_TRUE(paths) << paths.error().format();
+    UiRuntime runtime(*paths);
+    runtime.layout(*controls_submission->root, {320.0f, 200.0f});
+    EXPECT_LT(retained_list->children().size(), retained_list->item_count());
+
+    ASSERT_TRUE(host->unregister_owner());
+    EXPECT_TRUE(layers.prepare_frame({.viewport = {320.0f, 200.0f}, .images = images}).empty());
+    EXPECT_EQ(images.image_count(), 0u);
 }

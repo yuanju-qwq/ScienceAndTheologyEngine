@@ -51,6 +51,11 @@ public:
         uint32_t height,
         std::vector<uint8_t> rgba);
 
+    // Releases one logical resource and repacks the remaining atlas entries.
+    // This is owner-lifecycle work, not a per-frame operation. The atlas
+    // object remains stable so renderer uploads can observe the new revision.
+    [[nodiscard]] snt::core::Expected<void> unregister_image(std::string_view key);
+
     // Unknown keys resolve to the configured fallback if present. A missing
     // key is logged once so a bad content mapping is diagnosable without
     // producing per-frame log noise.
@@ -63,8 +68,15 @@ public:
     [[nodiscard]] size_t image_count() const { return regions_.size(); }
 
 private:
+    struct StoredImage {
+        uint32_t width = 0;
+        uint32_t height = 0;
+        std::vector<uint8_t> rgba;
+    };
+
     [[nodiscard]] snt::core::Expected<UiImageRegion> allocate(uint32_t width,
                                                                 uint32_t height);
+    [[nodiscard]] snt::core::Expected<void> rebuild_atlas();
     void write_region(const UiImageRegion& region,
                       uint32_t width,
                       uint32_t height,
@@ -75,7 +87,9 @@ private:
     snt::assets::TextureCache texture_cache_;
     std::shared_ptr<UiImageAtlas> atlas_;
     std::unordered_map<std::string, UiImageRegion> regions_;
+    std::unordered_map<std::string, StoredImage> stored_images_;
     std::unordered_map<std::string, std::string> source_paths_;
+    std::vector<std::string> image_order_;
     std::unordered_set<std::string> missing_key_log_once_;
     std::string fallback_key_;
     uint32_t pack_x_ = kPadding;

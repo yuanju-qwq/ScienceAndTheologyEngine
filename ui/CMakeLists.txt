@@ -2,6 +2,9 @@
 
 add_library(snt_ui STATIC
     mui_renderer.cpp
+    mod_ui.cpp
+    mod_ui.h
+    mod_ui_internal.h
     ui_draw_data.h
     ui_image_registry.cpp
     ui_image_registry.h

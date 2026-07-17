@@ -97,17 +97,17 @@ class ClientUiContext {
 public:
     SimulationServices& services() const noexcept { return *services_; }
     ClientWorldSession& world() const noexcept { return *world_; }
-    float viewport_width() const noexcept { return viewport_width_; }
-    float viewport_height() const noexcept { return viewport_height_; }
+    float viewport_width() const noexcept { return viewport_.logical_size().x; }
+    float viewport_height() const noexcept { return viewport_.logical_size().y; }
+    const snt::ui::UiViewport& viewport() const noexcept { return viewport_; }
     bool mouse_locked() const noexcept;
     snt::ui::UiImageRegistry& images() const noexcept;
     snt::ui::UiLayerStack& layers() const noexcept;
 
-    // Context owns each root until the host has laid out, routed input, and
-    // rendered every layer. Callers transfer ownership deliberately so UI
-    // callbacks cannot observe a destroyed temporary view during dispatch.
-    void submit(std::unique_ptr<snt::ui::View> root,
-                snt::ui::UiLayer layer = snt::ui::UiLayer::Screen);
+    // Retained Views are registered through UiLayerStack. This context only
+    // accepts stateless Arc2D overlays such as crosshairs and debug marks;
+    // allowing temporary View roots here would bypass focus, capture, and
+    // retained ownership guarantees.
     void submit(snt::ui::Arc2DCommandBuffer commands,
                 snt::ui::UiLayer layer = snt::ui::UiLayer::Hud);
 
@@ -118,32 +118,29 @@ private:
         snt::ui::UiLayer layer = snt::ui::UiLayer::Hud;
         snt::ui::UiLayerInputPolicy input_policy{};
         uint64_t order = 0;
-        std::unique_ptr<snt::ui::View> root;
         // Layer-stack-owned screens keep a retained root across frames. Direct
-        // session submissions still transfer ownership through `root`.
+        // session submissions are Arc2D-only and never carry a View tree.
         snt::ui::View* borrowed_root = nullptr;
         std::unique_ptr<snt::ui::Arc2DCommandBuffer> commands;
 
         [[nodiscard]] snt::ui::View* view_root() const noexcept {
-            return root ? root.get() : borrowed_root;
+            return borrowed_root;
         }
     };
 
     ClientUiContext(ClientRuntime& runtime,
                     SimulationServices& services,
                     ClientWorldSession& world,
-                    float viewport_width,
-                    float viewport_height)
+                    snt::ui::UiViewport viewport)
         : runtime_(&runtime), services_(&services), world_(&world),
-          viewport_width_(viewport_width), viewport_height_(viewport_height) {}
+          viewport_(std::move(viewport)) {}
 
     void flush();
 
     ClientRuntime* runtime_ = nullptr;
     SimulationServices* services_ = nullptr;
     ClientWorldSession* world_ = nullptr;
-    float viewport_width_ = 0.0f;
-    float viewport_height_ = 0.0f;
+    snt::ui::UiViewport viewport_{};
     uint64_t next_submission_order_ = 0;
     std::vector<Submission> submissions_;
 };

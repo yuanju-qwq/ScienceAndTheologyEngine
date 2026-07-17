@@ -15,7 +15,7 @@
     },
     "children": [
       {
-        "type": "linear",
+        "type": "flex",
         "id": "research_panel",
         "layout": {
           "orientation": "vertical",

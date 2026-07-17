@@ -24,12 +24,13 @@ namespace snt::ui {
 
 enum class UiWidgetType : uint8_t {
     View,
-    Linear,
+    Flex,
     Grid,
     Frame,
     Text,
     Button,
     Image,
+    NineSlice,
     Slot,
     Scroll,
 };
@@ -42,6 +43,8 @@ struct UiWidgetLayout {
     LayoutParams params{};
     Insets padding{};
     Orientation orientation = Orientation::Vertical;
+    FlexJustify justify = FlexJustify::Start;
+    FlexAlign align = FlexAlign::Stretch;
     float spacing = 0.0f;
     int32_t columns = 1;
     float column_spacing = 0.0f;
@@ -75,6 +78,7 @@ struct UiWidgetTemplate {
     TextStyle text_style{};
     std::string image_key;
     Color image_tint{255, 255, 255, 255};
+    Insets nine_slice_borders{};
     UiWidgetSlotState slot{};
     std::string action_id;
     std::vector<UiWidgetTemplate> children;

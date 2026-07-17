@@ -90,6 +90,50 @@ uint32_t decode_utf8(std::string_view s, size_t& offset) {
     return 0xFFFDu;
 }
 
+bool utf8_continuation(unsigned char value) {
+    return (value & 0xC0u) == 0x80u;
+}
+
+size_t utf8_previous_boundary(std::string_view text, size_t offset) {
+    offset = std::min(offset, text.size());
+    if (offset == 0) return 0;
+    --offset;
+    while (offset > 0 && utf8_continuation(static_cast<unsigned char>(text[offset]))) {
+        --offset;
+    }
+    return offset;
+}
+
+size_t utf8_next_boundary(std::string_view text, size_t offset) {
+    offset = std::min(offset, text.size());
+    if (offset >= text.size()) return text.size();
+    ++offset;
+    while (offset < text.size() &&
+           utf8_continuation(static_cast<unsigned char>(text[offset]))) {
+        ++offset;
+    }
+    return offset;
+}
+
+size_t utf8_boundary_at_or_before(std::string_view text, size_t offset) {
+    offset = std::min(offset, text.size());
+    while (offset > 0 && offset < text.size() &&
+           utf8_continuation(static_cast<unsigned char>(text[offset]))) {
+        --offset;
+    }
+    return offset;
+}
+
+std::string utf8_mask(std::string_view text) {
+    std::string result;
+    size_t offset = 0;
+    while (offset < text.size()) {
+        (void)decode_utf8(text, offset);
+        result.push_back('*');
+    }
+    return result;
+}
+
 // The retained text path intentionally has no ASCII bitmap implementation.
 // Rasterization is performed from shaped FreeType glyph IDs below.
 
@@ -983,6 +1027,13 @@ void Arc2DCommandBuffer::image(Rect rect, std::string image_key, Color tint) {
     commands_.push_back(DrawImageCommand{rect, std::move(image_key), tint});
 }
 
+void Arc2DCommandBuffer::nine_slice(Rect rect,
+                                     std::string image_key,
+                                     Insets borders,
+                                     Color tint) {
+    commands_.push_back(DrawNineSliceCommand{rect, std::move(image_key), borders, tint});
+}
+
 void Arc2DCommandBuffer::push_clip(Rect rect) {
     commands_.push_back(PushClipCommand{rect});
 }
@@ -1001,6 +1052,8 @@ UiDrawData Arc2DRenderer::build_draw_data(const Arc2DCommandBuffer& commands) co
             append_rect(out, rect->rect, rect->color, rect->radius, current_clip);
         } else if (const auto* image = std::get_if<DrawImageCommand>(&cmd)) {
             append_image(out, *image, current_clip);
+        } else if (const auto* nine_slice = std::get_if<DrawNineSliceCommand>(&cmd)) {
+            append_nine_slice(out, *nine_slice, current_clip);
         } else if (const auto* text = std::get_if<DrawTextCommand>(&cmd)) {
             append_glyph_text(out, *text, current_clip);
         } else if (const auto* push = std::get_if<PushClipCommand>(&cmd)) {
@@ -1203,6 +1256,89 @@ void Arc2DRenderer::append_image(UiDrawData& out,
     });
 }
 
+void Arc2DRenderer::append_nine_slice(UiDrawData& out,
+                                      const DrawNineSliceCommand& image,
+                                      UiClipRect clip) const {
+    if (!images_ || !is_non_empty_rect(image.rect)) return;
+    const UiImageRegion* region = images_->resolve(image.image_key);
+    if (!region || region->width == 0 || region->height == 0) return;
+    const auto atlas = images_->atlas();
+    if (!atlas) {
+        SNT_LOG_ERROR("MUI image registry resolved nine-slice '%s' without an atlas",
+                      image.image_key.c_str());
+        return;
+    }
+    if (!out.image_atlas) {
+        out.image_atlas = atlas;
+    } else if (out.image_atlas.get() != atlas.get()) {
+        SNT_LOG_ERROR("MUI frame combines images from different UI atlases; rejecting nine-slice");
+        return;
+    }
+
+    const float source_width = static_cast<float>(region->width);
+    const float source_height = static_cast<float>(region->height);
+    const float source_left = std::clamp(image.borders.left, 0.0f, source_width * 0.5f);
+    const float source_right = std::clamp(image.borders.right, 0.0f,
+                                          source_width - source_left);
+    const float source_top = std::clamp(image.borders.top, 0.0f, source_height * 0.5f);
+    const float source_bottom = std::clamp(image.borders.bottom, 0.0f,
+                                           source_height - source_top);
+
+    const float dest_left = std::min(source_left, image.rect.size.x * 0.5f);
+    const float dest_right = std::min(source_right, image.rect.size.x - dest_left);
+    const float dest_top = std::min(source_top, image.rect.size.y * 0.5f);
+    const float dest_bottom = std::min(source_bottom, image.rect.size.y - dest_top);
+    const std::array<float, 4> xs{{image.rect.pos.x,
+                                   image.rect.pos.x + dest_left,
+                                   image.rect.pos.x + image.rect.size.x - dest_right,
+                                   image.rect.pos.x + image.rect.size.x}};
+    const std::array<float, 4> ys{{image.rect.pos.y,
+                                   image.rect.pos.y + dest_top,
+                                   image.rect.pos.y + image.rect.size.y - dest_bottom,
+                                   image.rect.pos.y + image.rect.size.y}};
+    const float u_span = region->u1 - region->u0;
+    const float v_span = region->v1 - region->v0;
+    const std::array<float, 4> us{{region->u0,
+                                   region->u0 + u_span * source_left / source_width,
+                                   region->u1 - u_span * source_right / source_width,
+                                   region->u1}};
+    const std::array<float, 4> vs{{region->v0,
+                                   region->v0 + v_span * source_top / source_height,
+                                   region->v1 - v_span * source_bottom / source_height,
+                                   region->v1}};
+
+    const auto append_patch = [&out, clip, &image](float x0, float y0, float x1, float y1,
+                                                    float u0, float v0, float u1, float v1) {
+        if (x1 <= x0 || y1 <= y0 || !has_vertex_capacity(out, 4)) return;
+        if (!begin_draw_batch(out, UiTextureBinding::ImageAtlas, clip)) return;
+        const UiIndex base = static_cast<UiIndex>(out.vertices.size());
+        UiVertex vertex{};
+        vertex.color[0] = image.tint.r;
+        vertex.color[1] = image.tint.g;
+        vertex.color[2] = image.tint.b;
+        vertex.color[3] = image.tint.a;
+        vertex.texture_mode = UiTextureMode::Image;
+        vertex.position[0] = x0; vertex.position[1] = y0;
+        vertex.uv[0] = u0; vertex.uv[1] = v0; out.vertices.push_back(vertex);
+        vertex.position[0] = x0; vertex.position[1] = y1;
+        vertex.uv[0] = u0; vertex.uv[1] = v1; out.vertices.push_back(vertex);
+        vertex.position[0] = x1; vertex.position[1] = y1;
+        vertex.uv[0] = u1; vertex.uv[1] = v1; out.vertices.push_back(vertex);
+        vertex.position[0] = x1; vertex.position[1] = y0;
+        vertex.uv[0] = u1; vertex.uv[1] = v0; out.vertices.push_back(vertex);
+        append_batch_indices(out, {
+            base + 0, base + 1, base + 2, base + 0, base + 2, base + 3,
+        });
+    };
+
+    for (size_t row = 0; row < 3; ++row) {
+        for (size_t column = 0; column < 3; ++column) {
+            append_patch(xs[column], ys[row], xs[column + 1], ys[row + 1],
+                         us[column], vs[row], us[column + 1], vs[row + 1]);
+        }
+    }
+}
+
 View::View(std::string id)
     : id_(std::move(id)) {}
 
@@ -1223,6 +1359,11 @@ void View::bind_text(ViewModel& model, std::string key) {
             text->set_text(binding_value_to_string(value));
         }
     });
+    if (subscription.connected()) bindings_.push_back(std::move(subscription));
+}
+
+void View::bind_value(ViewModel& model, std::string key, ViewModel::Observer observer) {
+    auto subscription = model.bind(std::move(key), std::move(observer));
     if (subscription.connected()) bindings_.push_back(std::move(subscription));
 }
 
@@ -1367,6 +1508,343 @@ UiEventReply Button::on_input_event(const UiInputEvent& event) {
     return base_reply;
 }
 
+TextInput::TextInput(std::string id)
+    : TextView(std::move(id)) {
+    set_hit_test_visible(true);
+    set_focusable(true);
+}
+
+void TextInput::set_text(std::string text) {
+    replace_text(std::move(text), true);
+    cursor_ = text_.size();
+}
+
+void TextInput::set_text_silently(std::string text) {
+    replace_text(std::move(text), false);
+    cursor_ = text_.size();
+}
+
+void TextInput::replace_text(std::string text, bool notify) {
+    if (text.size() > max_bytes_) {
+        text.resize(utf8_boundary_at_or_before(text, max_bytes_));
+    }
+    if (text_ == text) return;
+    TextView::set_text(std::move(text));
+    cursor_ = utf8_boundary_at_or_before(text_, cursor_);
+    if (notify && change_handler_) change_handler_(text_);
+}
+
+void TextInput::insert_text(std::string_view inserted) {
+    if (inserted.empty() || cursor_ > text_.size()) return;
+    const size_t available = max_bytes_ > text_.size() ? max_bytes_ - text_.size() : 0;
+    std::string value(inserted.substr(0, std::min(available, inserted.size())));
+    value.resize(utf8_boundary_at_or_before(value, value.size()));
+    if (value.empty()) return;
+    const size_t insertion_point = utf8_boundary_at_or_before(text_, cursor_);
+    std::string next = text_;
+    next.insert(insertion_point, value);
+    replace_text(std::move(next), true);
+    cursor_ = insertion_point + value.size();
+}
+
+void TextInput::erase_previous_codepoint() {
+    if (cursor_ == 0 || text_.empty()) return;
+    const size_t end = utf8_boundary_at_or_before(text_, cursor_);
+    const size_t begin = utf8_previous_boundary(text_, end);
+    std::string next = text_;
+    next.erase(begin, end - begin);
+    replace_text(std::move(next), true);
+    cursor_ = begin;
+}
+
+void TextInput::erase_next_codepoint() {
+    if (cursor_ >= text_.size()) return;
+    const size_t begin = utf8_boundary_at_or_before(text_, cursor_);
+    const size_t end = utf8_next_boundary(text_, begin);
+    std::string next = text_;
+    next.erase(begin, end - begin);
+    replace_text(std::move(next), true);
+    cursor_ = begin;
+}
+
+void TextInput::move_cursor_left() {
+    cursor_ = utf8_previous_boundary(text_, cursor_);
+}
+
+void TextInput::move_cursor_right() {
+    cursor_ = utf8_next_boundary(text_, cursor_);
+}
+
+std::string TextInput::display_text() const {
+    std::string value = text_;
+    const size_t cursor = utf8_boundary_at_or_before(value, cursor_);
+    value.insert(cursor, composition_);
+    return password_ ? utf8_mask(value) : value;
+}
+
+void TextInput::measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) {
+    TextView::measure(width, height, text_engine);
+    if (visibility_ == Visibility::Gone) return;
+    if (layout_params_.width < 0.0f) {
+        measured_size_.x = clamp_axis(std::max(120.0f, measured_size_.x + 12.0f), width);
+    }
+    if (layout_params_.height < 0.0f) {
+        measured_size_.y = clamp_axis(std::max(30.0f, measured_size_.y + 10.0f), height);
+    }
+}
+
+void TextInput::paint(Arc2DCommandBuffer& out,
+                      TextEngine& text_engine,
+                      const UiTheme& theme) const {
+    if (visibility_ != Visibility::Visible) return;
+    const bool focused = has_interaction_state(interaction_state(), UiInteractionState::Focused);
+    const Color background = !enabled() ? theme.button_disabled
+        : focused ? Color{31, 54, 76, 245} : Color{24, 31, 41, 238};
+    out.rect(bounds_, background, theme.button_radius);
+    const Rect content{
+        .pos = {bounds_.pos.x + 6.0f, bounds_.pos.y + 4.0f},
+        .size = {std::max(0.0f, bounds_.size.x - 12.0f),
+                 std::max(0.0f, bounds_.size.y - 8.0f)},
+    };
+    const std::string displayed = display_text();
+    if (!displayed.empty()) {
+        TextStyle style = style_;
+        const TextLayout layout = text_engine.shape(displayed, style);
+        out.text(content, displayed, style, layout);
+    } else if (!placeholder_.empty()) {
+        TextStyle style = style_;
+        style.color = {145, 154, 168, 220};
+        const TextLayout layout = text_engine.shape(placeholder_, style);
+        out.text(content, placeholder_, style, layout);
+    }
+    if (!focused || !enabled()) return;
+
+    std::string prefix = text_.substr(0, utf8_boundary_at_or_before(text_, cursor_));
+    if (password_) prefix = utf8_mask(prefix);
+    const TextLayout prefix_layout = text_engine.shape(prefix, style_);
+    const float caret_x = std::min(content.pos.x + prefix_layout.size.x,
+                                   content.pos.x + content.size.x - 1.0f);
+    out.rect({.pos = {caret_x, content.pos.y + 2.0f},
+              .size = {1.0f, std::max(1.0f, content.size.y - 4.0f)}},
+             {232, 241, 255, 255});
+    if (!composition_.empty()) {
+        const TextLayout composition_layout = text_engine.shape(
+            password_ ? utf8_mask(composition_) : composition_, style_);
+        out.rect({.pos = {caret_x, content.pos.y + content.size.y - 2.0f},
+                  .size = {composition_layout.size.x, 1.0f}},
+                 {126, 183, 242, 255});
+    }
+}
+
+UiEventReply TextInput::on_input_event(const UiInputEvent& event) {
+    const UiEventReply base_reply = View::on_input_event(event);
+    if (base_reply == UiEventReply::StopPropagation || event.phase != UiEventPhase::Target ||
+        !enabled()) {
+        return base_reply;
+    }
+    switch (event.type) {
+        case UiInputEventType::PointerDown:
+            if (event.pointer_button == UiPointerButton::Primary) {
+                cursor_ = text_.size();
+                return UiEventReply::Handled;
+            }
+            break;
+        case UiInputEventType::TextCommit:
+            insert_text(event.text);
+            composition_.clear();
+            return UiEventReply::Handled;
+        case UiInputEventType::TextComposition:
+            composition_ = event.text;
+            composition_start_ = event.composition_start;
+            composition_length_ = event.composition_length;
+            return UiEventReply::Handled;
+        case UiInputEventType::FocusLost:
+            composition_.clear();
+            return UiEventReply::Handled;
+        case UiInputEventType::KeyDown:
+            switch (event.key) {
+                case UiKey::Backspace: erase_previous_codepoint(); return UiEventReply::Handled;
+                case UiKey::Delete: erase_next_codepoint(); return UiEventReply::Handled;
+                case UiKey::Left: move_cursor_left(); return UiEventReply::Handled;
+                case UiKey::Right: move_cursor_right(); return UiEventReply::Handled;
+                case UiKey::Home: cursor_ = 0; return UiEventReply::Handled;
+                case UiKey::End: cursor_ = text_.size(); return UiEventReply::Handled;
+                case UiKey::Escape: composition_.clear(); return UiEventReply::Handled;
+                case UiKey::Enter:
+                    if (submit_handler_) submit_handler_(text_);
+                    return UiEventReply::Handled;
+                default: break;
+            }
+            break;
+        default: break;
+    }
+    return base_reply;
+}
+
+Checkbox::Checkbox(std::string id)
+    : TextView(std::move(id)) {
+    set_hit_test_visible(true);
+    set_focusable(true);
+}
+
+void Checkbox::set_checked(bool checked, bool notify) {
+    if (checked_ == checked) return;
+    checked_ = checked;
+    if (notify && change_handler_) change_handler_(checked_);
+}
+
+void Checkbox::measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) {
+    TextView::measure(width, height, text_engine);
+    if (visibility_ == Visibility::Gone) return;
+    if (layout_params_.width < 0.0f) {
+        measured_size_.x = clamp_axis(measured_size_.x + 24.0f, width);
+    }
+    if (layout_params_.height < 0.0f) {
+        measured_size_.y = clamp_axis(std::max(20.0f, measured_size_.y), height);
+    }
+}
+
+void Checkbox::paint(Arc2DCommandBuffer& out,
+                     TextEngine& text_engine,
+                     const UiTheme&) const {
+    if (visibility_ != Visibility::Visible) return;
+    const float side = std::min(16.0f, std::max(0.0f, bounds_.size.y - 4.0f));
+    const Rect box{.pos = {bounds_.pos.x + 2.0f, bounds_.pos.y + (bounds_.size.y - side) * 0.5f},
+                   .size = {side, side}};
+    const bool focused = has_interaction_state(interaction_state(), UiInteractionState::Focused);
+    out.rect(box, checked_ ? Color{67, 133, 196, 255}
+                           : focused ? Color{63, 76, 94, 255}
+                                     : Color{40, 46, 57, 255}, 3.0f);
+    if (checked_) {
+        out.rect({.pos = {box.pos.x + 4.0f, box.pos.y + 4.0f},
+                  .size = {std::max(0.0f, side - 8.0f), std::max(0.0f, side - 8.0f)}},
+                 {239, 247, 255, 255}, 1.0f);
+    }
+    if (text_.empty()) return;
+    const TextLayout layout = text_engine.shape(text_, style_);
+    out.text({.pos = {bounds_.pos.x + 24.0f, bounds_.pos.y},
+              .size = {std::max(0.0f, bounds_.size.x - 24.0f), bounds_.size.y}},
+             text_, style_, layout);
+}
+
+UiEventReply Checkbox::on_input_event(const UiInputEvent& event) {
+    const UiEventReply base_reply = View::on_input_event(event);
+    if (base_reply == UiEventReply::StopPropagation || event.phase != UiEventPhase::Target ||
+        !enabled()) {
+        return base_reply;
+    }
+    if (event.type == UiInputEventType::PointerDown &&
+        event.pointer_button == UiPointerButton::Primary) {
+        return UiEventReply::Handled;
+    }
+    if ((event.type == UiInputEventType::PointerUp && event.activation &&
+         event.pointer_button == UiPointerButton::Primary) ||
+        (event.type == UiInputEventType::KeyDown &&
+         (event.key == UiKey::Space || event.key == UiKey::Enter))) {
+        set_checked(!checked_, true);
+        return UiEventReply::Handled;
+    }
+    return base_reply;
+}
+
+Slider::Slider(std::string id)
+    : View(std::move(id)) {
+    set_hit_test_visible(true);
+    set_focusable(true);
+}
+
+void Slider::set_range(float minimum, float maximum) {
+    if (!std::isfinite(minimum) || !std::isfinite(maximum)) return;
+    if (maximum < minimum) std::swap(minimum, maximum);
+    minimum_ = minimum;
+    maximum_ = maximum;
+    set_value(value_);
+}
+
+void Slider::set_value(float value, bool notify) {
+    if (!std::isfinite(value)) return;
+    float clamped = std::clamp(value, minimum_, maximum_);
+    if (step_ > 0.0f) {
+        clamped = minimum_ + std::round((clamped - minimum_) / step_) * step_;
+        clamped = std::clamp(clamped, minimum_, maximum_);
+    }
+    if (value_ == clamped) return;
+    value_ = clamped;
+    if (notify && change_handler_) change_handler_(value_);
+}
+
+float Slider::normalized_value() const {
+    const float span = maximum_ - minimum_;
+    return span > 0.0f ? std::clamp((value_ - minimum_) / span, 0.0f, 1.0f) : 0.0f;
+}
+
+void Slider::set_value_from_pointer(float x) {
+    const float width = std::max(1.0f, bounds_.size.x - 12.0f);
+    const float t = std::clamp((x - (bounds_.pos.x + 6.0f)) / width, 0.0f, 1.0f);
+    set_value(minimum_ + (maximum_ - minimum_) * t, true);
+}
+
+void Slider::measure(MeasureSpec width, MeasureSpec height, TextEngine&) {
+    if (visibility_ == Visibility::Gone) {
+        measured_size_ = {};
+        return;
+    }
+    measured_size_.x = resolve_axis(layout_params_.width, width, 120.0f);
+    measured_size_.y = resolve_axis(layout_params_.height, height, 24.0f);
+}
+
+void Slider::paint(Arc2DCommandBuffer& out,
+                   TextEngine& text_engine,
+                   const UiTheme& theme) const {
+    View::paint(out, text_engine, theme);
+    if (visibility_ != Visibility::Visible) return;
+    const float track_y = bounds_.pos.y + bounds_.size.y * 0.5f - 2.0f;
+    const Rect track{.pos = {bounds_.pos.x + 6.0f, track_y},
+                     .size = {std::max(0.0f, bounds_.size.x - 12.0f), 4.0f}};
+    out.rect(track, {51, 59, 71, 255}, 2.0f);
+    const float filled = track.size.x * normalized_value();
+    out.rect({.pos = track.pos, .size = {filled, track.size.y}}, {71, 143, 207, 255}, 2.0f);
+    const float knob_x = track.pos.x + filled - 5.0f;
+    const Color knob = has_interaction_state(interaction_state(), UiInteractionState::Pressed)
+        ? Color{219, 239, 255, 255} : Color{183, 219, 249, 255};
+    out.rect({.pos = {knob_x, track_y - 5.0f}, .size = {10.0f, 14.0f}}, knob, 5.0f);
+}
+
+UiEventReply Slider::on_input_event(const UiInputEvent& event) {
+    const UiEventReply base_reply = View::on_input_event(event);
+    if (base_reply == UiEventReply::StopPropagation || event.phase != UiEventPhase::Target ||
+        !enabled()) {
+        return base_reply;
+    }
+    if ((event.type == UiInputEventType::PointerDown || event.type == UiInputEventType::PointerMove ||
+         event.type == UiInputEventType::PointerUp) &&
+        event.pointer_button != UiPointerButton::Middle &&
+        event.pointer_button != UiPointerButton::Secondary) {
+        set_value_from_pointer(event.pointer_position.x);
+        return UiEventReply::Handled;
+    }
+    if (event.type == UiInputEventType::KeyDown) {
+        const float delta = step_ > 0.0f ? step_ : std::max((maximum_ - minimum_) / 100.0f, 0.01f);
+        if (event.key == UiKey::Left || event.key == UiKey::Down) {
+            set_value(value_ - delta, true);
+            return UiEventReply::Handled;
+        }
+        if (event.key == UiKey::Right || event.key == UiKey::Up) {
+            set_value(value_ + delta, true);
+            return UiEventReply::Handled;
+        }
+        if (event.key == UiKey::Home) {
+            set_value(minimum_, true);
+            return UiEventReply::Handled;
+        }
+        if (event.key == UiKey::End) {
+            set_value(maximum_, true);
+            return UiEventReply::Handled;
+        }
+    }
+    return base_reply;
+}
+
 ImageView::ImageView(std::string id)
     : View(std::move(id)) {}
 
@@ -1386,6 +1864,29 @@ void ImageView::paint(Arc2DCommandBuffer& out,
     View::paint(out, text_engine, theme);
     if (visibility_ != Visibility::Visible || image_key_.empty()) return;
     out.image(bounds_, image_key_, tint_);
+}
+
+NineSliceView::NineSliceView(std::string id)
+    : View(std::move(id)) {}
+
+void NineSliceView::measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) {
+    (void)text_engine;
+    if (visibility_ == Visibility::Gone) {
+        measured_size_ = {};
+        return;
+    }
+    measured_size_.x = resolve_axis(layout_params_.width, width,
+                                    std::max(0.0f, borders_.left + borders_.right));
+    measured_size_.y = resolve_axis(layout_params_.height, height,
+                                    std::max(0.0f, borders_.top + borders_.bottom));
+}
+
+void NineSliceView::paint(Arc2DCommandBuffer& out,
+                          TextEngine& text_engine,
+                          const UiTheme& theme) const {
+    View::paint(out, text_engine, theme);
+    if (visibility_ != Visibility::Visible || image_key_.empty()) return;
+    out.nine_slice(bounds_, image_key_, borders_, tint_);
 }
 
 SlotView::SlotView(std::string id)
@@ -1408,8 +1909,9 @@ void SlotView::paint(Arc2DCommandBuffer& out,
                      TextEngine& text_engine,
                      const UiTheme&) const {
     if (visibility_ != Visibility::Visible) return;
-    const Color base = state_.selected ? Color{84, 128, 176, 255}
-                                       : Color{34, 38, 48, 255};
+    const Color base = drag_hovered_ ? Color{96, 164, 112, 255}
+        : state_.selected ? Color{84, 128, 176, 255}
+                          : Color{34, 38, 48, 255};
     out.rect(bounds_, base, 3.0f);
     if (!state_.item_key.empty() && state_.count > 0) {
         const Rect icon{
@@ -1426,6 +1928,9 @@ void SlotView::paint(Arc2DCommandBuffer& out,
             auto layout = text_engine.shape(text, style);
             out.text(bounds_, std::move(text), style, std::move(layout));
         }
+    }
+    if (drag_source_) {
+        out.rect(bounds_, {10, 15, 22, 118}, 3.0f);
     }
 }
 
@@ -1500,10 +2005,14 @@ void ViewGroup::paint(Arc2DCommandBuffer& out,
     }
 }
 
-LinearLayout::LinearLayout(std::string id)
+void SlotView::dispatch_drag_event(const UiSlotDragEvent& event) const {
+    if (drag_handler_) drag_handler_(event);
+}
+
+FlexLayout::FlexLayout(std::string id)
     : ViewGroup(std::move(id)) {}
 
-void LinearLayout::measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) {
+void FlexLayout::measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) {
     if (visibility_ == Visibility::Gone) {
         measured_size_ = {};
         return;
@@ -1514,25 +2023,47 @@ void LinearLayout::measure(MeasureSpec width, MeasureSpec height, TextEngine& te
     const float inner_h = height.mode == MeasureMode::Unspecified
         ? 0.0f : std::max(0.0f, height.size - padding_.top - padding_.bottom);
 
+    const bool horizontal = orientation_ == Orientation::Horizontal;
+    const float inner_major = horizontal ? inner_w : inner_h;
+    const bool major_constrained = (horizontal ? width.mode : height.mode) !=
+        MeasureMode::Unspecified;
     float major = 0.0f;
     float cross = 0.0f;
+    float total_weight = 0.0f;
     int visible_count = 0;
 
     for (auto& child : children_) {
         if (child->visibility() == Visibility::Gone) continue;
         const auto& lp = child->layout_params();
-        child->measure(child_spec(inner_w, lp.width, lp.margin.left, lp.margin.right),
-                       child_spec(inner_h, lp.height, lp.margin.top, lp.margin.bottom),
+        const float requested_major = horizontal ? lp.width : lp.height;
+        const float requested_cross = horizontal ? lp.height : lp.width;
+        const float major_margin_before = horizontal ? lp.margin.left : lp.margin.top;
+        const float major_margin_after = horizontal ? lp.margin.right : lp.margin.bottom;
+        const float cross_margin_before = horizontal ? lp.margin.top : lp.margin.left;
+        const float cross_margin_after = horizontal ? lp.margin.bottom : lp.margin.right;
+        // A weighted match-parent axis has a zero flex basis. Wrap-content
+        // keeps its measured basis and receives only the remaining space.
+        const MeasureSpec major_spec = lp.weight > 0.0f && requested_major == 0.0f &&
+                                       major_constrained
+            ? MeasureSpec{.size = 0.0f, .mode = MeasureMode::Exactly}
+            : child_spec(inner_major, requested_major, major_margin_before, major_margin_after);
+        const MeasureSpec cross_spec = child_spec(horizontal ? inner_h : inner_w,
+                                                  requested_cross,
+                                                  cross_margin_before,
+                                                  cross_margin_after);
+        child->measure(horizontal ? major_spec : cross_spec,
+                       horizontal ? cross_spec : major_spec,
                        text_engine);
 
         const Vec2 m = child->measured_size();
-        if (orientation_ == Orientation::Horizontal) {
+        if (horizontal) {
             major += m.x + lp.margin.left + lp.margin.right;
             cross = std::max(cross, m.y + lp.margin.top + lp.margin.bottom);
         } else {
             major += m.y + lp.margin.top + lp.margin.bottom;
             cross = std::max(cross, m.x + lp.margin.left + lp.margin.right);
         }
+        total_weight += std::max(0.0f, lp.weight);
         ++visible_count;
     }
 
@@ -1540,10 +2071,41 @@ void LinearLayout::measure(MeasureSpec width, MeasureSpec height, TextEngine& te
         major += spacing_ * static_cast<float>(visible_count - 1);
     }
 
-    const float desired_w = orientation_ == Orientation::Horizontal
+    // Flex grow is resolved while measuring, so subsequent layout has stable
+    // child sizes and does not shift hit regions after a pointer event.
+    const float remaining = major_constrained ? std::max(0.0f, inner_major - major) : 0.0f;
+    if (remaining > 0.0f && total_weight > 0.0f) {
+        for (auto& child : children_) {
+            if (child->visibility() == Visibility::Gone) continue;
+            const auto& lp = child->layout_params();
+            if (lp.weight <= 0.0f) continue;
+            const float major_margin_before = horizontal ? lp.margin.left : lp.margin.top;
+            const float major_margin_after = horizontal ? lp.margin.right : lp.margin.bottom;
+            const float target_outer = (horizontal ? child->measured_size().x
+                                                   : child->measured_size().y) +
+                remaining * lp.weight / total_weight;
+            const MeasureSpec grown_major{
+                .size = std::max(0.0f, target_outer - major_margin_before - major_margin_after),
+                .mode = MeasureMode::Exactly,
+            };
+            const float requested_cross = horizontal ? lp.height : lp.width;
+            const float cross_margin_before = horizontal ? lp.margin.top : lp.margin.left;
+            const float cross_margin_after = horizontal ? lp.margin.bottom : lp.margin.right;
+            const MeasureSpec cross_spec = child_spec(horizontal ? inner_h : inner_w,
+                                                      requested_cross,
+                                                      cross_margin_before,
+                                                      cross_margin_after);
+            child->measure(horizontal ? grown_major : cross_spec,
+                           horizontal ? cross_spec : grown_major,
+                           text_engine);
+        }
+        major += remaining;
+    }
+
+    const float desired_w = horizontal
         ? major + padding_.left + padding_.right
         : cross + padding_.left + padding_.right;
-    const float desired_h = orientation_ == Orientation::Horizontal
+    const float desired_h = horizontal
         ? cross + padding_.top + padding_.bottom
         : major + padding_.top + padding_.bottom;
 
@@ -1551,26 +2113,79 @@ void LinearLayout::measure(MeasureSpec width, MeasureSpec height, TextEngine& te
     measured_size_.y = resolve_axis(layout_params_.height, height, desired_h);
 }
 
-void LinearLayout::layout(Rect bounds) {
+void FlexLayout::layout(Rect bounds) {
     View::layout(bounds);
-    float cursor = orientation_ == Orientation::Horizontal
-        ? bounds.pos.x + padding_.left
-        : bounds.pos.y + padding_.top;
+    const bool horizontal = orientation_ == Orientation::Horizontal;
+    const float inner_major = std::max(0.0f, (horizontal ? bounds.size.x : bounds.size.y) -
+                                       (horizontal ? padding_.left + padding_.right
+                                                   : padding_.top + padding_.bottom));
+    const float inner_cross = std::max(0.0f, (horizontal ? bounds.size.y : bounds.size.x) -
+                                       (horizontal ? padding_.top + padding_.bottom
+                                                   : padding_.left + padding_.right));
+    float occupied = 0.0f;
+    int visible_count = 0;
+    for (const auto& child : children_) {
+        if (child->visibility() == Visibility::Gone) continue;
+        const auto& lp = child->layout_params();
+        occupied += (horizontal ? child->measured_size().x + lp.margin.left + lp.margin.right
+                                : child->measured_size().y + lp.margin.top + lp.margin.bottom);
+        ++visible_count;
+    }
+    if (visible_count > 1) occupied += spacing_ * static_cast<float>(visible_count - 1);
+    const float free = std::max(0.0f, inner_major - occupied);
+    float leading = 0.0f;
+    float gap = spacing_;
+    switch (justify_) {
+        case FlexJustify::Start: break;
+        case FlexJustify::Center: leading = free * 0.5f; break;
+        case FlexJustify::End: leading = free; break;
+        case FlexJustify::SpaceBetween:
+            if (visible_count > 1) gap += free / static_cast<float>(visible_count - 1);
+            break;
+        case FlexJustify::SpaceAround:
+            if (visible_count > 0) {
+                const float space = free / static_cast<float>(visible_count);
+                leading = space * 0.5f;
+                gap += space;
+            }
+            break;
+        case FlexJustify::SpaceEvenly:
+            if (visible_count > 0) {
+                const float space = free / static_cast<float>(visible_count + 1);
+                leading = space;
+                gap += space;
+            }
+            break;
+    }
+    float cursor = (horizontal ? bounds.pos.x + padding_.left : bounds.pos.y + padding_.top) +
+        leading;
 
     for (auto& child : children_) {
         if (child->visibility() == Visibility::Gone) continue;
         const auto& lp = child->layout_params();
-        Vec2 pos{};
-        if (orientation_ == Orientation::Horizontal) {
-            cursor += lp.margin.left;
-            pos = {cursor, bounds.pos.y + padding_.top + lp.margin.top};
-            cursor += child->measured_size().x + lp.margin.right + spacing_;
-        } else {
-            cursor += lp.margin.top;
-            pos = {bounds.pos.x + padding_.left + lp.margin.left, cursor};
-            cursor += child->measured_size().y + lp.margin.bottom + spacing_;
-        }
-        child->layout({.pos = pos, .size = child->measured_size()});
+        const float major_margin_before = horizontal ? lp.margin.left : lp.margin.top;
+        const float major_margin_after = horizontal ? lp.margin.right : lp.margin.bottom;
+        const float cross_margin_before = horizontal ? lp.margin.top : lp.margin.left;
+        const float cross_margin_after = horizontal ? lp.margin.bottom : lp.margin.right;
+        const float requested_cross = horizontal ? lp.height : lp.width;
+        const float measured_cross = horizontal ? child->measured_size().y : child->measured_size().x;
+        const float child_cross = align_ == FlexAlign::Stretch && requested_cross <= 0.0f
+            ? std::max(0.0f, inner_cross - cross_margin_before - cross_margin_after)
+            : measured_cross;
+        const float remaining_cross = std::max(0.0f,
+            inner_cross - child_cross - cross_margin_before - cross_margin_after);
+        float cross_offset = cross_margin_before;
+        if (align_ == FlexAlign::Center) cross_offset += remaining_cross * 0.5f;
+        if (align_ == FlexAlign::End) cross_offset += remaining_cross;
+        cursor += major_margin_before;
+        const Vec2 pos = horizontal
+            ? Vec2{cursor, bounds.pos.y + padding_.top + cross_offset}
+            : Vec2{bounds.pos.x + padding_.left + cross_offset, cursor};
+        const Vec2 size = horizontal
+            ? Vec2{child->measured_size().x, child_cross}
+            : Vec2{child_cross, child->measured_size().y};
+        child->layout({.pos = pos, .size = size});
+        cursor += (horizontal ? size.x : size.y) + major_margin_after + gap;
     }
 }
 
@@ -1914,6 +2529,188 @@ bool ScrollView::scroll_by(Vec2 delta) {
     return changed;
 }
 
+VirtualListView::VirtualListView(std::string id)
+    : ViewGroup(std::move(id)) {
+    set_hit_test_visible(true);
+}
+
+void VirtualListView::set_item_count(size_t count) {
+    if (item_count_ == count) return;
+    item_count_ = count;
+    mark_layout_dirty();
+}
+
+void VirtualListView::set_item_extent(float extent) {
+    const float clamped = std::max(1.0f, extent);
+    if (item_extent_ == clamped) return;
+    item_extent_ = clamped;
+    mark_layout_dirty();
+}
+
+void VirtualListView::set_item_builder(ItemBuilder builder) {
+    item_builder_ = std::move(builder);
+    children_.clear();
+    first_realized_ = 0;
+    mark_layout_dirty();
+}
+
+void VirtualListView::set_scroll_offset(float offset) {
+    scroll_offset_ = offset;
+    clamp_scroll_offset();
+    mark_layout_dirty();
+}
+
+void VirtualListView::measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) {
+    if (visibility_ == Visibility::Gone) {
+        measured_size_ = {};
+        children_.clear();
+        return;
+    }
+    const float desired_width = 120.0f;
+    const float desired_height = std::min(
+        static_cast<float>(item_count_) * item_extent_, 240.0f);
+    measured_size_.x = resolve_axis(layout_params_.width, width, desired_width);
+    measured_size_.y = resolve_axis(layout_params_.height, height, desired_height);
+    viewport_height_ = std::max(0.0f, measured_size_.y);
+    max_scroll_offset_ = std::max(0.0f, static_cast<float>(item_count_) * item_extent_ -
+                                            viewport_height_);
+    clamp_scroll_offset();
+    realize_visible(text_engine, measured_size_.x);
+}
+
+void VirtualListView::realize_visible(TextEngine& text_engine, float available_width) {
+    if (!item_builder_ || item_count_ == 0) {
+        children_.clear();
+        first_realized_ = 0;
+        return;
+    }
+    const size_t first = std::min(item_count_ - 1,
+        static_cast<size_t>(std::floor(scroll_offset_ / item_extent_)));
+    const size_t visible = static_cast<size_t>(std::ceil(viewport_height_ / item_extent_));
+    const size_t begin = first > 1 ? first - 1 : 0;
+    const size_t end = std::min(item_count_, first + visible + 2);
+    const size_t count = end > begin ? end - begin : 0;
+    const bool matches = first_realized_ == begin && children_.size() == count;
+    if (!matches) {
+        children_.clear();
+        first_realized_ = begin;
+        for (size_t index = begin; index < end; ++index) {
+            std::unique_ptr<View> child = item_builder_(index);
+            if (!child) {
+                SNT_LOG_WARN("VirtualListView '%s' item builder returned null at index %zu",
+                             id().c_str(), index);
+                continue;
+            }
+            LayoutParams params = child->layout_params();
+            params.width = 0.0f;
+            params.height = item_extent_;
+            params.margin = {};
+            child->set_layout_params(params);
+            add_child(std::move(child));
+        }
+    }
+    for (auto& child : children_) {
+        child->measure({.size = std::max(0.0f, available_width), .mode = MeasureMode::Exactly},
+                       {.size = item_extent_, .mode = MeasureMode::Exactly}, text_engine);
+    }
+}
+
+void VirtualListView::layout(Rect bounds) {
+    View::layout(bounds);
+    viewport_height_ = std::max(0.0f, bounds.size.y);
+    max_scroll_offset_ = std::max(0.0f, static_cast<float>(item_count_) * item_extent_ -
+                                            viewport_height_);
+    clamp_scroll_offset();
+    for (size_t index = 0; index < children_.size(); ++index) {
+        const float y = bounds.pos.y +
+            static_cast<float>(first_realized_ + index) * item_extent_ - scroll_offset_;
+        children_[index]->layout({.pos = {bounds.pos.x, y},
+                                  .size = {std::max(0.0f, bounds.size.x), item_extent_}});
+    }
+}
+
+void VirtualListView::paint(Arc2DCommandBuffer& out,
+                            TextEngine& text_engine,
+                            const UiTheme& theme) const {
+    View::paint(out, text_engine, theme);
+    if (visibility_ != Visibility::Visible) return;
+    out.push_clip(bounds_);
+    for (const auto& child : children_) child->paint(out, text_engine, theme);
+    out.pop_clip();
+}
+
+UiEventReply VirtualListView::on_input_event(const UiInputEvent& event) {
+    const UiEventReply base_reply = View::on_input_event(event);
+    if (base_reply == UiEventReply::StopPropagation || !enabled() ||
+        visibility() != Visibility::Visible || event.type != UiInputEventType::PointerScroll ||
+        (event.phase != UiEventPhase::Target && event.phase != UiEventPhase::Bubble)) {
+        return base_reply;
+    }
+    return scroll_by(-event.scroll_delta.y * scroll_step_)
+        ? UiEventReply::StopPropagation : base_reply;
+}
+
+bool VirtualListView::accepts_child_input(Vec2 point) const {
+    return point.x >= bounds_.pos.x && point.y >= bounds_.pos.y &&
+           point.x < bounds_.pos.x + bounds_.size.x &&
+           point.y < bounds_.pos.y + bounds_.size.y;
+}
+
+void VirtualListView::clamp_scroll_offset() {
+    scroll_offset_ = std::clamp(scroll_offset_, 0.0f, max_scroll_offset_);
+}
+
+bool VirtualListView::scroll_by(float delta) {
+    const float before = scroll_offset_;
+    scroll_offset_ += delta;
+    clamp_scroll_offset();
+    const bool changed = before != scroll_offset_;
+    if (changed) mark_layout_dirty();
+    return changed;
+}
+
+ModalView::ModalView(std::string id)
+    : FrameLayout(std::move(id)) {
+    set_hit_test_visible(true);
+    set_focusable(true);
+}
+
+void ModalView::paint(Arc2DCommandBuffer& out,
+                      TextEngine& text_engine,
+                      const UiTheme& theme) const {
+    if (visibility_ != Visibility::Visible) return;
+    out.rect(bounds_, backdrop_);
+    ViewGroup::paint(out, text_engine, theme);
+}
+
+UiEventReply ModalView::on_input_event(const UiInputEvent& event) {
+    const UiEventReply base_reply = View::on_input_event(event);
+    if (base_reply == UiEventReply::StopPropagation || event.phase != UiEventPhase::Target ||
+        !enabled()) {
+        return base_reply;
+    }
+    if (event.type == UiInputEventType::PointerDown &&
+        event.pointer_button == UiPointerButton::Primary) {
+        if (dismiss_on_backdrop_ && dismiss_handler_) dismiss_handler_();
+        return UiEventReply::Handled;
+    }
+    if (event.type == UiInputEventType::KeyDown && event.key == UiKey::Escape &&
+        dismiss_handler_) {
+        dismiss_handler_();
+        return UiEventReply::Handled;
+    }
+    return base_reply;
+}
+
+TooltipView::TooltipView(std::string id)
+    : TextView(std::move(id)) {
+    set_hit_test_visible(false);
+    set_background({22, 27, 35, 245}, 4.0f);
+    TextStyle style = text_style();
+    style.size_px = 13.0f;
+    set_text_style(style);
+}
+
 Animation::Animation(float from, float to, float duration_s, Setter setter)
     : from_(from),
       to_(to),
@@ -2147,6 +2944,7 @@ const std::vector<UiScreenSubmission>& UiLayerStack::prepare_frame(
         if (!record.mounted.root) {
             auto mounted = record.registration.factory({
                 .viewport = context.viewport,
+                .ui_viewport = context.ui_viewport,
                 .images = context.images,
                 .dispatch_action = record.registration.dispatch_action,
             });
@@ -2213,7 +3011,48 @@ UiRuntime::UiRuntime(const snt::core::RuntimePathResolver& paths,
     event_path_scratch_.reserve(32);
 }
 
+void UiRuntime::set_viewport(UiViewport viewport) {
+    if (!viewport.valid()) {
+        SNT_LOG_WARN("MUI ignored invalid viewport metrics");
+        return;
+    }
+    const bool changed = !viewport_.valid() ||
+        viewport_.framebuffer_size.x != viewport.framebuffer_size.x ||
+        viewport_.framebuffer_size.y != viewport.framebuffer_size.y ||
+        viewport_.window_size.x != viewport.window_size.x ||
+        viewport_.window_size.y != viewport.window_size.y ||
+        viewport_.dpi_scale != viewport.dpi_scale ||
+        viewport_.user_scale != viewport.user_scale;
+    viewport_ = viewport;
+    if (changed) {
+        const Vec2 logical = viewport_.logical_size();
+        SNT_LOG_INFO("MUI viewport changed: framebuffer=%.0fx%.0f window=%.0fx%.0f "
+                     "dpi=%.2f user=%.2f logical=%.1fx%.1f",
+                     viewport_.framebuffer_size.x, viewport_.framebuffer_size.y,
+                     viewport_.window_size.x, viewport_.window_size.y,
+                     viewport_.dpi_scale, viewport_.user_scale, logical.x, logical.y);
+    }
+}
+
+void UiRuntime::set_user_scale(float scale) {
+    if (!std::isfinite(scale) || scale <= 0.0f) {
+        SNT_LOG_WARN("MUI ignored invalid user scale %.3f", scale);
+        return;
+    }
+    UiViewport next = viewport_;
+    if (!next.valid()) {
+        next.framebuffer_size = {1.0f, 1.0f};
+        next.window_size = {1.0f, 1.0f};
+        next.dpi_scale = 1.0f;
+    }
+    next.user_scale = scale;
+    set_viewport(next);
+}
+
 void UiRuntime::layout(View& root, Vec2 viewport) {
+    if (!viewport_.valid()) {
+        set_viewport({.framebuffer_size = viewport, .window_size = viewport});
+    }
     const bool viewport_changed = !root.has_layout_viewport_ ||
         root.last_layout_viewport_.x != viewport.x || root.last_layout_viewport_.y != viewport.y;
     if (!root.layout_dirty_ && !viewport_changed) return;
@@ -2243,7 +3082,10 @@ void UiRuntime::begin_input_frame(UiInputState input) {
     }
 
     hovered_.clear();
-    if (!input_.pointer_enabled) pointer_capture_.clear();
+    if (!input_.pointer_enabled) {
+        pointer_capture_.clear();
+        slot_drag_.reset();
+    }
 }
 
 bool UiRuntime::dispatch_pointer_input(View& root) {
@@ -2257,8 +3099,8 @@ bool UiRuntime::dispatch_pointer_input(View& root) {
 
     std::vector<View*>& hit_path = hit_path_scratch_;
     hit_path.clear();
-    const bool has_hit_target = pointer_capture_.empty() &&
-        build_hit_path(root, input_.pointer_position, hit_path);
+    const bool pointer_over_target = build_hit_path(root, input_.pointer_position, hit_path);
+    const bool has_hit_target = pointer_capture_.empty() && pointer_over_target;
     if (has_hit_target && !root_id.empty() && !hit_path.back()->id().empty()) {
         hovered_ = {root_id, hit_path.back()->id()};
     }
@@ -2301,6 +3143,14 @@ bool UiRuntime::dispatch_pointer_input(View& root) {
                     });
                 }
             }
+        } else if (!focused_.empty()) {
+            if (focused_.root == root_id) {
+                event_path_scratch_.clear();
+                if (build_path_to_id(root, focused_.view, event_path_scratch_)) {
+                    dispatch_event_path(event_path_scratch_, {.type = UiInputEventType::FocusLost});
+                }
+            }
+            focused_.clear();
         }
 
         dispatch_event_path(hit_path, {
@@ -2308,6 +3158,21 @@ bool UiRuntime::dispatch_pointer_input(View& root) {
             .pointer_position = input_.pointer_position,
             .pointer_button = pointer_button_for_index(index),
         });
+        if (index == 0 && !root_id.empty() && !target->id().empty()) {
+            if (auto* slot = dynamic_cast<SlotView*>(target);
+                slot && !slot->slot_state().item_key.empty() && slot->slot_state().count > 0) {
+                slot_drag_ = SlotDragState{
+                    .source = {root_id, target->id()},
+                    .payload = slot->slot_state(),
+                };
+                slot->set_drag_source(true);
+                slot->dispatch_drag_event({
+                    .type = UiSlotDragEventType::Begin,
+                    .source_id = target->id(),
+                    .payload = slot_drag_->payload,
+                });
+            }
+        }
         claimed = true;
     }
 
@@ -2324,6 +3189,39 @@ bool UiRuntime::dispatch_pointer_input(View& root) {
                     .pointer_button = pointer_button_for_index(index),
                     .activation = activation,
                 });
+            }
+            if (index == 0 && slot_drag_ && slot_drag_->source.root == root_id) {
+                SlotView* source_slot = nullptr;
+                event_path_scratch_.clear();
+                if (build_path_to_id(root, slot_drag_->source.view, event_path_scratch_)) {
+                    source_slot = dynamic_cast<SlotView*>(event_path_scratch_.back());
+                }
+                SlotView* target_slot = nullptr;
+                if (pointer_over_target) {
+                    for (auto it = hit_path.rbegin(); it != hit_path.rend(); ++it) {
+                        if (auto* candidate = dynamic_cast<SlotView*>(*it)) {
+                            target_slot = candidate;
+                            break;
+                        }
+                    }
+                }
+                const bool has_drop_target = target_slot && !target_slot->id().empty() &&
+                    target_slot->id() != slot_drag_->source.view;
+                const UiSlotDragEvent event{
+                    .type = has_drop_target ? UiSlotDragEventType::Drop : UiSlotDragEventType::Cancel,
+                    .source_id = slot_drag_->source.view,
+                    .target_id = has_drop_target ? target_slot->id() : std::string{},
+                    .payload = slot_drag_->payload,
+                };
+                if (source_slot) {
+                    source_slot->set_drag_source(false);
+                    source_slot->dispatch_drag_event(event);
+                }
+                if (target_slot) {
+                    target_slot->set_drag_hovered(false);
+                    if (has_drop_target) target_slot->dispatch_drag_event(event);
+                }
+                slot_drag_.reset();
             }
             pointer_capture_.clear();
             claimed = true;
@@ -2347,6 +3245,7 @@ bool UiRuntime::dispatch_pointer_input(View& root) {
         } else {
             pointer_capture_.clear();
         }
+        update_slot_drag_hover(root, pointer_over_target ? hit_path : std::vector<View*>{});
         return true;
     }
 
@@ -2355,14 +3254,16 @@ bool UiRuntime::dispatch_pointer_input(View& root) {
             .type = UiInputEventType::PointerMove,
             .pointer_position = input_.pointer_position,
         });
+        update_slot_drag_hover(root, hit_path);
         return true;
     }
     return claimed;
 }
-
 bool UiRuntime::dispatch_keyboard_input(View& root) {
     if (!focus_scope_root_.empty() && root.id() != focus_scope_root_) return false;
-    if (input_.pressed_keys.empty() || focused_.empty() || focused_.root != root.id()) {
+    if ((input_.pressed_keys.empty() && input_.text_commits.empty() &&
+         input_.text_compositions.empty()) ||
+        focused_.empty() || focused_.root != root.id()) {
         return false;
     }
 
@@ -2378,9 +3279,66 @@ bool UiRuntime::dispatch_keyboard_input(View& root) {
             .key = key,
         });
     }
+    for (const std::string& text : input_.text_commits) {
+        dispatch_event_path(event_path_scratch_, {
+            .type = UiInputEventType::TextCommit,
+            .text = text,
+        });
+    }
+    for (const UiTextComposition& composition : input_.text_compositions) {
+        dispatch_event_path(event_path_scratch_, {
+            .type = UiInputEventType::TextComposition,
+            .text = composition.text,
+            .composition_start = composition.start,
+            .composition_length = composition.length,
+        });
+    }
     return true;
 }
 
+void UiRuntime::update_slot_drag_hover(View& root, const std::vector<View*>& hit_path) {
+    if (!slot_drag_ || slot_drag_->source.root != root.id()) return;
+
+    SlotView* target_slot = nullptr;
+    for (auto it = hit_path.rbegin(); it != hit_path.rend(); ++it) {
+        if (auto* candidate = dynamic_cast<SlotView*>(*it)) {
+            if (candidate->id() != slot_drag_->source.view) target_slot = candidate;
+            break;
+        }
+    }
+    const ElementId next = target_slot && !target_slot->id().empty()
+        ? ElementId{root.id(), target_slot->id()} : ElementId{};
+    if (slot_drag_->hovered.matches(next.root, next.view)) return;
+
+    if (!slot_drag_->hovered.empty()) {
+        event_path_scratch_.clear();
+        if (build_path_to_id(root, slot_drag_->hovered.view, event_path_scratch_)) {
+            if (auto* previous = dynamic_cast<SlotView*>(event_path_scratch_.back())) {
+                previous->set_drag_hovered(false);
+                previous->dispatch_drag_event({
+                    .type = UiSlotDragEventType::Leave,
+                    .source_id = slot_drag_->source.view,
+                    .target_id = previous->id(),
+                    .payload = slot_drag_->payload,
+                });
+            }
+        }
+    }
+    slot_drag_->hovered = next;
+    if (target_slot) {
+        target_slot->set_drag_hovered(true);
+        target_slot->dispatch_drag_event({
+            .type = UiSlotDragEventType::Enter,
+            .source_id = slot_drag_->source.view,
+            .target_id = target_slot->id(),
+            .payload = slot_drag_->payload,
+        });
+    }
+}
+
+void UiRuntime::cancel_slot_drag_for_root(std::string_view root_id) {
+    if (slot_drag_ && slot_drag_->source.root == root_id) slot_drag_.reset();
+}
 void UiRuntime::end_input_frame() {
     // A modal can become visible between pointer-down and pointer-up. If its
     // policy blocks the former root, the host deliberately withholds that
@@ -2417,15 +3375,54 @@ void UiRuntime::synchronize_interaction_state(View& root) {
     synchronize(synchronize, root);
 }
 
+std::optional<Rect> UiRuntime::focused_text_input_bounds(const View& root) const {
+    if (focused_.empty() || focused_.root != root.id()) return std::nullopt;
+    const View* focused_view = nullptr;
+    if (root.id() == focused_.view) {
+        focused_view = &root;
+    } else if (const auto* group = dynamic_cast<const ViewGroup*>(&root)) {
+        focused_view = group->find(focused_.view);
+    }
+    const auto* text_input = dynamic_cast<const TextInput*>(focused_view);
+    return text_input ? std::optional<Rect>{text_input->ime_bounds()} : std::nullopt;
+}
 UiFrameResult UiRuntime::paint(View& root) {
     UiFrameResult result;
     root.paint(result.commands, text_engine_, theme_);
     result.draw_data = renderer_.build_draw_data(result.commands);
+    const float scale = viewport_.valid() ? viewport_.pixels_per_ui_unit() : 1.0f;
+    if (scale != 1.0f) {
+        for (UiVertex& vertex : result.draw_data.vertices) {
+            vertex.position[0] *= scale;
+            vertex.position[1] *= scale;
+        }
+        for (UiDrawBatch& batch : result.draw_data.batches) {
+            if (!batch.clip.enabled) continue;
+            batch.clip.rect.pos.x *= scale;
+            batch.clip.rect.pos.y *= scale;
+            batch.clip.rect.size.x *= scale;
+            batch.clip.rect.size.y *= scale;
+        }
+    }
     return result;
 }
 
 UiDrawData UiRuntime::build_draw_data(const Arc2DCommandBuffer& commands) {
-    return renderer_.build_draw_data(commands);
+    UiDrawData data = renderer_.build_draw_data(commands);
+    const float scale = viewport_.valid() ? viewport_.pixels_per_ui_unit() : 1.0f;
+    if (scale == 1.0f) return data;
+    for (UiVertex& vertex : data.vertices) {
+        vertex.position[0] *= scale;
+        vertex.position[1] *= scale;
+    }
+    for (UiDrawBatch& batch : data.batches) {
+        if (!batch.clip.enabled) continue;
+        batch.clip.rect.pos.x *= scale;
+        batch.clip.rect.pos.y *= scale;
+        batch.clip.rect.size.x *= scale;
+        batch.clip.rect.size.y *= scale;
+    }
+    return data;
 }
 
 void UiRuntime::set_focus_scope(std::string root_id) {
@@ -2443,6 +3440,7 @@ void UiRuntime::cancel_interaction_for_root(std::string_view root_id) {
     if (hovered_.root == root_id) hovered_.clear();
     if (focused_.root == root_id) focused_.clear();
     if (pointer_capture_.root == root_id) pointer_capture_.clear();
+    cancel_slot_drag_for_root(root_id);
     if (focus_scope_root_ == root_id) focus_scope_root_.clear();
 }
 
@@ -2450,6 +3448,7 @@ void UiRuntime::clear_interaction_state() {
     hovered_.clear();
     focused_.clear();
     pointer_capture_.clear();
+    slot_drag_.reset();
     focus_scope_root_.clear();
     previous_pointer_held_.fill(false);
     pointer_released_.fill(false);

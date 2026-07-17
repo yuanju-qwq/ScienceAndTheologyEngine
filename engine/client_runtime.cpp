@@ -34,9 +34,11 @@
 #include <volk.h>
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -143,13 +145,17 @@ void append_draw_data(snt::ui::UiDrawData& destination,
 }
 
 snt::ui::UiInputState make_ui_input_state(const snt::input::InputState& input,
+                                          const snt::ui::UiViewport& viewport,
                                           bool ui_input_enabled) {
     snt::ui::UiInputState result;
     result.pointer_enabled = ui_input_enabled;
-    result.pointer_position = {
+    const snt::ui::Vec2 window_pointer{
         static_cast<float>(input.mouse_x),
         static_cast<float>(input.mouse_y),
     };
+    result.pointer_position = viewport.valid()
+        ? viewport.window_to_logical(window_pointer)
+        : window_pointer;
     result.scroll_delta = {input.mouse_wheel_x, input.mouse_wheel_y};
     for (size_t index = 0; index < result.pointer_held.size(); ++index) {
         result.pointer_held[index] = input.mouse_held[index];
@@ -168,10 +174,23 @@ snt::ui::UiInputState make_ui_input_state(const snt::input::InputState& input,
     add_key(SDL_SCANCODE_SPACE, snt::ui::UiKey::Space);
     add_key(SDL_SCANCODE_ESCAPE, snt::ui::UiKey::Escape);
     add_key(SDL_SCANCODE_TAB, snt::ui::UiKey::Tab);
+    add_key(SDL_SCANCODE_BACKSPACE, snt::ui::UiKey::Backspace);
+    add_key(SDL_SCANCODE_DELETE, snt::ui::UiKey::Delete);
+    add_key(SDL_SCANCODE_HOME, snt::ui::UiKey::Home);
+    add_key(SDL_SCANCODE_END, snt::ui::UiKey::End);
     add_key(SDL_SCANCODE_LEFT, snt::ui::UiKey::Left);
     add_key(SDL_SCANCODE_RIGHT, snt::ui::UiKey::Right);
     add_key(SDL_SCANCODE_UP, snt::ui::UiKey::Up);
     add_key(SDL_SCANCODE_DOWN, snt::ui::UiKey::Down);
+    result.text_commits = input.text_commits;
+    result.text_compositions.reserve(input.text_compositions.size());
+    for (const snt::input::TextComposition& composition : input.text_compositions) {
+        result.text_compositions.push_back({
+            .text = composition.text,
+            .start = composition.start,
+            .length = composition.length,
+        });
+    }
     return result;
 }
 
@@ -202,6 +221,7 @@ struct ClientRuntime::Impl {
 
     FpsTracker fps_tracker;
     ClientRuntimeStats stats;
+    float ui_user_scale = 1.0f;
     bool mouse_locked = false;
     IClientSession* session = nullptr;
     std::unique_ptr<ClientWorldSession> world_session;
@@ -245,8 +265,11 @@ snt::core::Expected<void> ClientRuntime::init(
         error.with_context("ClientRuntime::init(window)");
         return error;
     }
-    const auto window_size = impl_->window.size();
-    SNT_LOG_INFO("Client window created: %dx%d", window_size.width, window_size.height);
+    const auto window_metrics = impl_->window.metrics();
+    SNT_LOG_INFO("Client window created: window=%dx%d framebuffer=%dx%d dpi=%.2f",
+                 window_metrics.window_size.width, window_metrics.window_size.height,
+                 window_metrics.pixel_size.width, window_metrics.pixel_size.height,
+                 window_metrics.display_scale);
 
     auto& simulation_events = simulation_.world_session().events();
     simulation_events.sink<snt::core::SdlEventFired>()
@@ -283,9 +306,10 @@ snt::core::Expected<void> ClientRuntime::init(
         error.with_context("ClientRuntime::init(AssetManager)");
         return error;
     }
-    if (auto result = impl_->vk_swapchain.init(impl_->vk_device,
-                                                static_cast<uint32_t>(window_size.width),
-                                                static_cast<uint32_t>(window_size.height)); !result) {
+    if (auto result = impl_->vk_swapchain.init(
+            impl_->vk_device,
+            static_cast<uint32_t>(window_metrics.pixel_size.width),
+            static_cast<uint32_t>(window_metrics.pixel_size.height)); !result) {
         auto error = result.error();
         error.with_context("ClientRuntime::init(vk_swapchain)");
         return error;
@@ -403,6 +427,7 @@ snt::core::Expected<void> ClientRuntime::init(
     text_config.locale = config.ui.locale;
     text_config.icu_data_path = config.ui.icu_data_path;
     impl_->ui_runtime = std::make_unique<snt::ui::UiRuntime>(paths, std::move(text_config));
+    impl_->ui_user_scale = config.ui.scale;
     if (!impl_->ui_runtime->text_available()) {
         SNT_LOG_ERROR("MUI text initialization failed: %s",
                       impl_->ui_runtime->text_initialization_error().c_str());
@@ -502,9 +527,17 @@ void ClientRuntime::run() {
         }
         impl_->ui_draw_data = {};
         const auto& extent = impl_->vk_swapchain.extent();
+        const auto window_metrics = impl_->window.metrics();
+        const snt::ui::UiViewport ui_viewport{
+            .framebuffer_size = {static_cast<float>(extent.width),
+                                 static_cast<float>(extent.height)},
+            .window_size = {static_cast<float>(window_metrics.window_size.width),
+                            static_cast<float>(window_metrics.window_size.height)},
+            .dpi_scale = window_metrics.display_scale,
+            .user_scale = impl_->ui_user_scale,
+        };
         ClientUiContext ui_context(*this, simulation_.services(), *impl_->world_session,
-                                   static_cast<float>(extent.width),
-                                   static_cast<float>(extent.height));
+                                   ui_viewport);
         impl_->session->build_ui(ui_context);
         ui_context.flush();
 
@@ -519,9 +552,12 @@ void ClientRuntime::run() {
         impl_->render_system.update(simulation_.world_session().world(), delta_seconds);
         if (impl_->render_system.needs_resize()) {
             impl_->vk_device.wait_idle();
-            const auto new_size = impl_->window.size();
-            if (impl_->vk_swapchain.recreate(static_cast<uint32_t>(new_size.width),
-                                             static_cast<uint32_t>(new_size.height))) {
+            const auto new_metrics = impl_->window.metrics();
+            const auto new_size = new_metrics.pixel_size;
+            if (new_size.width <= 0 || new_size.height <= 0) {
+                SNT_LOG_INFO("Deferred swapchain recreation while the client window is minimized");
+            } else if (impl_->vk_swapchain.recreate(static_cast<uint32_t>(new_size.width),
+                                                     static_cast<uint32_t>(new_size.height))) {
                 impl_->vk_depth.recreate(impl_->vk_swapchain);
                 auto& world = simulation_.world_session().world();
                 if (impl_->active_camera != entt::null &&
@@ -530,7 +566,8 @@ void ClientRuntime::run() {
                     camera.aspect = static_cast<float>(new_size.width) /
                                     static_cast<float>(new_size.height);
                 }
-                SNT_LOG_INFO("Swapchain recreated: %dx%d", new_size.width, new_size.height);
+                SNT_LOG_INFO("Swapchain recreated: framebuffer=%dx%d dpi=%.2f",
+                             new_size.width, new_size.height, new_metrics.display_scale);
             }
         }
     }
@@ -634,20 +671,6 @@ snt::ui::UiLayerStack& ClientUiContext::layers() const noexcept {
     return runtime_->impl_->ui_runtime->layers();
 }
 
-void ClientUiContext::submit(std::unique_ptr<snt::ui::View> root,
-                             snt::ui::UiLayer layer) {
-    if (!root) {
-        SNT_LOG_WARN("Client UI ignored a null view-root submission");
-        return;
-    }
-    Submission submission;
-    submission.layer = layer;
-    submission.input_policy = snt::ui::ui_layer_input_policy(layer);
-    submission.order = next_submission_order_++;
-    submission.root = std::move(root);
-    submissions_.push_back(std::move(submission));
-}
-
 void ClientUiContext::submit(snt::ui::Arc2DCommandBuffer commands,
                              snt::ui::UiLayer layer) {
     Submission submission;
@@ -662,8 +685,10 @@ void ClientUiContext::flush() {
     if (!runtime_ || !runtime_->impl_) return;
     auto& impl = *runtime_->impl_;
     if (impl.ui_runtime) {
+        impl.ui_runtime->set_viewport(viewport_);
         const snt::ui::UiScreenFrameContext frame_context{
-            .viewport = {viewport_width_, viewport_height_},
+            .viewport = viewport_.logical_size(),
+            .ui_viewport = viewport_,
             .images = impl.ui_runtime->images(),
         };
         const auto& extension_screens = impl.ui_runtime->layers().prepare_frame(frame_context);
@@ -702,13 +727,12 @@ void ClientUiContext::flush() {
     if (impl.ui_runtime) {
         for (Submission& submission : submissions_) {
             if (snt::ui::View* root = submission.view_root()) {
-                impl.ui_runtime->layout(*root,
-                                        {viewport_width_, viewport_height_});
+                impl.ui_runtime->layout(*root, viewport_.logical_size());
             }
         }
 
         impl.ui_runtime->begin_input_frame(make_ui_input_state(
-            impl.input_system.state(), !runtime_->mouse_locked()));
+            impl.input_system.state(), viewport_, !runtime_->mouse_locked()));
 
         std::string focus_scope_root;
         for (auto it = submissions_.rbegin(); it != submissions_.rend(); ++it) {
@@ -739,6 +763,38 @@ void ClientUiContext::flush() {
             if (snt::ui::View* root = submission.view_root()) {
                 impl.ui_runtime->synchronize_interaction_state(*root);
             }
+        }
+    }
+
+    std::optional<snt::ui::Rect> text_input_bounds;
+    if (impl.ui_runtime && !runtime_->mouse_locked()) {
+        for (Submission& submission : submissions_) {
+            snt::ui::View* const root = submission.view_root();
+            if (!root) continue;
+            text_input_bounds = impl.ui_runtime->focused_text_input_bounds(*root);
+            if (text_input_bounds) break;
+        }
+    }
+    if (auto result = impl.window.set_text_input_active(text_input_bounds.has_value()); !result) {
+        SNT_LOG_WARN("Platform text input activation failed: %s", result.error().format().c_str());
+    } else if (text_input_bounds && impl.window.text_input_active()) {
+        const snt::ui::Vec2 top_left = viewport_.logical_to_window(text_input_bounds->pos);
+        const snt::ui::Vec2 bottom_right = viewport_.logical_to_window({
+            .x = text_input_bounds->pos.x + text_input_bounds->size.x,
+            .y = text_input_bounds->pos.y + text_input_bounds->size.y,
+        });
+        const int left = static_cast<int>(std::floor(top_left.x));
+        const int top = static_cast<int>(std::floor(top_left.y));
+        const int right = static_cast<int>(std::ceil(bottom_right.x));
+        const int bottom = static_cast<int>(std::ceil(bottom_right.y));
+        if (auto result = impl.window.set_text_input_area({
+                .x = left,
+                .y = top,
+                .width = std::max(1, right - left),
+                .height = std::max(1, bottom - top),
+            }); !result) {
+            SNT_LOG_WARN("Platform text input area update failed: %s",
+                         result.error().format().c_str());
         }
     }
 

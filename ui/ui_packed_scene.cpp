@@ -151,12 +151,13 @@ snt::core::Expected<Insets> parse_insets(const json& value, std::string_view pat
 snt::core::Expected<UiWidgetType> parse_widget_type(std::string_view value,
                                                      std::string_view path) {
     if (value == "view") return UiWidgetType::View;
-    if (value == "linear") return UiWidgetType::Linear;
+    if (value == "flex") return UiWidgetType::Flex;
     if (value == "grid") return UiWidgetType::Grid;
     if (value == "frame") return UiWidgetType::Frame;
     if (value == "text") return UiWidgetType::Text;
     if (value == "button") return UiWidgetType::Button;
     if (value == "image") return UiWidgetType::Image;
+    if (value == "nine_slice") return UiWidgetType::NineSlice;
     if (value == "slot") return UiWidgetType::Slot;
     if (value == "scroll") return UiWidgetType::Scroll;
     return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
@@ -169,6 +170,26 @@ snt::core::Expected<Orientation> parse_orientation(std::string_view value,
     if (value == "horizontal") return Orientation::Horizontal;
     return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
                             std::string(path) + " must be 'vertical' or 'horizontal'"};
+}
+
+snt::core::Expected<FlexJustify> parse_flex_justify(std::string_view value,
+                                                     std::string_view path) {
+    if (value == "start") return FlexJustify::Start;
+    if (value == "center") return FlexJustify::Center;
+    if (value == "end") return FlexJustify::End;
+    if (value == "space_between") return FlexJustify::SpaceBetween;
+    if (value == "space_around") return FlexJustify::SpaceAround;
+    if (value == "space_evenly") return FlexJustify::SpaceEvenly;
+    return invalid_argument(std::string(path) + " has an unknown flex justify value");
+}
+
+snt::core::Expected<FlexAlign> parse_flex_align(std::string_view value,
+                                                 std::string_view path) {
+    if (value == "start") return FlexAlign::Start;
+    if (value == "center") return FlexAlign::Center;
+    if (value == "end") return FlexAlign::End;
+    if (value == "stretch") return FlexAlign::Stretch;
+    return invalid_argument(std::string(path) + " has an unknown flex align value");
 }
 
 snt::core::Expected<ScrollAxis> parse_scroll_axis(std::string_view value,
@@ -239,6 +260,24 @@ snt::core::Expected<void> parse_layout(const json& value,
         if (!parsed) return parsed.error();
         layout.orientation = *parsed;
     }
+    if (const auto justify = value.find("justify"); justify != value.end()) {
+        if (!justify->is_string()) {
+            return invalid_argument(std::string(path) + ".justify must be a string");
+        }
+        auto parsed = parse_flex_justify(justify->get<std::string>(),
+                                         std::string(path) + ".justify");
+        if (!parsed) return parsed.error();
+        layout.justify = *parsed;
+    }
+    if (const auto align = value.find("align"); align != value.end()) {
+        if (!align->is_string()) {
+            return invalid_argument(std::string(path) + ".align must be a string");
+        }
+        auto parsed = parse_flex_align(align->get<std::string>(),
+                                       std::string(path) + ".align");
+        if (!parsed) return parsed.error();
+        layout.align = *parsed;
+    }
     if (const auto scroll_axis = value.find("scroll_axis"); scroll_axis != value.end()) {
         if (!scroll_axis->is_string()) {
             return invalid_argument(std::string(path) + ".scroll_axis must be a string");
@@ -305,6 +344,11 @@ snt::core::Expected<UiWidgetTemplate> parse_node(const json& value,
     }
     if (auto result = read_optional_string(value, "image", node.image_key, path); !result) {
         return result.error();
+    }
+    if (const auto borders = value.find("nine_slice"); borders != value.end()) {
+        auto parsed = parse_insets(*borders, path + ".nine_slice");
+        if (!parsed) return parsed.error();
+        node.nine_slice_borders = *parsed;
     }
     if (auto result = read_optional_string(value, "action", node.action_id, path); !result) {
         return result.error();
@@ -450,18 +494,30 @@ snt::core::Expected<void> validate_node(const UiWidgetTemplate& node,
 
     const bool leaf = node.type == UiWidgetType::View || node.type == UiWidgetType::Text ||
                       node.type == UiWidgetType::Button || node.type == UiWidgetType::Image ||
-                      node.type == UiWidgetType::Slot;
+                      node.type == UiWidgetType::NineSlice || node.type == UiWidgetType::Slot;
     if (leaf && !node.children.empty()) {
         return invalid_argument(path + " is a leaf widget and cannot have children");
     }
     if (node.type == UiWidgetType::Scroll && node.children.size() > 1) {
         return invalid_argument(path + " scroll widgets accept at most one content child");
     }
-    if (node.type == UiWidgetType::Image && node.image_key.empty()) {
+    if ((node.type == UiWidgetType::Image || node.type == UiWidgetType::NineSlice) &&
+        node.image_key.empty()) {
         return invalid_argument(path + ".image must not be empty for image widgets");
     }
-    if (node.type != UiWidgetType::Image && !node.image_key.empty()) {
+    if (node.type != UiWidgetType::Image && node.type != UiWidgetType::NineSlice &&
+        !node.image_key.empty()) {
         return invalid_argument(path + ".image is only valid on image widgets");
+    }
+    if (node.type != UiWidgetType::NineSlice &&
+        (node.nine_slice_borders.left != 0.0f || node.nine_slice_borders.top != 0.0f ||
+         node.nine_slice_borders.right != 0.0f || node.nine_slice_borders.bottom != 0.0f)) {
+        return invalid_argument(path + ".nine_slice is only valid on nine-slice widgets");
+    }
+    if (node.type == UiWidgetType::NineSlice &&
+        (node.nine_slice_borders.left < 0.0f || node.nine_slice_borders.top < 0.0f ||
+         node.nine_slice_borders.right < 0.0f || node.nine_slice_borders.bottom < 0.0f)) {
+        return invalid_argument(path + ".nine_slice borders must be non-negative");
     }
     if (node.type != UiWidgetType::Button && !node.action_id.empty()) {
         return invalid_argument(path + ".action is only valid on button widgets");
@@ -506,10 +562,12 @@ snt::core::Expected<std::unique_ptr<View>> instantiate_node(
         apply_common_view_properties(*view, node);
         return std::unique_ptr<View>(std::move(view));
     }
-    case UiWidgetType::Linear: {
-        auto view = std::make_unique<LinearLayout>(node.id);
+    case UiWidgetType::Flex: {
+        auto view = std::make_unique<FlexLayout>(node.id);
         apply_common_view_properties(*view, node);
         view->set_orientation(node.layout.orientation);
+        view->set_justify(node.layout.justify);
+        view->set_align(node.layout.align);
         view->set_spacing(node.layout.spacing);
         view->set_padding(node.layout.padding);
         if (auto result = add_children(*view); !result) return result.error();
@@ -555,6 +613,14 @@ snt::core::Expected<std::unique_ptr<View>> instantiate_node(
         auto view = std::make_unique<ImageView>(node.id);
         apply_common_view_properties(*view, node);
         view->set_image_key(node.image_key);
+        view->set_tint(node.image_tint);
+        return std::unique_ptr<View>(std::move(view));
+    }
+    case UiWidgetType::NineSlice: {
+        auto view = std::make_unique<NineSliceView>(node.id);
+        apply_common_view_properties(*view, node);
+        view->set_image_key(node.image_key);
+        view->set_borders(node.nine_slice_borders);
         view->set_tint(node.image_tint);
         return std::unique_ptr<View>(std::move(view));
     }

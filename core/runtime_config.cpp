@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include <fstream>
+#include <cmath>
 #include <sstream>
 
 namespace snt::core {
@@ -55,9 +56,14 @@ void from_json(const json& object, VoxelConfig& value) {
 
 void from_json(const json& object, UiConfig& value) {
     value = UiConfig{};
+    read_optional(object, "scale", value.scale);
     read_optional(object, "font_paths", value.font_paths);
     read_optional(object, "locale", value.locale);
     read_optional(object, "icu_data_path", value.icu_data_path);
+    if (!std::isfinite(value.scale) || value.scale <= 0.0f) {
+        value.scale = UiConfig{}.scale;
+        SNT_LOG_WARN("Invalid ui.scale in runtime config; using %.2f", value.scale);
+    }
 }
 
 void from_json(const json& object, RuntimeConfig& value) {

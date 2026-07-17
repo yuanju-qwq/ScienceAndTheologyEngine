@@ -15,6 +15,8 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace snt::input {
 
@@ -25,6 +27,15 @@ constexpr uint32_t kKeyCount = 512;
 // Mouse button indices: 0=Left, 1=Middle, 2=Right (matches SDL_BUTTON_LMASK
 // ordering after shifting). See InputSystem::process_event for the mapping.
 constexpr uint32_t kMouseButtonCount = 3;
+
+// SDL text editing events describe an in-progress IME composition. The text
+// owns a copy of SDL's transient event payload so UI consumers can process it
+// later in the same frame without retaining an SDL_Event pointer.
+struct TextComposition {
+    std::string text;
+    int32_t start = -1;
+    int32_t length = -1;
+};
 
 struct InputState {
     // Keyboard: held = currently down, pressed = went down this frame.
@@ -51,6 +62,11 @@ struct InputState {
     // Absolute mouse position (window-space, pixels).
     int32_t mouse_x = 0;
     int32_t mouse_y = 0;
+
+    // UTF-8 text committed by the platform this frame and the latest IME
+    // composition updates. These are independent from physical key edges.
+    std::vector<std::string> text_commits;
+    std::vector<TextComposition> text_compositions;
 
     // True if the window requested close (SDL_EVENT_QUIT).
     // Window still owns should_close semantics; this is a mirror for

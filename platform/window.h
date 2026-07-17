@@ -23,6 +23,24 @@ struct WindowSize {
     int height;
 };
 
+// Window and framebuffer metrics are intentionally reported together. SDL
+// mouse coordinates use window units, while Vulkan and UiDrawData use pixel
+// units. Keeping both values at the platform boundary prevents DPI conversion
+// from leaking into game or mod code.
+struct WindowMetrics {
+    WindowSize window_size{};
+    WindowSize pixel_size{};
+    float display_scale = 1.0f;
+};
+
+struct TextInputArea {
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+    int cursor = 0;
+};
+
 // Window creation descriptor.
 struct WindowDesc {
     std::string_view title;
@@ -70,6 +88,7 @@ public:
     void* native_handle() const;
 
     WindowSize size() const;
+    WindowMetrics metrics() const;
     bool should_close() const { return _should_close; }
 
     // Create a Vulkan surface backed by this window.
@@ -94,6 +113,12 @@ public:
 
     // Query whether relative mouse mode is currently active.
     bool relative_mouse_mode() const;
+
+    // Text input stays at the platform boundary. The retained UI decides
+    // whether a focused editor needs it; Mods never access SDL text input.
+    snt::core::Expected<void> set_text_input_active(bool active);
+    bool text_input_active() const;
+    snt::core::Expected<void> set_text_input_area(TextInputArea area);
 
 private:
     void* _window = nullptr;        // SDL_Window*
