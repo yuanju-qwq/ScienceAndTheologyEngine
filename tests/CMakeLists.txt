@@ -10,8 +10,9 @@ if(NOT TARGET GTest::gtest)
     return()
 endif()
 
-# Single test executable that links all test TUs together. Splitting per-
-# module executables adds CMake boilerplate without value at this scale.
+# Main engine test executable links the broader integration TUs together.
+# Small headless boundary tests below stay separate when that avoids pulling
+# renderer/UI dependencies into a generic subsystem's test closure.
 add_executable(snt_tests
     test_main.cpp              # GoogleTest main entry (no TEST()s here)
     test_runtime_config.cpp
@@ -86,6 +87,19 @@ target_link_libraries(snt_simulation_runtime_tests PRIVATE
     GTest::gtest_main
 )
 gtest_discover_tests(snt_simulation_runtime_tests DISCOVERY_MODE PRE_TEST)
+
+# RuntimeKeyIndex is a generic core boundary used by game worker snapshots.
+# Keep its tests free of the renderer/UI closure so deterministic key mapping
+# stays cheap to validate in both local development and headless CI.
+add_executable(snt_runtime_key_index_tests
+    test_runtime_key_index.cpp
+)
+target_link_libraries(snt_runtime_key_index_tests PRIVATE
+    snt_core
+    snt_engine_settings
+    GTest::gtest_main
+)
+gtest_discover_tests(snt_runtime_key_index_tests DISCOVERY_MODE PRE_TEST)
 
 # Replication tests intentionally link only the core/network closure. They
 # exercise localhost TCP+UDP and the Steam backend adapter without SDL,

@@ -34,6 +34,7 @@ add_library(snt_core STATIC
     log.cpp
     memory_tracker.cpp
     runtime_config.cpp
+    runtime_key_index.cpp
     path_utils.cpp
     uuid.cpp
 )
