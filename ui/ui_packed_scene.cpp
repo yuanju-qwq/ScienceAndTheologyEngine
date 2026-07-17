@@ -7,6 +7,11 @@
 
 #include "core/error.h"
 #include "core/log.h"
+#include "retained_mui_controls.h"
+#include "retained_mui_drag.h"
+#include "retained_mui_layout.h"
+#include "retained_mui_text_input.h"
+#include "retained_mui_text_view.h"
 
 #include <cmath>
 #include <fstream>

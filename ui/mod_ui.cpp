@@ -8,7 +8,13 @@
 #include "ui/mod_ui_internal.h"
 
 #include "core/log.h"
+#include "ui/retained_mui_controls.h"
+#include "ui/retained_mui_drag.h"
+#include "ui/retained_mui_layout.h"
 #include "ui/retained_mui_screen_stack.h"
+#include "ui/retained_mui_text_input.h"
+#include "ui/retained_mui_text_view.h"
+#include "ui/retained_mui_view_model.h"
 
 #include <cmath>
 #include <memory>
@@ -351,13 +357,7 @@ void bind_text_value(snt::ui::TextView& view,
                      const Widget& widget) {
     if (widget.view_model.value.empty()) return;
     auto& model = state.view_models[widget.view_model.value];
-    auto* raw = &view;
-    view.bind_value(model, widget.value_key,
-                    [raw](std::string_view, const BindingValue& value) {
-                        if (const auto* text = std::get_if<std::string>(&value)) {
-                            raw->set_text(*text);
-                        }
-                    });
+    view.bind_text(model, widget.value_key);
 }
 
 void bind_text_input(snt::ui::TextInput& view,

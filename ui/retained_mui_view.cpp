@@ -1,5 +1,12 @@
 #define SNT_LOG_CHANNEL "ui"
 #include "retained_mui_view.h"
+
+#include "retained_mui_animation.h"
+#include "retained_mui_controls.h"
+#include "retained_mui_drag.h"
+#include "retained_mui_layout.h"
+#include "retained_mui_text_input.h"
+#include "retained_mui_text_view.h"
 #include "retained_mui_utf8.h"
 
 #include "core/log.h"
@@ -83,16 +90,6 @@ void View::mark_layout_dirty() {
     if (parent_) parent_->mark_layout_dirty();
 }
 
-void View::bind_text(ViewModel& model, std::string key) {
-    set_bound_text_key(key);
-    auto subscription = model.bind(std::move(key), [this](std::string_view, const BindingValue& value) {
-        if (auto* text = dynamic_cast<TextView*>(this)) {
-            text->set_text(binding_value_to_string(value));
-        }
-    });
-    if (subscription.connected()) bindings_.push_back(std::move(subscription));
-}
-
 void View::bind_value(ViewModel& model, std::string key, ViewModel::Observer observer) {
     auto subscription = model.bind(std::move(key), std::move(observer));
     if (subscription.connected()) bindings_.push_back(std::move(subscription));
@@ -154,6 +151,13 @@ float View::clamp_axis(float value, MeasureSpec spec) {
 
 TextView::TextView(std::string id)
     : View(std::move(id)) {}
+
+void TextView::bind_text(ViewModel& model, std::string key) {
+    set_bound_text_key(key);
+    bind_value(model, std::move(key), [this](std::string_view, const BindingValue& value) {
+        set_text(binding_value_to_string(value));
+    });
+}
 
 void TextView::measure(MeasureSpec width, MeasureSpec height, TextEngine& text_engine) {
     if (visibility_ == Visibility::Gone) {

@@ -8,7 +8,7 @@
 #include "retained_mui_text_input_service.h"
 
 #include "core/log.h"
-#include "retained_mui_view.h"
+#include "retained_mui_text_input.h"
 
 #include <algorithm>
 #include <cmath>

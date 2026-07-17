@@ -2,6 +2,7 @@
 #include "retained_mui_runtime.h"
 
 #include "core/log.h"
+#include "retained_mui_layout.h"
 
 #include <cmath>
 #include <optional>

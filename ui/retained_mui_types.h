@@ -63,6 +63,14 @@ enum class FlexAlign : uint8_t {
     Stretch,
 };
 
+// Scroll direction is shared by retained containers and packed/mod scene
+// descriptions, so it belongs to the common UI value contract.
+enum class ScrollAxis : uint8_t {
+    Vertical,
+    Horizontal,
+    Both,
+};
+
 // Maps one platform window to the UI coordinate system. `window_size` is in
 // SDL window units, `framebuffer_size` is Vulkan pixel units, and all
 // retained layout/input APIs use logical UI units. The final Arc2D output is

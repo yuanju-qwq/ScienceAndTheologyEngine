@@ -10,6 +10,7 @@
 
 #include "core/expected.h"
 #include "ui/retained_mui_screen_stack.h"
+#include "ui/retained_mui_types.h"
 
 #include <cstdint>
 #include <filesystem>

@@ -1,6 +1,8 @@
 #define SNT_LOG_CHANNEL "ui.input"
 #include "retained_mui_input_router.h"
 
+#include "retained_mui_layout.h"
+#include "retained_mui_text_input.h"
 #include "retained_mui_text_input_service.h"
 
 #include "core/log.h"

@@ -6,7 +6,8 @@
 
 #pragma once
 
-#include "ui/retained_mui_view.h"
+#include "ui/retained_mui_layout.h"
+#include "ui/retained_mui_text_view.h"
 
 #include <cstddef>
 #include <vector>

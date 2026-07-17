@@ -17,16 +17,22 @@ add_library(snt_ui STATIC
     retained_mui_input_router.cpp
     retained_mui_input_router.h
     retained_mui_view.cpp
+    retained_mui_animation.h
     retained_mui_runtime.cpp
     retained_mui_arc.cpp
     retained_mui_arc.h
+    retained_mui_controls.h
+    retained_mui_drag.h
+    retained_mui_layout.h
     retained_mui_runtime.h
     retained_mui_screen_stack.cpp
     retained_mui_screen_stack.h
     retained_mui_text.cpp
     retained_mui_text.h
+    retained_mui_text_input.h
     retained_mui_text_input_service.cpp
     retained_mui_text_input_service.h
+    retained_mui_text_view.h
     retained_mui_types.h
     retained_mui_utf8.h
     retained_mui_view.h

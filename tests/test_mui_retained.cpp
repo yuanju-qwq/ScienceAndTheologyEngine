@@ -1,6 +1,12 @@
 #include "core/path_utils.h"
 #include "ui/mod_ui_internal.h"
+#include "ui/retained_mui_animation.h"
+#include "ui/retained_mui_controls.h"
+#include "ui/retained_mui_drag.h"
+#include "ui/retained_mui_layout.h"
 #include "ui/retained_mui_runtime.h"
+#include "ui/retained_mui_text_input.h"
+#include "ui/retained_mui_text_view.h"
 #include "ui/ui_packed_scene.h"
 #include "ui/ui_packed_scene_catalog.h"
 
