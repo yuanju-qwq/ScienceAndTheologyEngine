@@ -118,6 +118,17 @@ bool set_socket_reuse_address(Socket socket) noexcept {
 #endif
 }
 
+bool set_socket_broadcast(Socket socket) noexcept {
+#if defined(_WIN32)
+    const BOOL enabled = TRUE;
+    return setsockopt(socket, SOL_SOCKET, SO_BROADCAST,
+                      reinterpret_cast<const char*>(&enabled), sizeof(enabled)) == 0;
+#else
+    const int enabled = 1;
+    return setsockopt(socket, SOL_SOCKET, SO_BROADCAST, &enabled, sizeof(enabled)) == 0;
+#endif
+}
+
 bool set_socket_tcp_no_delay(Socket socket) noexcept {
 #if defined(_WIN32)
     const BOOL enabled = TRUE;

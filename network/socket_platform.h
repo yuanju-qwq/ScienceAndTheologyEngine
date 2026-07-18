@@ -1,4 +1,4 @@
-// Internal socket-platform boundary for the direct TCP+UDP transport.
+// Internal socket-platform boundary for direct TCP+UDP transport and LAN discovery.
 //
 // This header deliberately stays private to snt_network. It isolates
 // Winsock/POSIX spelling differences so public replication contracts never
@@ -59,6 +59,7 @@ void shutdown_socket_platform() noexcept;
 void close_socket(Socket socket) noexcept;
 [[nodiscard]] bool set_socket_non_blocking(Socket socket) noexcept;
 [[nodiscard]] bool set_socket_reuse_address(Socket socket) noexcept;
+[[nodiscard]] bool set_socket_broadcast(Socket socket) noexcept;
 [[nodiscard]] bool set_socket_tcp_no_delay(Socket socket) noexcept;
 
 }  // namespace snt::network::detail

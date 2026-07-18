@@ -2,6 +2,7 @@
 
 #include "network/replication.h"
 #include "network/replication_wire.h"
+#include "network/lan_discovery.h"
 #include "network/steam_p2p_transport.h"
 #include "network/tcp_udp_transport.h"
 
@@ -279,6 +280,54 @@ TEST(TcpUdpReplicationTransportTest, ExchangesReliableAndAssociatedUdpFrames) {
     const auto wrong_version = client->send(snt::network::kServerPeerId, reliable);
     EXPECT_FALSE(wrong_version);
     EXPECT_EQ(wrong_version.error().code(), snt::core::ErrorCode::kProtocolError);
+}
+
+TEST(LanDiscoveryTest, RespondsOverLoopbackWithCurrentAdvertisement) {
+    auto responder_result = snt::network::LanDiscoveryResponder::listen({
+        .bind_address = "127.0.0.1",
+        .port = 0,
+    });
+    ASSERT_TRUE(responder_result) << responder_result.error().format();
+    auto responder = std::move(*responder_result);
+
+    auto client_result = snt::network::LanDiscoveryClient::create({
+        .target_address = "127.0.0.1",
+        .port = responder->port(),
+    });
+    ASSERT_TRUE(client_result) << client_result.error().format();
+    auto client = std::move(*client_result);
+
+    const snt::network::LanDiscoveryAdvertisement advertisement{
+        .application_protocol_version = 17,
+        .server_name = "Loopback discovery",
+        .tcp_port = 24585,
+        .udp_port = 24586,
+        .current_players = 2,
+        .max_players = 8,
+        .password_required = true,
+    };
+    auto query = client->query();
+    ASSERT_TRUE(query) << query.error().format();
+
+    std::vector<snt::network::LanDiscoveredServer> discovered;
+    for (int attempt = 0; attempt < 100 && discovered.empty(); ++attempt) {
+        auto responded = responder->poll(advertisement);
+        ASSERT_TRUE(responded) << responded.error().format();
+        auto replies = client->poll();
+        ASSERT_TRUE(replies) << replies.error().format();
+        discovered = std::move(*replies);
+        if (discovered.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    ASSERT_EQ(discovered.size(), 1u);
+    EXPECT_EQ(discovered[0].host, "127.0.0.1");
+    EXPECT_EQ(discovered[0].advertisement.application_protocol_version, 17);
+    EXPECT_EQ(discovered[0].advertisement.server_name, "Loopback discovery");
+    EXPECT_EQ(discovered[0].advertisement.tcp_port, 24585);
+    EXPECT_EQ(discovered[0].advertisement.udp_port, 24586);
+    EXPECT_EQ(discovered[0].advertisement.current_players, 2);
+    EXPECT_EQ(discovered[0].advertisement.max_players, 8);
+    EXPECT_TRUE(discovered[0].advertisement.password_required);
 }
 
 TEST(ReplicationServiceTest, OrdersInboundBeforeOutboundEmission) {
