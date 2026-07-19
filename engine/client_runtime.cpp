@@ -465,9 +465,10 @@ snt::core::Expected<void> ClientRuntime::init(
 
             const auto view = context.view;
             const auto projection = context.proj;
+            const auto lighting = context.lighting;
             const auto extent = context.extent;
             const uint32_t frame_index = context.frame_idx;
-            pass->execute = [chunk_system_ptr, view, projection, extent, frame_index]
+            pass->execute = [chunk_system_ptr, view, projection, lighting, extent, frame_index]
                             (snt::render_backend::CommandContext& pass_context) {
                 VkCommandBuffer command_buffer = pass_context.handle();
                 VkViewport viewport{.x = 0.0f, .y = 0.0f,
@@ -477,7 +478,8 @@ snt::core::Expected<void> ClientRuntime::init(
                 vkCmdSetViewport(command_buffer, 0, 1, &viewport);
                 VkRect2D scissor{.offset = {0, 0}, .extent = extent};
                 vkCmdSetScissor(command_buffer, 0, 1, &scissor);
-                chunk_system_ptr->render(command_buffer, frame_index, view.data(), projection.data());
+                chunk_system_ptr->render(command_buffer, frame_index, view.data(), projection.data(),
+                                         lighting);
             };
             context.last_color_pass = pass->name;
         });
@@ -723,6 +725,9 @@ snt::input::InputSystem& ClientWorldSession::input() const noexcept {
 }
 snt::voxel::ChunkRenderSystem& ClientWorldSession::chunk_render_system() const noexcept {
     return *runtime_->impl_->runtime_chunk_render_system;
+}
+snt::render::IRenderLightingController& ClientWorldSession::lighting() const noexcept {
+    return runtime_->impl_->render_system;
 }
 snt::core::Expected<void> ClientWorldSession::set_active_camera(snt::ecs::EntityGuid guid) {
     return runtime_->set_active_camera(guid);

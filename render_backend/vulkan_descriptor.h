@@ -31,6 +31,13 @@ struct UniformBufferObject {
     float model[16];      // 4x4 model matrix
     float view[16];       // 4x4 view matrix
     float proj[16];       // 4x4 projection matrix
+    // std140-compatible global lighting fields. They are repeated in each
+    // dynamic draw slot so one descriptor layout serves meshes and chunks.
+    float sun_direction_intensity[4];
+    float sun_color[4];
+    float moon_direction_intensity[4];
+    float moon_color[4];
+    float ambient_color_intensity[4];
 };
 
 class VulkanDescriptor {

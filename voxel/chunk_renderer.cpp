@@ -13,15 +13,32 @@
 #include "render_backend/vulkan_device.h"
 #include "render_backend/vulkan_pipeline.h"
 #include "render_backend/vertex_buffer_pool.h"
+#include "render/render_components.h"
 
 #include <volk.h>
 
+#include <algorithm>
 #include <cstring>
 #include <new>
 
 namespace snt::voxel {
 
 namespace {
+
+void apply_environment_lighting(snt::render_backend::UniformBufferObject& ubo,
+                                const snt::render::EnvironmentLighting& lighting) noexcept {
+    std::copy(lighting.sun.direction_to_light.begin(), lighting.sun.direction_to_light.end(),
+              ubo.sun_direction_intensity);
+    ubo.sun_direction_intensity[3] = lighting.sun.intensity;
+    std::copy(lighting.sun.color.begin(), lighting.sun.color.end(), ubo.sun_color);
+    std::copy(lighting.moon.direction_to_light.begin(), lighting.moon.direction_to_light.end(),
+              ubo.moon_direction_intensity);
+    ubo.moon_direction_intensity[3] = lighting.moon.intensity;
+    std::copy(lighting.moon.color.begin(), lighting.moon.color.end(), ubo.moon_color);
+    std::copy(lighting.ambient_color.begin(), lighting.ambient_color.end(),
+              ubo.ambient_color_intensity);
+    ubo.ambient_color_intensity[3] = lighting.ambient_intensity;
+}
 
 // VoxelVertex vertex input layout for the voxel pipeline.
 // Matches voxel.vert attribute locations:
@@ -546,8 +563,9 @@ void ChunkRenderer::unload_mesh(ChunkMeshHandle handle) {
 // ---------------------------------------------------------------------------
 
 void ChunkRenderer::render(VkCommandBuffer cmd, uint32_t frame_idx,
-                           const float view[16], const float proj[16],
-                           const ChunkDrawCall* draws, uint32_t draw_count) {
+                            const float view[16], const float proj[16],
+                            const ChunkDrawCall* draws, uint32_t draw_count,
+                            const snt::render::EnvironmentLighting& lighting) {
     if (!pipeline_ || !descriptor_) return;
     if (draw_count == 0) return;
     if (draw_count > max_chunks_) {
@@ -581,6 +599,7 @@ void ChunkRenderer::render(VkCommandBuffer cmd, uint32_t frame_idx,
         std::memcpy(ubo.model, d.model, sizeof(ubo.model));
         std::memcpy(ubo.view,  view,    sizeof(ubo.view));
         std::memcpy(ubo.proj,  proj,    sizeof(ubo.proj));
+        apply_environment_lighting(ubo, lighting);
         descriptor_->update_ubo(frame_idx, i, ubo);
 
         // Bind this chunk's VBO + IBO.

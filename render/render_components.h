@@ -12,6 +12,8 @@
 #include "core/binary_writer.h"
 #include "core/serializer.h"
 
+#include <array>
+
 namespace snt::render {
 
 struct Transform {
@@ -31,6 +33,42 @@ struct Camera {
     float near_plane = 0.1f;
     float far_plane = 100.0f;
     float aspect = 16.0f / 9.0f;
+};
+
+// Global environment-lighting contract shared by game presentation and the
+// renderer. Directions point from a shaded surface toward each emitter, so a
+// Lambert shader uses dot(surface_normal, direction_to_light).
+//
+// The client presentation main thread owns writes through
+// IRenderLightingController. Render passes receive a value snapshot for the
+// frame and never retain this state across frames.
+struct DirectionalLight {
+    std::array<float, 3> direction_to_light = {0.4f, 0.9f, 0.3f};
+    std::array<float, 3> color = {1.0f, 1.0f, 1.0f};
+    float intensity = 0.55f;
+};
+
+struct EnvironmentLighting {
+    DirectionalLight sun{};
+    DirectionalLight moon{
+        .direction_to_light = {-0.4f, -0.9f, -0.3f},
+        .color = {0.6f, 0.65f, 0.8f},
+        .intensity = 0.0f,
+    };
+    std::array<float, 3> ambient_color = {1.0f, 1.0f, 1.0f};
+    float ambient_intensity = 0.45f;
+    std::array<float, 4> sky_color = {0.0f, 0.0f, 0.2f, 1.0f};
+};
+
+// Presentation-only game code uses this narrow boundary instead of reaching
+// into RenderSystem or Vulkan resources. Server and simulation targets never
+// construct or retain this interface.
+class IRenderLightingController {
+public:
+    virtual ~IRenderLightingController() = default;
+
+    virtual void set_environment_lighting(EnvironmentLighting lighting) noexcept = 0;
+    [[nodiscard]] virtual EnvironmentLighting environment_lighting() const noexcept = 0;
 };
 
 }  // namespace snt::render

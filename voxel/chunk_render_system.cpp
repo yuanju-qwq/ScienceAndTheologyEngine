@@ -2,6 +2,7 @@
 
 #define SNT_LOG_CHANNEL "voxel"
 #include "core/log.h"
+#include "render/render_components.h"
 
 #include "voxel/chunk_render_system.h"
 
@@ -196,7 +197,8 @@ void ChunkRenderSystem::upload_remesh_result(RemeshResult&& result) {
 // ---------------------------------------------------------------------------
 
 void ChunkRenderSystem::render(VkCommandBuffer cmd, uint32_t frame_idx,
-                               const float view[16], const float proj[16]) {
+                               const float view[16], const float proj[16],
+                               const snt::render::EnvironmentLighting& lighting) {
     if (!renderer_ || uploaded_meshes_.empty()) return;
 
     draw_scratch_.clear();
@@ -217,8 +219,8 @@ void ChunkRenderSystem::render(VkCommandBuffer cmd, uint32_t frame_idx,
     if (draw_scratch_.empty()) return;
 
     renderer_->render(cmd, frame_idx, view, proj,
-                      draw_scratch_.data(),
-                      static_cast<uint32_t>(draw_scratch_.size()));
+                       draw_scratch_.data(),
+                       static_cast<uint32_t>(draw_scratch_.size()), lighting);
 }
 
 }  // namespace snt::voxel

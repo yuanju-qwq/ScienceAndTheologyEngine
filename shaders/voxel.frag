@@ -15,6 +15,17 @@ layout(location = 1) flat in uint fragMaterialId;
 layout(location = 2) in float fragFaceType;
 layout(location = 3) in vec2 fragUv;
 
+layout(set = 0, binding = 0) uniform UniformBufferObject {
+    mat4 model;
+    mat4 view;
+    mat4 proj;
+    vec4 sunDirectionIntensity;
+    vec4 sunColor;
+    vec4 moonDirectionIntensity;
+    vec4 moonColor;
+    vec4 ambientColorIntensity;
+} ubo;
+
 layout(set = 0, binding = 1) uniform sampler2D materialAtlas;
 
 layout(location = 0) out vec4 outColor;
@@ -41,13 +52,16 @@ void main() {
         tint = 0.85;          // sides
     }
 
-    // Simple directional lighting from above-front. Normal is local, but
-    // chunks are axis-aligned so this still gives readable shading.
+    // Global sun, moon, and ambient inputs are provided by the presentation
+    // host. Normals are local, but chunks are axis-aligned so this remains
+    // correct until rotated terrain is introduced.
     vec3 n = normalize(fragNormal);
-    vec3 light_dir = normalize(vec3(0.4, 0.9, 0.3));
-    float ndotl = max(dot(n, light_dir), 0.0);
-    float ambient = 0.45;
-    float light = ambient + (1.0 - ambient) * ndotl;
+    float sun = max(dot(n, normalize(ubo.sunDirectionIntensity.xyz)), 0.0) *
+        max(ubo.sunDirectionIntensity.w, 0.0);
+    float moon = max(dot(n, normalize(ubo.moonDirectionIntensity.xyz)), 0.0) *
+        max(ubo.moonDirectionIntensity.w, 0.0);
+    vec3 light = ubo.ambientColorIntensity.rgb * max(ubo.ambientColorIntensity.w, 0.0) +
+        ubo.sunColor.rgb * sun + ubo.moonColor.rgb * moon;
 
     vec3 color = base * tint * light;
     outColor = vec4(color, 1.0);

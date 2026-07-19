@@ -31,6 +31,9 @@ class InputSystem;
 namespace snt::voxel {
 class ChunkRenderSystem;
 }
+namespace snt::render {
+class IRenderLightingController;
+}
 
 namespace snt::engine {
 
@@ -59,6 +62,7 @@ public:
     snt::ui::mod::IModUiRuntime& mod_ui() const noexcept;
     snt::input::InputSystem& input() const noexcept;
     snt::voxel::ChunkRenderSystem& chunk_render_system() const noexcept;
+    snt::render::IRenderLightingController& lighting() const noexcept;
 
     snt::core::Expected<void> set_active_camera(snt::ecs::EntityGuid guid);
     snt::core::Expected<void> set_mouse_locked(bool locked);

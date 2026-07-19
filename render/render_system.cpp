@@ -41,7 +41,9 @@
 
 // GLM templates call the standard `assert` macro; pull it in explicitly
 // so the macro is visible regardless of include order.
+#include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -77,7 +79,63 @@ glm::mat4 build_view_matrix(const snt::render::Transform& cam) {
     return lookAt(pos, pos + forward, vec3(0, 1, 0));
 }
 
+float sanitize_color_component(float value, float fallback) noexcept {
+    if (!std::isfinite(value)) return fallback;
+    return std::clamp(value, 0.0f, 16.0f);
+}
+
+void sanitize_light(snt::render::DirectionalLight& light,
+                    const snt::render::DirectionalLight& fallback) noexcept {
+    const float length_squared = light.direction_to_light[0] * light.direction_to_light[0] +
+        light.direction_to_light[1] * light.direction_to_light[1] +
+        light.direction_to_light[2] * light.direction_to_light[2];
+    if (!std::isfinite(length_squared) || length_squared < 0.000001f) {
+        light.direction_to_light = fallback.direction_to_light;
+    }
+    for (size_t index = 0; index < light.color.size(); ++index) {
+        light.color[index] = sanitize_color_component(light.color[index], fallback.color[index]);
+    }
+    light.intensity = sanitize_color_component(light.intensity, fallback.intensity);
+}
+
+snt::render::EnvironmentLighting sanitize_lighting(
+    snt::render::EnvironmentLighting lighting) noexcept {
+    const snt::render::EnvironmentLighting defaults{};
+    sanitize_light(lighting.sun, defaults.sun);
+    sanitize_light(lighting.moon, defaults.moon);
+    for (size_t index = 0; index < lighting.ambient_color.size(); ++index) {
+        lighting.ambient_color[index] = sanitize_color_component(
+            lighting.ambient_color[index], defaults.ambient_color[index]);
+    }
+    lighting.ambient_intensity = sanitize_color_component(
+        lighting.ambient_intensity, defaults.ambient_intensity);
+    for (size_t index = 0; index < lighting.sky_color.size(); ++index) {
+        lighting.sky_color[index] = sanitize_color_component(
+            lighting.sky_color[index], defaults.sky_color[index]);
+    }
+    return lighting;
+}
+
+void apply_environment_lighting(snt::render_backend::UniformBufferObject& ubo,
+                                const snt::render::EnvironmentLighting& lighting) noexcept {
+    std::copy(lighting.sun.direction_to_light.begin(), lighting.sun.direction_to_light.end(),
+              ubo.sun_direction_intensity);
+    ubo.sun_direction_intensity[3] = lighting.sun.intensity;
+    std::copy(lighting.sun.color.begin(), lighting.sun.color.end(), ubo.sun_color);
+    std::copy(lighting.moon.direction_to_light.begin(), lighting.moon.direction_to_light.end(),
+              ubo.moon_direction_intensity);
+    ubo.moon_direction_intensity[3] = lighting.moon.intensity;
+    std::copy(lighting.moon.color.begin(), lighting.moon.color.end(), ubo.moon_color);
+    std::copy(lighting.ambient_color.begin(), lighting.ambient_color.end(),
+              ubo.ambient_color_intensity);
+    ubo.ambient_color_intensity[3] = lighting.ambient_intensity;
+}
+
 }  // namespace
+
+void RenderSystem::set_environment_lighting(EnvironmentLighting lighting) noexcept {
+    lighting_ = sanitize_lighting(std::move(lighting));
+}
 
 snt::core::Expected<void> RenderSystem::init_render_graph() {
     if (!device_ || !frame_) {
@@ -172,6 +230,7 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
         std::memcpy(ubo.model, glm::value_ptr(model), sizeof(ubo.model));
         std::memcpy(ubo.view,  glm::value_ptr(view),  sizeof(ubo.view));
         std::memcpy(ubo.proj,  glm::value_ptr(proj),  sizeof(ubo.proj));
+        apply_environment_lighting(ubo, lighting_);
 
         draws.push_back({mesh, entity_index * descriptor_->ubo_stride(), ubo});
         ++entity_index;
@@ -247,7 +306,8 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
         .resource = color_res,
         .load_op = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .store_op = VK_ATTACHMENT_STORE_OP_STORE,
-        .clear_value = {.color = {{0.0f, 0.0f, 0.2f, 1.0f}}},
+        .clear_value = {.color = {{lighting_.sky_color[0], lighting_.sky_color[1],
+                                   lighting_.sky_color[2], lighting_.sky_color[3]}}},
     };
     pass->color_attachments.push_back(color_decl);
 
@@ -300,7 +360,7 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
     // main color/depth target is explicit: providers depend on the current
     // `last_color_pass` and update it when they add a pass.
     RenderPassBuildContext build_ctx{
-        graph_, color_res, depth_res, extent, frame_idx
+        graph_, color_res, depth_res, extent, frame_idx, lighting_
     };
     build_ctx.last_color_pass = "mesh_forward";
     std::memcpy(build_ctx.view.data(), glm::value_ptr(view), sizeof(float) * 16);

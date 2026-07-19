@@ -44,6 +44,7 @@ target_link_libraries(snt_voxel PUBLIC
     snt_asset_content
     snt_gpu_assets
     snt_render_backend
+    snt_render_components
     snt_ecs
     snt_voxel_data
     glm::glm

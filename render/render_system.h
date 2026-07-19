@@ -27,6 +27,7 @@
 
 #include "ecs/system.h"
 #include "ecs/entt_config.h"
+#include "render/render_components.h"
 #include "renderer/render_graph.h"
 #include "render_backend/vulkan_descriptor.h"
 
@@ -59,6 +60,7 @@ struct RenderPassBuildContext {
     snt::renderer::RenderResource depth_resource;
     VkExtent2D extent{};
     uint32_t frame_idx = 0;
+    EnvironmentLighting lighting{};
     std::array<float, 16> view{};
     std::array<float, 16> proj{};
     std::string last_color_pass;
@@ -66,7 +68,7 @@ struct RenderPassBuildContext {
 
 using RenderPassProvider = std::function<void(RenderPassBuildContext&)>;
 
-class RenderSystem : public snt::ecs::System {
+class RenderSystem : public snt::ecs::System, public IRenderLightingController {
 public:
     RenderSystem() = default;
     ~RenderSystem() override = default;
@@ -88,6 +90,13 @@ public:
     // frame. Providers are invoked after the built-in mesh pass is declared.
     void add_pass_provider(RenderPassProvider provider) {
         pass_providers_.push_back(std::move(provider));
+    }
+
+    // ClientWorldSession exposes this narrow presentation boundary to the
+    // game. The state is copied into each render-pass build context.
+    void set_environment_lighting(EnvironmentLighting lighting) noexcept override;
+    [[nodiscard]] EnvironmentLighting environment_lighting() const noexcept override {
+        return lighting_;
     }
 
     // Initialize the RenderGraph (creates its command pool). Must be called
@@ -118,6 +127,7 @@ private:
 
     bool needs_resize_ = false;
 
+    EnvironmentLighting lighting_{};
     std::vector<RenderPassProvider> pass_providers_;
 };
 

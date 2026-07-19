@@ -20,6 +20,11 @@ layout(set = 0, binding = 0) uniform UniformBufferObject {
     mat4 model;
     mat4 view;
     mat4 proj;
+    vec4 sunDirectionIntensity;
+    vec4 sunColor;
+    vec4 moonDirectionIntensity;
+    vec4 moonColor;
+    vec4 ambientColorIntensity;
 } ubo;
 
 layout(location = 0) out vec3 fragNormal;

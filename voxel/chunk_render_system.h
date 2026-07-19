@@ -46,6 +46,10 @@
 #include <unordered_set>
 #include <vector>
 
+namespace snt::render {
+struct EnvironmentLighting;
+}
+
 namespace snt::voxel {
 
 class ChunkRegistry;
@@ -102,7 +106,8 @@ public:
     // pass. Builds ChunkDrawCalls for every uploaded mesh and forwards
     // them to ChunkRenderer::render.
     void render(VkCommandBuffer cmd, uint32_t frame_idx,
-                const float view[16], const float proj[16]);
+                const float view[16], const float proj[16],
+                const snt::render::EnvironmentLighting& lighting);
 
 private:
     struct RemeshResult {

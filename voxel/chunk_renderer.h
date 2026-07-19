@@ -28,6 +28,9 @@ class VulkanPipeline;
 class VulkanDescriptor;
 class VertexBufferPool;
 }
+namespace snt::render {
+struct EnvironmentLighting;
+}
 namespace snt::core { class RuntimePathResolver; }
 
 namespace snt::voxel {
@@ -93,7 +96,8 @@ public:
     // be <= max_chunks.
     void render(VkCommandBuffer cmd, uint32_t frame_idx,
                 const float view[16], const float proj[16],
-                const ChunkDrawCall* draws, uint32_t draw_count);
+                const ChunkDrawCall* draws, uint32_t draw_count,
+                const snt::render::EnvironmentLighting& lighting);
 
     uint32_t max_chunks() const { return max_chunks_; }
 
