@@ -3,9 +3,8 @@
 // Design rationale:
 //   - Scene files, save files, and chunk data are binary (not JSON) per
 //     project_memory: "JSON for config, binary for large data".
-//   - This writer mirrors the style of src/core/save/chunk_serializer.hpp
-//     (static helpers, host byte order, length-prefixed strings) so the
-//     new engine stays consistent with the legacy save system.
+//   - This writer uses shared binary conventions: host byte order and
+//     length-prefixed strings for compact, deterministic payloads.
 //   - Host byte order = little-endian on x86/ARM64 (all target platforms).
 //     No byte-swapping is done; files are NOT portable across big-endian
 //     machines (acceptable: the engine targets x64 + ARM64 Windows/Linux).
@@ -64,7 +63,7 @@ public:
 
     // Write a length-prefixed UTF-8 string: u32 length + raw bytes.
     // Length is the byte count (not codepoint count). No terminator.
-    // This matches src/core/save/save_manager.hpp's write_string style.
+    // This is paired with BinaryReader's length-prefixed string contract.
     void write_string(std::string_view s) {
         write_u32(static_cast<uint32_t>(s.size()));
         if (!s.empty()) {

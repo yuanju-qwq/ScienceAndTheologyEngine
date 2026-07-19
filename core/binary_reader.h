@@ -3,9 +3,8 @@
 // Design rationale:
 //   - Paired with BinaryWriter (same byte order, same length-prefix
 //     conventions). See binary_writer.h for the overall rationale.
-//   - Read methods return bool: false on EOF / truncated input. This
-//     matches src/core/save/chunk_serializer.hpp's read helpers so the
-//     new engine stays consistent with the legacy save system.
+//   - Read methods return bool: false on EOF / truncated input so callers
+//     can reject incomplete payloads without undefined behavior.
 //   - Bounds-checked: every read validates there are enough bytes left.
 //     A false return lets the caller abort gracefully (e.g. mark the
 //     save file as corrupt) instead of UB / segfault.
