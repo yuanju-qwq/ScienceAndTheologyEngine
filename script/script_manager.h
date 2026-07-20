@@ -14,6 +14,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -26,6 +27,18 @@
 
 namespace snt::script {
 
+class ScriptManager;
+
+// A game may translate a changed file into a dependency-aware batch. Returning
+// true means the change was handled; false delegates to ScriptManager's
+// generic single-file behavior for unmanaged scripts.
+class IScriptFileChangeHandler {
+public:
+    virtual ~IScriptFileChangeHandler() = default;
+    virtual snt::core::Expected<bool> handle_script_file_change(
+        ScriptManager& scripts, const FileChange& change) = 0;
+};
+
 class ScriptManager {
 public:
     ScriptManager() = default;
@@ -35,6 +48,12 @@ public:
     // borrows it for one initialized session and clears the reference during
     // shutdown or initialization failure.
     snt::core::Expected<void> set_content_host(IScriptContentHost& content_host);
+
+    // Install a game-owned file-change policy. The handler is borrowed and
+    // must outlive this manager or be cleared before its owner is destroyed.
+    void set_file_change_handler(IScriptFileChangeHandler* handler) noexcept {
+        file_change_handler_ = handler;
+    }
 
     // Create the AS engine, context pool, and register core types.
     snt::core::Expected<void> init();
@@ -53,6 +72,8 @@ public:
     // Explicit reload entry point used by the command layer. It follows the
     // same compile/register/commit or rollback flow as file changes.
     snt::core::Expected<void> reload_all();
+    snt::core::Expected<void> reload_files(
+        std::span<const std::filesystem::path> paths);
 
     // Invoke a no-argument callback from the currently committed generation
     // of one content module. Client-only extension hosts use this for
@@ -101,6 +122,7 @@ private:
     ScriptContextPool contexts_;
     ScriptLoader      loader_;
     IScriptContentHost* content_host_ = nullptr;
+    IScriptFileChangeHandler* file_change_handler_ = nullptr;
     std::unique_ptr<FileWatcher> watcher_;
     bool initialized_ = false;
 };

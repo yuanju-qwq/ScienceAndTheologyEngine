@@ -522,6 +522,19 @@ snt::core::Expected<UiWidgetTemplate> parse_node(const json& value,
                                                path + ".slot"); !result) {
             return result.error();
         }
+        if (auto result = read_optional_string(*slot, "image", node.slot.image_key,
+                                               path + ".slot"); !result) {
+            return result.error();
+        }
+        if (auto result = read_optional_string(*slot, "overlay", node.slot.overlay_image_key,
+                                               path + ".slot"); !result) {
+            return result.error();
+        }
+        if (const auto tint = slot->find("tint"); tint != slot->end()) {
+            auto parsed = parse_color(*tint, path + ".slot.tint");
+            if (!parsed) return parsed.error();
+            node.slot.image_tint = *parsed;
+        }
         if (auto result = read_optional_int(*slot, "count", node.slot.count, path + ".slot");
             !result) {
             return result.error();
@@ -885,6 +898,9 @@ snt::core::Expected<std::unique_ptr<View>> instantiate_node(
         auto view = std::make_unique<SlotView>(node.id);
         apply_common_view_properties(*view, node);
         view->set_slot_state({.item_key = node.slot.item_key,
+                              .image_key = node.slot.image_key,
+                              .overlay_image_key = node.slot.overlay_image_key,
+                              .image_tint = node.slot.image_tint,
                               .count = node.slot.count,
                               .selected = node.slot.selected});
         return std::unique_ptr<View>(std::move(view));

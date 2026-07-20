@@ -689,9 +689,11 @@ void prefix_widget_ids(Widget& widget, std::string_view prefix) {
     case WidgetType::Slot: {
         auto view = std::make_unique<snt::ui::SlotView>(widget.id.value);
         apply_common(*view, widget);
-        view->set_slot_state({.item_key = widget.slot.item.value.empty()
-                                              ? std::string{}
-                                              : image_key(*state, widget.slot.item),
+        const std::string resource_key = widget.slot.item.value.empty()
+            ? std::string{}
+            : image_key(*state, widget.slot.item);
+        view->set_slot_state({.item_key = resource_key,
+                              .image_key = resource_key,
                               .count = widget.slot.count,
                               .selected = widget.slot.selected});
         const WidgetId widget_id = widget.id;

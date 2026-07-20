@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -165,23 +166,54 @@ snt::core::Expected<void> ScriptLoader::reload_file(const fs::path& path) {
     return reload_entry(entry->second);
 }
 
+snt::core::Expected<void> ScriptLoader::reload_files_atomically(
+    std::span<const fs::path> paths) {
+    if (auto runtime = ensure_runtime(); !runtime) {
+        return runtime.error();
+    }
+    if (paths.empty()) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
+                                "Script reload batch must contain at least one file"};
+    }
+
+    std::set<std::string, std::less<>> seen_keys;
+    std::vector<ScriptEntry*> selected;
+    selected.reserve(paths.size());
+    for (const fs::path& path : paths) {
+        auto normalized = normalize_file_path(path);
+        if (!normalized) return normalized.error();
+        const std::string key = file_key(*normalized);
+        const auto entry = entries_.find(key);
+        if (entry == entries_.end()) {
+            return snt::core::Error{snt::core::ErrorCode::kScriptModuleNotFound,
+                                    "Script reload batch contains an unloaded file: " +
+                                        normalized->string()};
+        }
+        if (!seen_keys.insert(key).second) continue;
+        selected.push_back(&entry->second);
+    }
+    return reload_entries_atomically(selected);
+}
+
 snt::core::Expected<void> ScriptLoader::reload_all() {
     if (auto runtime = ensure_runtime(); !runtime) {
         return runtime.error();
     }
 
-    size_t reloaded = 0;
+    std::vector<ScriptEntry*> selected;
+    selected.reserve(entries_.size());
     for (auto& [key, entry] : entries_) {
         (void)key;
         if (entry.path.empty()) continue;
-        if (auto result = reload_entry(entry); !result) {
-            snt::core::Error error = result.error();
-            error.with_context("ScriptLoader::reload_all(" + entry.path.string() + ")");
-            return error;
-        }
-        ++reloaded;
+        selected.push_back(&entry);
     }
-    SNT_LOG_INFO("Reloaded %zu content script module(s)", reloaded);
+    if (selected.empty()) return {};
+    if (auto result = reload_entries_atomically(selected); !result) {
+        auto error = result.error();
+        error.with_context("ScriptLoader::reload_all");
+        return error;
+    }
+    SNT_LOG_INFO("Reloaded %zu content script module(s) atomically", selected.size());
     return {};
 }
 
@@ -225,16 +257,19 @@ ScriptModule* ScriptLoader::get_module(ScriptId script_id) {
 }
 
 void ScriptLoader::unload_all() {
-    for (auto& [key, entry] : entries_) {
-        (void)key;
-        if (content_host_ && entry.script_id != kBuiltinScriptId) {
-            if (auto result = content_host_->unload_script(entry.script_id); !result) {
+    // Directory loading is stable-path ascending, so later modules may
+    // reference content supplied by earlier modules. Tear down in reverse
+    // order to remove dependents before their material/item providers.
+    for (auto entry = entries_.rbegin(); entry != entries_.rend(); ++entry) {
+        ScriptEntry& loaded = entry->second;
+        if (content_host_ && loaded.script_id != kBuiltinScriptId) {
+            if (auto result = content_host_->unload_script(loaded.script_id); !result) {
                 SNT_LOG_ERROR("Failed to unload script %llu: %s",
-                              static_cast<unsigned long long>(entry.script_id),
+                              static_cast<unsigned long long>(loaded.script_id),
                               result.error().format().c_str());
             }
         }
-        entry.module.discard();
+        loaded.module.discard();
     }
     entries_.clear();
 }
@@ -248,60 +283,102 @@ snt::core::Expected<void> ScriptLoader::ensure_runtime() const {
 }
 
 snt::core::Expected<void> ScriptLoader::reload_entry(ScriptEntry& entry) {
-    std::string module_name = "p7_" + std::to_string(entry.script_id) + "_" +
-                              std::to_string(++entry.generation);
-    ScriptModule candidate;
-    snt::core::Expected<void> compiled = entry.path.empty()
-        ? candidate.compile_source(engine_, module_name, entry.inline_source)
-        : candidate.compile(engine_, module_name, entry.path.string());
-    if (!compiled) {
-        return compiled.error();
-    }
-    return activate_candidate(entry, std::move(candidate));
+    const std::vector<ScriptEntry*> entries{&entry};
+    return reload_entries_atomically(entries);
 }
 
-snt::core::Expected<void> ScriptLoader::activate_candidate(ScriptEntry& entry,
-                                                             ScriptModule&& candidate) {
-    if (auto begin = content_host_->begin_reload(entry.script_id); !begin) {
-        return begin.error();
+snt::core::Expected<void> ScriptLoader::reload_entries_atomically(
+    const std::vector<ScriptEntry*>& entries) {
+    if (auto runtime = ensure_runtime(); !runtime) {
+        return runtime.error();
+    }
+    if (entries.empty()) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
+                                "Script reload batch must contain at least one entry"};
     }
 
-    const auto rollback = [this, &entry]() {
-        if (auto result = content_host_->rollback_reload(entry.script_id); !result) {
-            SNT_LOG_ERROR("Failed to roll back script %llu: %s",
-                          static_cast<unsigned long long>(entry.script_id),
+    struct Candidate {
+        ScriptEntry* entry = nullptr;
+        ScriptModule module;
+    };
+
+    std::set<ScriptId> seen_ids;
+    std::vector<Candidate> candidates;
+    candidates.reserve(entries.size());
+    std::vector<ScriptId> script_ids;
+    script_ids.reserve(entries.size());
+    for (ScriptEntry* const entry : entries) {
+        if (!entry) {
+            return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
+                                    "Script reload batch contains a null entry"};
+        }
+        if (!seen_ids.insert(entry->script_id).second) {
+            return snt::core::Error{snt::core::ErrorCode::kInvalidArgument,
+                                    "Script reload batch contains a duplicate ScriptId"};
+        }
+        candidates.emplace_back();
+        Candidate& candidate = candidates.back();
+        candidate.entry = entry;
+        if (auto compiled = compile_candidate(*entry, candidate.module); !compiled) {
+            auto error = compiled.error();
+            error.with_context("ScriptLoader::compile(" + entry->name + ")");
+            return error;
+        }
+        script_ids.push_back(entry->script_id);
+    }
+
+    const std::span<const ScriptId> ids(script_ids.data(), script_ids.size());
+    if (auto begin = content_host_->begin_reload_batch(ids); !begin) {
+        return begin.error();
+    }
+    const auto rollback = [this, ids]() {
+        if (auto result = content_host_->rollback_reload_batch(ids); !result) {
+            SNT_LOG_ERROR("Failed to roll back content script batch: %s",
                           result.error().format().c_str());
         }
     };
 
-    const auto registered = [&]() -> snt::core::Expected<void> {
-        auto registration_scope = content_host_->begin_registration(entry.script_id);
-        if (!registration_scope) {
-            return snt::core::Error{
-                snt::core::ErrorCode::kInvalidState,
-                "Script content host returned a null registration scope"};
+    for (const Candidate& candidate : candidates) {
+        if (auto registered = register_candidate(*candidate.entry, candidate.module); !registered) {
+            rollback();
+            auto error = registered.error();
+            error.with_context("ScriptLoader::register(" + candidate.entry->name + ")");
+            return error;
         }
-        return candidate.call_void(*contexts_, "void snt_register()");
-    }();
-    if (!registered) {
-        rollback();
-        return registered.error();
     }
-
-    if (auto callbacks = validate_event_callbacks(entry, candidate); !callbacks) {
-        rollback();
-        return callbacks.error();
-    }
-
-    if (auto committed = content_host_->commit_reload(entry.script_id); !committed) {
+    if (auto committed = content_host_->commit_reload_batch(ids); !committed) {
         rollback();
         return committed.error();
     }
 
-    entry.module = std::move(candidate);
-    SNT_LOG_INFO("Committed content script '%s' (generation %llu)",
-                 entry.name.c_str(), static_cast<unsigned long long>(entry.generation));
+    for (Candidate& candidate : candidates) {
+        candidate.entry->module = std::move(candidate.module);
+    }
+    SNT_LOG_INFO("Committed content script batch with %zu module(s)", candidates.size());
     return {};
+}
+
+snt::core::Expected<void> ScriptLoader::compile_candidate(ScriptEntry& entry,
+                                                           ScriptModule& candidate) {
+    std::string module_name = "p7_" + std::to_string(entry.script_id) + "_" +
+                              std::to_string(++entry.generation);
+    snt::core::Expected<void> compiled = entry.path.empty()
+        ? candidate.compile_source(engine_, module_name, entry.inline_source)
+        : candidate.compile(engine_, module_name, entry.path.string());
+    return compiled;
+}
+
+snt::core::Expected<void> ScriptLoader::register_candidate(
+    const ScriptEntry& entry, const ScriptModule& candidate) {
+    auto registration_scope = content_host_->begin_registration(entry.script_id);
+    if (!registration_scope) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "Script content host returned a null registration scope"};
+    }
+    if (auto registered = candidate.call_void(*contexts_, "void snt_register()"); !registered) {
+        return registered.error();
+    }
+    return validate_event_callbacks(entry, candidate);
 }
 
 snt::core::Expected<void> ScriptLoader::validate_event_callbacks(

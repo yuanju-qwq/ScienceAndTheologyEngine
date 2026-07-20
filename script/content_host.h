@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -53,6 +54,17 @@ public:
     virtual snt::core::Expected<void> begin_reload(ScriptId script_id) = 0;
     virtual snt::core::Expected<void> commit_reload(ScriptId script_id) = 0;
     virtual snt::core::Expected<void> rollback_reload(ScriptId script_id) = 0;
+
+    // Transaction lifecycle for an ordered set of ScriptIds. The loader
+    // compiles every candidate before this begins, then registers each
+    // candidate in dependency order. A host must make the whole set visible
+    // only after commit_reload_batch succeeds; rollback restores every owner.
+    virtual snt::core::Expected<void> begin_reload_batch(
+        std::span<const ScriptId> script_ids) = 0;
+    virtual snt::core::Expected<void> commit_reload_batch(
+        std::span<const ScriptId> script_ids) = 0;
+    virtual snt::core::Expected<void> rollback_reload_batch(
+        std::span<const ScriptId> script_ids) = 0;
     virtual snt::core::Expected<void> unload_script(ScriptId script_id) = 0;
 
     // Return callback names registered by this script in deterministic order.

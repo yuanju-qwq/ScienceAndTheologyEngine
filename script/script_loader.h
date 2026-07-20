@@ -11,8 +11,10 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "core/expected.h"
 #include "script/content_host.h"
@@ -64,10 +66,12 @@ public:
     snt::core::Expected<void> load_source(std::string_view name,
                                           std::string_view source);
 
-    // Reload one watched file or all loaded file-backed scripts. Each script
-    // commits independently; a failure rolls that script back to its last
-    // known-good module and content-host snapshot.
+    // Reload one watched file, a caller-provided dependency-ordered batch, or
+    // all file-backed scripts. A batch compiles every candidate first and
+    // then commits all selected ScriptIds together or restores every one.
     snt::core::Expected<void> reload_file(const std::filesystem::path& path);
+    snt::core::Expected<void> reload_files_atomically(
+        std::span<const std::filesystem::path> paths);
     snt::core::Expected<void> reload_all();
 
     // Remove a deleted file's module and live registrations. StateStore is
@@ -87,8 +91,12 @@ public:
 private:
     snt::core::Expected<void> ensure_runtime() const;
     snt::core::Expected<void> reload_entry(ScriptEntry& entry);
-    snt::core::Expected<void> activate_candidate(ScriptEntry& entry,
-                                                  ScriptModule&& candidate);
+    snt::core::Expected<void> reload_entries_atomically(
+        const std::vector<ScriptEntry*>& entries);
+    snt::core::Expected<void> compile_candidate(ScriptEntry& entry,
+                                                 ScriptModule& candidate);
+    snt::core::Expected<void> register_candidate(const ScriptEntry& entry,
+                                                  const ScriptModule& candidate);
     snt::core::Expected<void> validate_event_callbacks(const ScriptEntry& entry,
                                                         const ScriptModule& candidate) const;
     snt::core::Expected<std::filesystem::path> normalize_file_path(

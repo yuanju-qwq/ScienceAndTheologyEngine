@@ -62,7 +62,12 @@ struct UiWidgetLayout {
 };
 
 struct UiWidgetSlotState {
+    // Item identity is distinct from presentation so a content reload can
+    // change item art without affecting a drag or authoritative slot value.
     std::string item_key;
+    std::string image_key;
+    std::string overlay_image_key;
+    Color image_tint{255, 255, 255, 255};
     int32_t count = 0;
     bool selected = false;
 };

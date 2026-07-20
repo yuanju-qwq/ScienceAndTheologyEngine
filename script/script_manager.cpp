@@ -87,9 +87,23 @@ void ScriptManager::update(float /*dt*/) {
         size_t applied = 0;
         size_t failed = 0;
         for (const FileChange& change : changes) {
-            const auto result = change.kind == FileChangeKind::Removed
-                ? loader_.unload_file(change.path)
-                : loader_.reload_file(change.path);
+            snt::core::Expected<void> result;
+            if (file_change_handler_) {
+                auto handled = file_change_handler_->handle_script_file_change(*this, change);
+                if (!handled) {
+                    result = handled.error();
+                } else if (*handled) {
+                    result = {};
+                } else {
+                    result = change.kind == FileChangeKind::Removed
+                        ? loader_.unload_file(change.path)
+                        : loader_.reload_file(change.path);
+                }
+            } else {
+                result = change.kind == FileChangeKind::Removed
+                    ? loader_.unload_file(change.path)
+                    : loader_.reload_file(change.path);
+            }
             if (!result) {
                 ++failed;
                 SNT_LOG_ERROR("Script content change rejected for %s: %s",
@@ -132,6 +146,15 @@ snt::core::Expected<void> ScriptManager::reload_all() {
     return loader_.reload_all();
 }
 
+snt::core::Expected<void> ScriptManager::reload_files(
+    std::span<const std::filesystem::path> paths) {
+    if (!initialized_) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "ScriptManager is not initialized"};
+    }
+    return loader_.reload_files_atomically(paths);
+}
+
 snt::core::Expected<void> ScriptManager::invoke_callback(
     ScriptId script_id,
     std::string_view callback_id) {
@@ -165,6 +188,7 @@ void ScriptManager::shutdown() {
     engine_.shutdown();
     loader_.set_runtime(nullptr, nullptr, nullptr);
     watcher_.reset();
+    file_change_handler_ = nullptr;
     content_host_ = nullptr;
     initialized_ = false;
     SNT_LOG_INFO("ScriptManager shut down");

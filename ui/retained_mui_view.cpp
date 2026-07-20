@@ -1003,7 +1003,14 @@ void SlotView::paint(Arc2DCommandBuffer& out,
             .size = {std::max(0.0f, bounds_.size.x - 8.0f),
                      std::max(0.0f, bounds_.size.y - 8.0f)},
         };
-        out.image(icon, state_.item_key, {255, 255, 255, 255});
+        if (!state_.image_key.empty()) {
+            out.image(icon, state_.image_key, state_.image_tint);
+        }
+        if (!state_.overlay_image_key.empty()) {
+            // The overlay carries contrast/detail pixels and is not part of
+            // the material colorization applied to the base icon.
+            out.image(icon, state_.overlay_image_key, {255, 255, 255, 255});
+        }
         if (state_.count > 1) {
             TextStyle style;
             style.size_px = 11.0f;

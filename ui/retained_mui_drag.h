@@ -89,7 +89,13 @@ private:
 class SlotView : public View, public UiDragSource, public UiDropTarget {
 public:
     struct SlotState {
+        // `item_key` is the semantic drag payload. Item presentation is
+        // intentionally independent so content can replace an icon without
+        // changing inventory, networking, or mod command identities.
         std::string item_key;
+        std::string image_key;
+        std::string overlay_image_key;
+        Color image_tint{255, 255, 255, 255};
         int32_t count = 0;
         bool selected = false;
     };
@@ -99,7 +105,12 @@ public:
     ViewKind kind() const override { return ViewKind::SlotView; }
 
     void set_slot_state(SlotState state) {
-        if (state_.item_key == state.item_key && state_.count == state.count &&
+        if (state_.item_key == state.item_key && state_.image_key == state.image_key &&
+            state_.overlay_image_key == state.overlay_image_key &&
+            state_.image_tint.r == state.image_tint.r &&
+            state_.image_tint.g == state.image_tint.g &&
+            state_.image_tint.b == state.image_tint.b &&
+            state_.image_tint.a == state.image_tint.a && state_.count == state.count &&
             state_.selected == state.selected) {
             return;
         }
