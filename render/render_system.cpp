@@ -191,6 +191,7 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
 
     // --- Collect mesh entities (single ECS pass) ---
     // P2.4: iterate ALL entities with Transform + MeshRef. For each:
+    //   - select optional generic MeshLod from camera distance
     //   - resolve mesh handle via AssetManager
     //   - precompute model matrix (view/proj are per-frame, same for all)
     //   - stash a MeshDraw entry; UBO write happens AFTER begin_frame
@@ -215,8 +216,16 @@ void RenderSystem::update(snt::ecs::World& world, float /*dt*/) {
         auto& transform = registry.get<snt::render::Transform>(e);
         auto& mesh_ref  = registry.get<snt::render::MeshRef>(e);
 
+        const float dx = transform.position[0] - cam_transform.position[0];
+        const float dy = transform.position[1] - cam_transform.position[1];
+        const float dz = transform.position[2] - cam_transform.position[2];
+        const MeshLod* lod = registry.try_get<snt::render::MeshLod>(e);
+        const MeshLodSelection selection = select_mesh_lod(
+            mesh_ref, lod, dx * dx + dy * dy + dz * dz);
+        if (selection.level == MeshLodLevel::kCulled) continue;
+
         // Resolve the mesh handle to a VulkanMesh via the AssetManager.
-        auto* mesh = assets_->mesh(mesh_ref.handle);
+        auto* mesh = assets_->mesh(selection.handle);
         if (!mesh) {
             SNT_LOG_ERROR("entity %u: invalid mesh handle",
                           static_cast<unsigned>(e));

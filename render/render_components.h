@@ -12,7 +12,10 @@
 #include "core/binary_writer.h"
 #include "core/serializer.h"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstdint>
 
 namespace snt::render {
 
@@ -27,6 +30,54 @@ using MeshHandle = snt::assets::MeshHandle;
 struct MeshRef {
     MeshHandle handle;
 };
+
+// Optional mesh LOD component for any presentation entity. Biological
+// entities use it first, but the component intentionally carries no species,
+// gameplay, or animation state so props and future crowds can share the same
+// renderer path. The primary MeshRef is full detail; simplified_handle is
+// selected only beyond simplified_detail_distance.
+struct MeshLod {
+    MeshHandle simplified_handle;
+    float simplified_detail_distance = 32.0f;
+    float cull_distance = 128.0f;
+};
+
+enum class MeshLodLevel : uint8_t {
+    kFull,
+    kSimplified,
+    kCulled,
+};
+
+struct MeshLodSelection {
+    MeshHandle handle;
+    MeshLodLevel level = MeshLodLevel::kFull;
+};
+
+// Pure LOD selection is kept at the component boundary so gameplay-facing
+// presentation adapters can unit-test their distance policy without creating
+// a Vulkan device. Invalid or missing simplified meshes gracefully retain
+// the full-detail mesh until the cull distance.
+[[nodiscard]] inline MeshLodSelection select_mesh_lod(
+    MeshRef primary, const MeshLod* lod, float distance_squared) noexcept {
+    if (lod == nullptr || !std::isfinite(distance_squared) || distance_squared < 0.0f) {
+        return {.handle = primary.handle, .level = MeshLodLevel::kFull};
+    }
+
+    const float simplified_distance = std::isfinite(lod->simplified_detail_distance)
+        ? std::max(0.0f, lod->simplified_detail_distance)
+        : 0.0f;
+    const float cull_distance = std::isfinite(lod->cull_distance)
+        ? std::max(simplified_distance, lod->cull_distance)
+        : simplified_distance;
+    if (distance_squared > cull_distance * cull_distance) {
+        return {.handle = {}, .level = MeshLodLevel::kCulled};
+    }
+    if (distance_squared > simplified_distance * simplified_distance &&
+        lod->simplified_handle.valid()) {
+        return {.handle = lod->simplified_handle, .level = MeshLodLevel::kSimplified};
+    }
+    return {.handle = primary.handle, .level = MeshLodLevel::kFull};
+}
 
 struct Camera {
     float fov = 60.0f;
