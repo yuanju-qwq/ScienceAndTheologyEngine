@@ -4,8 +4,8 @@
 
 #include <algorithm>
 #include <limits>
-#include <map>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -14,7 +14,9 @@
 namespace snt::core {
 
 struct RuntimeKeyIndex::Data {
-    std::map<std::string, RuntimeKeyId, std::less<>> ids_by_key;
+    // IDs are assigned from a sorted vector during rebuild. Lookup itself is
+    // an average O(1) boundary operation; workers retain the resulting ID.
+    std::unordered_map<std::string, RuntimeKeyId> ids_by_key;
     // Index zero is the invalid-ID sentinel. Every valid ID can therefore be
     // used directly as an array index for reverse lookup.
     std::vector<std::string> keys_by_id{std::string{}};
@@ -26,7 +28,7 @@ RuntimeKeyIndex::RuntimeKeyIndex() : data_(std::make_shared<Data>()) {}
 std::optional<RuntimeKeyId> RuntimeKeyIndex::Snapshot::find_id(
     std::string_view key) const noexcept {
     if (!data_) return std::nullopt;
-    const auto found = data_->ids_by_key.find(key);
+    const auto found = data_->ids_by_key.find(std::string{key});
     if (found == data_->ids_by_key.end()) return std::nullopt;
     return found->second;
 }

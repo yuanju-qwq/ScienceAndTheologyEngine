@@ -57,7 +57,8 @@ public:
 
     // Keys must already be canonical for their owning content domain. The
     // index validates only generic invariants, sorts lexicographically, and
-    // assigns IDs [1, N]; ID 0 always remains invalid.
+    // assigns IDs [1, N]; ID 0 always remains invalid. String-to-ID lookup is
+    // average O(1), while workers retain only the resulting fixed-width ID.
     [[nodiscard]] Expected<void> rebuild(std::span<const std::string_view> keys);
 
     [[nodiscard]] Snapshot snapshot() const noexcept { return Snapshot(data_); }
