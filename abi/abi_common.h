@@ -13,7 +13,7 @@ extern "C" {
 #endif
 
 #define SNT_ABI_VERSION_MAJOR 1u
-#define SNT_ABI_VERSION_MINOR 0u
+#define SNT_ABI_VERSION_MINOR 1u
 
 typedef uint32_t SntAbiStatus;
 enum {
@@ -22,6 +22,8 @@ enum {
     SNT_ABI_STATUS_INCOMPATIBLE_VERSION = 2u,
     SNT_ABI_STATUS_UNSUPPORTED = 3u,
     SNT_ABI_STATUS_INTERNAL_ERROR = 4u,
+    SNT_ABI_STATUS_NOT_READY = 5u,
+    SNT_ABI_STATUS_INVALID_STATE = 6u,
 };
 
 // A read-only contiguous byte range. The producer owns its storage and must

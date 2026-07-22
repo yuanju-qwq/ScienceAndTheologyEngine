@@ -1,19 +1,11 @@
 // Runtime ABI discovery implementation.
 //
 // This must remain a pure-C leaf: descriptor discovery is useful to tools and
-// Zig hosts before a C++ runtime exists. A future host implementation owns
-// its low-frequency startup log through SntRuntimeHostCallbacks.
+// Zig hosts before a C++ runtime exists.
 
 #include "abi/runtime_abi.h"
 
 #include <stddef.h>
-
-// The project enables /RTC1 for Debug builds. This ABI object must stay
-// linkable by non-MSVC hosts, so prevent that flag from adding MSVC-only
-// startup hooks to this pure-C translation unit.
-#if defined(_MSC_VER)
-#pragma runtime_checks("", off)
-#endif
 
 static int snt_abi_field_fits(uint32_t supplied_size,
                               size_t field_offset,
@@ -41,6 +33,10 @@ const char* snt_abi_status_message(SntAbiStatus status) {
         return "unsupported operation";
     case SNT_ABI_STATUS_INTERNAL_ERROR:
         return "internal ABI error";
+    case SNT_ABI_STATUS_NOT_READY:
+        return "operation not ready";
+    case SNT_ABI_STATUS_INVALID_STATE:
+        return "invalid runtime state";
     default:
         return "unknown ABI status";
     }
@@ -59,7 +55,9 @@ SntAbiStatus snt_runtime_abi_query_descriptor(
     if (snt_abi_field_fits(caller_size,
                            offsetof(SntRuntimeAbiDescriptor, capabilities),
                            sizeof(((SntRuntimeAbiDescriptor*)0)->capabilities))) {
-        out_descriptor->capabilities = SNT_RUNTIME_ABI_CAPABILITY_DESCRIPTOR_QUERY;
+        out_descriptor->capabilities =
+            SNT_RUNTIME_ABI_CAPABILITY_DESCRIPTOR_QUERY |
+            SNT_RUNTIME_ABI_CAPABILITY_HASH_FNV1A64;
     }
     return SNT_ABI_STATUS_OK;
 }

@@ -1,9 +1,8 @@
-// Runtime ABI discovery contract.
+// Runtime ABI discovery and capability negotiation contract.
 //
-// This is the entry point for language-neutral hosts. It intentionally does
-// not create a SimulationRuntime yet: game-owned ISimulationSession creation
-// has no settled C value contract. Establishing discovery and value-only
-// snapshot contracts first prevents C++ ownership from leaking into Zig.
+// Host lifecycle declarations live in runtime_host_abi.h. Their presence in
+// headers does not imply an implementation is linked: consumers must inspect
+// the advertised capability bits before calling an optional host feature.
 
 #pragma once
 
@@ -14,11 +13,15 @@ extern "C" {
 #endif
 
 #define SNT_RUNTIME_ABI_MAJOR 1u
-#define SNT_RUNTIME_ABI_MINOR 0u
+#define SNT_RUNTIME_ABI_MINOR 1u
 
 typedef uint64_t SntRuntimeAbiCapabilities;
 enum {
     SNT_RUNTIME_ABI_CAPABILITY_DESCRIPTOR_QUERY = UINT64_C(1) << 0,
+    SNT_RUNTIME_ABI_CAPABILITY_HASH_FNV1A64 = UINT64_C(1) << 1,
+    SNT_RUNTIME_ABI_CAPABILITY_HOST_LIFECYCLE = UINT64_C(1) << 2,
+    SNT_RUNTIME_ABI_CAPABILITY_DETERMINISTIC_COMMANDS = UINT64_C(1) << 3,
+    SNT_RUNTIME_ABI_CAPABILITY_RENDER_SNAPSHOT_LEASES = UINT64_C(1) << 4,
 };
 
 // The caller initializes struct_size to its allocated byte count. The ABI
@@ -36,17 +39,6 @@ typedef struct SntRuntimeAbiDescriptor {
 #define SNT_RUNTIME_ABI_DESCRIPTOR_INIT \
     { (uint32_t)sizeof(SntRuntimeAbiDescriptor), 0u, 0u, 0u, UINT64_C(0), \
       { UINT64_C(0), UINT64_C(0), UINT64_C(0) } }
-
-// Reserved opaque host identity. Creation and tick operations are intentionally
-// not declared until their game-session ownership and shutdown rules have a
-// complete C value contract.
-typedef struct SntRuntimeHost SntRuntimeHost;
-
-typedef struct SntRuntimeHostCallbacks {
-    uint32_t struct_size;
-    void* user_data;
-    SntAbiLogCallback log;
-} SntRuntimeHostCallbacks;
 
 // Queries the ABI supplied by this linked runtime. The caller must set
 // out_descriptor->struct_size before invoking the function.

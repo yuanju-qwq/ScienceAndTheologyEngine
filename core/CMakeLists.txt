@@ -39,7 +39,10 @@ add_library(snt_core STATIC
     uuid.cpp
 )
 target_include_directories(snt_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(snt_core PUBLIC snt_engine_settings)
+target_link_libraries(snt_core PUBLIC
+    snt_engine_settings
+    snt_abi
+)
 # runtime_config.cpp uses nlohmann_json for JSON parsing. Linked PRIVATE
 # so the dependency doesn't leak to consumers of snt_core (the header
 # itself is dependency-free).

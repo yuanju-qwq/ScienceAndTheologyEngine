@@ -22,12 +22,15 @@
 // table keys but trivially invertible; do not use for authentication
 // or tamper detection. For those, pull in a real SHA-256/blake3 later.
 //
-// Layering: header-only, no deps beyond <cstdint> and <string_view>.
-// Lives in core/ so all engine layers (assets, ecs, scene, network) can
-// share the same hashing convention.
+// Layering: this is the C++ facade for the Zig-owned C ABI implementation.
+// Lives in core/ so all engine layers (assets, ecs, scene, network) keep the
+// established C++ call sites while sharing one native implementation.
 
 #pragma once
 
+#include "abi/hash_abi.h"
+
+#include <cassert>
 #include <cstdint>
 #include <string_view>
 
@@ -48,12 +51,18 @@ namespace snt::core {
 // alike. Collision rate for asset paths (typically <1M entries) is
 // vanishingly small (~1e-12 probability of any collision at 1M keys).
 inline uint64_t hash_string(std::string_view s) noexcept {
-    uint64_t h = 0xcbf29ce484222325ull;  // FNV-1a 64-bit offset basis
-    for (char c : s) {
-        h ^= static_cast<uint64_t>(static_cast<uint8_t>(c));
-        h *= 0x100000001b3ull;            // FNV-1a 64-bit prime
-    }
-    return h;
+    const SntAbiByteView bytes{
+        reinterpret_cast<const uint8_t*>(s.data()),
+        static_cast<uint64_t>(s.size()),
+    };
+    uint64_t hash = 0;
+    const SntAbiStatus status = snt_hash_abi_fnv1a64(bytes, &hash);
+
+    // A valid std::string_view always satisfies the C ABI's pointer/length
+    // contract. Keeping this assertion makes an accidental future contract
+    // violation visible without retaining a second C++ implementation.
+    assert(status == SNT_ABI_STATUS_OK);
+    return hash;
 }
 
 // Combine an existing hash with a new value (boost::hash_combine recipe).
@@ -68,7 +77,7 @@ inline uint64_t hash_string(std::string_view s) noexcept {
 // across the whole output range so multi-field keys don't collide
 // on common suffix patterns.
 inline uint64_t hash_combine(uint64_t seed, uint64_t value) noexcept {
-    return seed ^ (value + 0x9e3779b9ull + (seed << 6) + (seed >> 2));
+    return snt_hash_abi_combine(seed, value);
 }
 
 }  // namespace snt::core
