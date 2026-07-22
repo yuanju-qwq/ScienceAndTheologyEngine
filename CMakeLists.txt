@@ -73,6 +73,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/fetch_third_party.cmake)
 #                         -> voxel data/storage -> core
 add_subdirectory(platform)
 add_subdirectory(core)
+add_subdirectory(abi)          # language-neutral C ABI discovery/value contracts
 add_subdirectory(network)      # transport-neutral replication + direct sockets
 add_subdirectory(input)
 add_subdirectory(render_backend)
@@ -99,6 +100,11 @@ snt_register_engine_module(
     TARGET snt_core
     INCLUDE_PREFIXES core
     SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/core"
+)
+snt_register_engine_module(
+    TARGET snt_abi
+    INCLUDE_PREFIXES abi
+    SOURCE_DIRS "${SNT_ENGINE_SOURCE_DIR}/abi"
 )
 snt_register_engine_module(
     TARGET snt_network

@@ -16,6 +16,8 @@ endif()
 add_executable(snt_tests
     test_main.cpp              # GoogleTest main entry (no TEST()s here)
     test_runtime_config.cpp
+    test_abi_contract.cpp        # C-compatible runtime and render snapshot ABI
+    test_abi_c_smoke.c           # compile/link the public ABI from a C TU
     test_simulation_runtime_observer.cpp  # simulation observer value contract
     test_clock.cpp
     test_path_utils.cpp
@@ -43,6 +45,7 @@ target_compile_definitions(snt_tests PRIVATE
     SNT_ENGINE_TEST_ROOT="${SNT_ENGINE_SOURCE_DIR}"
 )
 target_link_libraries(snt_tests PRIVATE
+    snt_abi
     snt_core
     snt_ecs
     snt_asset_content
