@@ -7,4 +7,5 @@ comptime {
     _ = @import("hash.zig");
     _ = @import("runtime_host.zig");
     _ = @import("runtime_key_index.zig");
+    _ = @import("uuid.zig");
 }

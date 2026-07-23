@@ -16,12 +16,10 @@
 // Layout: two uint64_t fields (low, high). Trivially copyable, so it
 // serializes as two write_u64 calls (see Serializer<Uuid> below).
 //
-// Generation: UuidGenerator issues monotonic Uuids by combining a
-// 128-bit random seed (high + low) with a per-generator counter. Two
-// generators constructed in the same process get different seeds, so
-// their Uuids never collide. The seed mixes steady_clock ticks with
-// std::random_device draws (same approach as EntityGuidGenerator, but
-// expanded to 128 bits).
+// Generation: UuidGenerator gathers host entropy in its C++ adapter, then
+// delegates seed mixing, counter state, and UUID packing to the Zig-owned
+// C ABI. Two generators constructed in the same process get different seeds,
+// so their Uuids never collide without C++ retaining a second algorithm.
 //
 // Thread-safety: NOT thread-safe. Issue from a single thread (typically
 // the main thread during scene/asset loading). Worker threads that need
@@ -32,6 +30,8 @@
 // ECS layer.
 
 #pragma once
+
+#include "abi/uuid_abi.h"
 
 #include <cstdint>
 #include <functional>  // std::hash
@@ -88,16 +88,9 @@ public:
     void reset_counter(uint64_t first);
 
 private:
-    // 128-bit seed. `seed_low_` is XOR-folded into the counter half of
-    // each issued Uuid so two generators with adjacent counters still
-    // produce disjoint Uuids.
-    uint64_t seed_high_ = 0;
-    uint64_t seed_low_  = 0;
-    uint64_t counter_   = 0;  // next issued Uuid uses counter + 1
-
-    // Pack seed + counter into a Uuid. Counter 0 is reserved as
-    // invalid (kInvalidUuid), so the first issued Uuid uses counter=1.
-    Uuid pack() const;
+    // C++ owns only the value storage needed by existing call sites. Zig
+    // owns the state representation semantics and every state transition.
+    SntUuidGeneratorState state_ = SNT_UUID_GENERATOR_STATE_INIT;
 };
 
 }  // namespace snt::core

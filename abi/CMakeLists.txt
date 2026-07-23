@@ -21,12 +21,14 @@ snt_add_zig_static_library(
         "${SNT_ENGINE_SOURCE_DIR}/zig/hash.zig"
         "${SNT_ENGINE_SOURCE_DIR}/zig/runtime_host.zig"
         "${SNT_ENGINE_SOURCE_DIR}/zig/runtime_key_index.zig"
+        "${SNT_ENGINE_SOURCE_DIR}/zig/uuid.zig"
         "${SNT_ENGINE_SOURCE_DIR}/abi/abi_common.h"
         "${SNT_ENGINE_SOURCE_DIR}/abi/hash_abi.h"
         "${SNT_ENGINE_SOURCE_DIR}/abi/render_snapshot_abi.h"
         "${SNT_ENGINE_SOURCE_DIR}/abi/runtime_abi.h"
         "${SNT_ENGINE_SOURCE_DIR}/abi/runtime_host_abi.h"
         "${SNT_ENGINE_SOURCE_DIR}/abi/runtime_key_index_abi.h"
+        "${SNT_ENGINE_SOURCE_DIR}/abi/uuid_abi.h"
 )
 
 get_property(_snt_abi_archive TARGET snt_abi PROPERTY SNT_ZIG_ARCHIVE)
@@ -65,6 +67,16 @@ if(SNT_BUILD_TESTS)
             --global-cache-dir "${CMAKE_BINARY_DIR}/zig-global-cache"
     )
     add_test(
+        NAME ZigUuid.NativeContract
+        COMMAND "${SNT_ZIG_EXECUTABLE}" test "${SNT_ENGINE_SOURCE_DIR}/zig/uuid.zig"
+            -O Debug
+            ${_snt_zig_test_target_arguments}
+            -I "${SNT_ENGINE_SOURCE_DIR}"
+            -lc
+            --cache-dir "${CMAKE_CURRENT_BINARY_DIR}/zig-uuid-test-cache"
+            --global-cache-dir "${CMAKE_BINARY_DIR}/zig-global-cache"
+    )
+    add_test(
         NAME ZigAbi.ConsumerStaticLink
         COMMAND "${SNT_ZIG_EXECUTABLE}" test
             -O Debug
@@ -91,5 +103,9 @@ if(SNT_BUILD_TESTS)
     set_tests_properties(ZigRuntimeKeyIndex.NativeContract PROPERTIES
         ENVIRONMENT
             "ZIG_GLOBAL_CACHE_DIR=${CMAKE_BINARY_DIR}/zig-global-cache;ZIG_LOCAL_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/zig-runtime-key-index-test-cache"
+    )
+    set_tests_properties(ZigUuid.NativeContract PROPERTIES
+        ENVIRONMENT
+            "ZIG_GLOBAL_CACHE_DIR=${CMAKE_BINARY_DIR}/zig-global-cache;ZIG_LOCAL_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/zig-uuid-test-cache"
     )
 endif()

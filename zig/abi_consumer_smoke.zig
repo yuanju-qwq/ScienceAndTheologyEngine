@@ -7,6 +7,7 @@ const c = @cImport({
     @cInclude("abi/runtime_abi.h");
     @cInclude("abi/runtime_host_abi.h");
     @cInclude("abi/runtime_key_index_abi.h");
+    @cInclude("abi/uuid_abi.h");
 });
 
 test "one snt_abi archive serves a Zig C ABI consumer" {
@@ -22,7 +23,8 @@ test "one snt_abi archive serves a Zig C ABI consumer" {
             c.SNT_RUNTIME_ABI_CAPABILITY_HOST_LIFECYCLE |
             c.SNT_RUNTIME_ABI_CAPABILITY_DETERMINISTIC_COMMANDS |
             c.SNT_RUNTIME_ABI_CAPABILITY_RENDER_SNAPSHOT_LEASES |
-            c.SNT_RUNTIME_ABI_CAPABILITY_RUNTIME_KEY_INDEX_SNAPSHOTS),
+            c.SNT_RUNTIME_ABI_CAPABILITY_RUNTIME_KEY_INDEX_SNAPSHOTS |
+            c.SNT_RUNTIME_ABI_CAPABILITY_UUID_GENERATOR),
         descriptor.capabilities,
     );
 
@@ -61,4 +63,21 @@ test "one snt_abi archive serves a Zig C ABI consumer" {
     );
     try std.testing.expect(key_index != null);
     c.snt_runtime_key_index_destroy(key_index);
+
+    var uuid_entropy = std.mem.zeroes(c.SntUuidGeneratorEntropy);
+    uuid_entropy.struct_size = @sizeOf(c.SntUuidGeneratorEntropy);
+    uuid_entropy.steady_clock_ticks = 0x1122334455667788;
+    uuid_entropy.random_words = .{ 1, 2, 3, 4 };
+    var uuid_state = std.mem.zeroes(c.SntUuidGeneratorState);
+    uuid_state.struct_size = @sizeOf(c.SntUuidGeneratorState);
+    var uuid = c.SntUuid{ .low = 0, .high = 0 };
+    try std.testing.expectEqual(
+        @as(c_uint, c.SNT_ABI_STATUS_OK),
+        c.snt_uuid_generator_initialize(&uuid_state, &uuid_entropy),
+    );
+    try std.testing.expectEqual(
+        @as(c_uint, c.SNT_ABI_STATUS_OK),
+        c.snt_uuid_generator_next(&uuid_state, &uuid),
+    );
+    try std.testing.expect(uuid.low != 0 or uuid.high != 0);
 }

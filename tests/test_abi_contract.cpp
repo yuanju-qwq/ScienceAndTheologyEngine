@@ -3,6 +3,7 @@
 #include "abi/runtime_abi.h"
 #include "abi/runtime_host_abi.h"
 #include "abi/runtime_key_index_abi.h"
+#include "abi/uuid_abi.h"
 
 #include <gtest/gtest.h>
 
@@ -20,6 +21,7 @@ extern "C" SntAbiStatus snt_abi_c_smoke_hash(
 extern "C" SntAbiStatus snt_abi_c_smoke_create_host_contract(SntRuntimeHost** out_host);
 extern "C" SntAbiStatus snt_abi_c_smoke_create_runtime_key_index_contract(
     SntRuntimeKeyIndex** out_index);
+extern "C" SntAbiStatus snt_abi_c_smoke_uuid_generate(SntUuid* out_uuid);
 
 namespace {
 
@@ -352,7 +354,8 @@ TEST(RuntimeAbi, DescriptorCanBeQueriedByCConsumer) {
         SNT_RUNTIME_ABI_CAPABILITY_HOST_LIFECYCLE |
         SNT_RUNTIME_ABI_CAPABILITY_DETERMINISTIC_COMMANDS |
         SNT_RUNTIME_ABI_CAPABILITY_RENDER_SNAPSHOT_LEASES |
-        SNT_RUNTIME_ABI_CAPABILITY_RUNTIME_KEY_INDEX_SNAPSHOTS;
+        SNT_RUNTIME_ABI_CAPABILITY_RUNTIME_KEY_INDEX_SNAPSHOTS |
+        SNT_RUNTIME_ABI_CAPABILITY_UUID_GENERATOR;
 
     ASSERT_EQ(snt_abi_c_smoke_query(&descriptor), SNT_ABI_STATUS_OK);
     EXPECT_EQ(descriptor.abi_major, SNT_RUNTIME_ABI_MAJOR);
@@ -393,6 +396,62 @@ TEST(RuntimeKeyIndexAbi, CConsumerCanCreateTheZigOwnedIndex) {
     ASSERT_EQ(snt_abi_c_smoke_create_runtime_key_index_contract(&index), SNT_ABI_STATUS_OK);
     ASSERT_NE(index, nullptr);
     snt_runtime_key_index_destroy(index);
+}
+
+TEST(UuidAbi, CConsumerCanIssueUuidFromTheZigStateMachine) {
+    SntUuid uuid = SNT_UUID_INIT;
+
+    ASSERT_EQ(snt_abi_c_smoke_uuid_generate(&uuid), SNT_ABI_STATUS_OK);
+    EXPECT_TRUE(uuid.low != 0u || uuid.high != 0u);
+    EXPECT_EQ(snt_abi_c_smoke_uuid_generate(nullptr), SNT_ABI_STATUS_INVALID_ARGUMENT);
+}
+
+TEST(UuidAbi, DeterministicallyOwnsStateTransitions) {
+    SntUuidGeneratorEntropy entropy = SNT_UUID_GENERATOR_ENTROPY_INIT;
+    entropy.steady_clock_ticks = UINT64_C(0x1122334455667788);
+    entropy.random_words[0] = 1u;
+    entropy.random_words[1] = 2u;
+    entropy.random_words[2] = 3u;
+    entropy.random_words[3] = 4u;
+
+    SntUuidGeneratorState state = SNT_UUID_GENERATOR_STATE_INIT;
+    SntUuidGeneratorState matching_state = SNT_UUID_GENERATOR_STATE_INIT;
+    ASSERT_EQ(snt_uuid_generator_initialize(&state, &entropy), SNT_ABI_STATUS_OK);
+    ASSERT_EQ(snt_uuid_generator_initialize(&matching_state, &entropy), SNT_ABI_STATUS_OK);
+
+    SntUuid first = SNT_UUID_INIT;
+    SntUuid matching_first = SNT_UUID_INIT;
+    ASSERT_EQ(snt_uuid_generator_next(&state, &first), SNT_ABI_STATUS_OK);
+    ASSERT_EQ(snt_uuid_generator_next(&matching_state, &matching_first), SNT_ABI_STATUS_OK);
+    EXPECT_EQ(first.low, matching_first.low);
+    EXPECT_EQ(first.high, matching_first.high);
+
+    SntUuid peeked = SNT_UUID_INIT;
+    SntUuid next = SNT_UUID_INIT;
+    ASSERT_EQ(snt_uuid_generator_peek_next(&state, &peeked), SNT_ABI_STATUS_OK);
+    ASSERT_EQ(snt_uuid_generator_next(&state, &next), SNT_ABI_STATUS_OK);
+    EXPECT_EQ(peeked.low, next.low);
+    EXPECT_EQ(peeked.high, next.high);
+
+    ASSERT_EQ(snt_uuid_generator_reset_counter(&state, UINT64_C(100)), SNT_ABI_STATUS_OK);
+    SntUuid after_reset = SNT_UUID_INIT;
+    ASSERT_EQ(snt_uuid_generator_next(&state, &after_reset), SNT_ABI_STATUS_OK);
+    EXPECT_EQ(after_reset.high, first.high);
+    EXPECT_EQ(after_reset.low ^ UINT64_C(101), first.low ^ UINT64_C(1));
+
+    SntUuidGeneratorState sentinel_edge_state = SNT_UUID_GENERATOR_STATE_INIT;
+    sentinel_edge_state.seed_low = UINT64_C(1);
+    SntUuid sentinel_edge_uuid = SNT_UUID_INIT;
+    ASSERT_EQ(snt_uuid_generator_reset_counter(&sentinel_edge_state, 0), SNT_ABI_STATUS_OK);
+    ASSERT_EQ(snt_uuid_generator_next(&sentinel_edge_state, &sentinel_edge_uuid),
+              SNT_ABI_STATUS_OK);
+    EXPECT_TRUE(sentinel_edge_uuid.low != 0u || sentinel_edge_uuid.high != 0u);
+    EXPECT_EQ(sentinel_edge_uuid.low, UINT64_C(3));
+    EXPECT_EQ(sentinel_edge_state.counter, UINT64_C(2));
+
+    SntUuidGeneratorState uninitialized = SNT_UUID_GENERATOR_STATE_INIT;
+    EXPECT_EQ(snt_uuid_generator_next(&uninitialized, &after_reset), SNT_ABI_STATUS_INVALID_STATE);
+    EXPECT_EQ(snt_uuid_generator_next(nullptr, &after_reset), SNT_ABI_STATUS_INVALID_ARGUMENT);
 }
 
 TEST(RuntimeKeyIndexAbi, CopiesKeysAndKeepsAcquiredSnapshotAliveAfterIndexDestruction) {

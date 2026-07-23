@@ -3,6 +3,7 @@
 #include "abi/runtime_abi.h"
 #include "abi/runtime_host_abi.h"
 #include "abi/runtime_key_index_abi.h"
+#include "abi/uuid_abi.h"
 
 #include <stdint.h>
 
@@ -106,4 +107,22 @@ SntAbiStatus snt_abi_c_smoke_create_runtime_key_index_contract(
 
     if (out_index == 0) return SNT_ABI_STATUS_INVALID_ARGUMENT;
     return snt_runtime_key_index_create(&create_info, out_index);
+}
+
+SntAbiStatus snt_abi_c_smoke_uuid_generate(SntUuid* out_uuid) {
+    SntUuidGeneratorEntropy entropy = SNT_UUID_GENERATOR_ENTROPY_INIT;
+    SntUuidGeneratorState state = SNT_UUID_GENERATOR_STATE_INIT;
+    SntAbiStatus status;
+
+    if (out_uuid == 0) return SNT_ABI_STATUS_INVALID_ARGUMENT;
+
+    entropy.steady_clock_ticks = UINT64_C(0x1122334455667788);
+    entropy.random_words[0] = 1u;
+    entropy.random_words[1] = 2u;
+    entropy.random_words[2] = 3u;
+    entropy.random_words[3] = 4u;
+
+    status = snt_uuid_generator_initialize(&state, &entropy);
+    if (status != SNT_ABI_STATUS_OK) return status;
+    return snt_uuid_generator_next(&state, out_uuid);
 }

@@ -13,7 +13,7 @@ extern "C" {
 #endif
 
 #define SNT_RUNTIME_ABI_MAJOR 1u
-#define SNT_RUNTIME_ABI_MINOR 3u
+#define SNT_RUNTIME_ABI_MINOR 4u
 
 typedef uint64_t SntRuntimeAbiCapabilities;
 enum {
@@ -23,6 +23,7 @@ enum {
     SNT_RUNTIME_ABI_CAPABILITY_DETERMINISTIC_COMMANDS = UINT64_C(1) << 3,
     SNT_RUNTIME_ABI_CAPABILITY_RENDER_SNAPSHOT_LEASES = UINT64_C(1) << 4,
     SNT_RUNTIME_ABI_CAPABILITY_RUNTIME_KEY_INDEX_SNAPSHOTS = UINT64_C(1) << 5,
+    SNT_RUNTIME_ABI_CAPABILITY_UUID_GENERATOR = UINT64_C(1) << 6,
 };
 
 // The caller initializes struct_size to its allocated byte count. The ABI
