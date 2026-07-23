@@ -1,93 +1,199 @@
-// Deterministic StringKey-to-runtime-ID index implementation.
+// C++ facade for the Zig-owned deterministic StringKey-to-runtime-ID index.
 
+#define SNT_LOG_CHANNEL "runtime_key_index"
 #include "runtime_key_index.h"
 
-#include <algorithm>
 #include <limits>
-#include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "core/error.h"
+#include "core/log.h"
 
 namespace snt::core {
+namespace {
 
-struct RuntimeKeyIndex::Data {
-    // IDs are assigned from a sorted vector during rebuild. Lookup itself is
-    // an average O(1) boundary operation; workers retain the resulting ID.
-    std::unordered_map<std::string, RuntimeKeyId> ids_by_key;
-    // Index zero is the invalid-ID sentinel. Every valid ID can therefore be
-    // used directly as an array index for reverse lookup.
-    std::vector<std::string> keys_by_id{std::string{}};
-    uint64_t generation = 0;
-};
+SntAbiByteView byte_view(std::string_view value) noexcept {
+    return {reinterpret_cast<const uint8_t*>(value.data()),
+            static_cast<uint64_t>(value.size())};
+}
 
-RuntimeKeyIndex::RuntimeKeyIndex() : data_(std::make_shared<Data>()) {}
+ErrorCode error_code_for_status(SntAbiStatus status) noexcept {
+    switch (status) {
+    case SNT_ABI_STATUS_INVALID_ARGUMENT:
+    case SNT_ABI_STATUS_INCOMPATIBLE_VERSION:
+        return ErrorCode::kInvalidArgument;
+    case SNT_ABI_STATUS_INVALID_STATE:
+    case SNT_ABI_STATUS_NOT_READY:
+        return ErrorCode::kInvalidState;
+    default:
+        return ErrorCode::kUnknown;
+    }
+}
+
+void forward_abi_log(void*,
+                     SntAbiLogSeverity severity,
+                     const char* channel,
+                     const char* message) noexcept {
+    try {
+        LogLevel level = LogLevel::kError;
+        switch (severity) {
+        case SNT_ABI_LOG_TRACE:
+            level = LogLevel::kTrace;
+            break;
+        case SNT_ABI_LOG_DEBUG:
+            level = LogLevel::kDebug;
+            break;
+        case SNT_ABI_LOG_INFO:
+            level = LogLevel::kInfo;
+            break;
+        case SNT_ABI_LOG_WARN:
+            level = LogLevel::kWarn;
+            break;
+        case SNT_ABI_LOG_ERROR:
+            level = LogLevel::kError;
+            break;
+        case SNT_ABI_LOG_FATAL:
+            level = LogLevel::kFatal;
+            break;
+        default:
+            break;
+        }
+        Logger::instance().log(level,
+                               channel != nullptr ? channel : SNT_LOG_CHANNEL,
+                               "%s",
+                               message != nullptr ? message : "Zig runtime key-index diagnostic");
+    } catch (...) {
+        // No C++ exception may cross the Zig C callback boundary.
+    }
+}
+
+void log_snapshot_retain_failure(SntAbiStatus status) noexcept {
+    SNT_LOG_ERROR("Zig snapshot retain failed: %s", snt_abi_status_message(status));
+}
+
+}  // namespace
+
+RuntimeKeyIndex::Snapshot::Snapshot(const Snapshot& other) noexcept {
+    if (other.handle_ == nullptr) return;
+    const SntAbiStatus status = snt_runtime_key_index_snapshot_retain(other.handle_);
+    if (status == SNT_ABI_STATUS_OK) {
+        handle_ = other.handle_;
+    } else {
+        log_snapshot_retain_failure(status);
+    }
+}
+
+RuntimeKeyIndex::Snapshot& RuntimeKeyIndex::Snapshot::operator=(const Snapshot& other) noexcept {
+    if (this == &other) return *this;
+    if (other.handle_ != nullptr) {
+        const SntAbiStatus status = snt_runtime_key_index_snapshot_retain(other.handle_);
+        if (status != SNT_ABI_STATUS_OK) {
+            log_snapshot_retain_failure(status);
+            return *this;
+        }
+    }
+    if (handle_ != nullptr) snt_runtime_key_index_snapshot_release(handle_);
+    handle_ = other.handle_;
+    return *this;
+}
+
+RuntimeKeyIndex::Snapshot::Snapshot(Snapshot&& other) noexcept
+    : handle_(std::exchange(other.handle_, nullptr)) {}
+
+RuntimeKeyIndex::Snapshot& RuntimeKeyIndex::Snapshot::operator=(Snapshot&& other) noexcept {
+    if (this == &other) return *this;
+    if (handle_ != nullptr) snt_runtime_key_index_snapshot_release(handle_);
+    handle_ = std::exchange(other.handle_, nullptr);
+    return *this;
+}
+
+RuntimeKeyIndex::Snapshot::~Snapshot() {
+    if (handle_ != nullptr) snt_runtime_key_index_snapshot_release(handle_);
+}
 
 std::optional<RuntimeKeyId> RuntimeKeyIndex::Snapshot::find_id(
     std::string_view key) const noexcept {
-    if (!data_) return std::nullopt;
-    const auto found = data_->ids_by_key.find(std::string{key});
-    if (found == data_->ids_by_key.end()) return std::nullopt;
-    return found->second;
+    if (handle_ == nullptr) return std::nullopt;
+    RuntimeKeyId id = kInvalidRuntimeKeyId;
+    if (snt_runtime_key_index_snapshot_find_id(handle_, byte_view(key), &id) !=
+            SNT_ABI_STATUS_OK ||
+        id == kInvalidRuntimeKeyId) {
+        return std::nullopt;
+    }
+    return id;
 }
 
 std::optional<std::string_view> RuntimeKeyIndex::Snapshot::find_key(
     RuntimeKeyId id) const noexcept {
-    if (!data_ || id == kInvalidRuntimeKeyId ||
-        id >= data_->keys_by_id.size()) {
+    if (handle_ == nullptr) return std::nullopt;
+    SntAbiByteView key{nullptr, 0u};
+    if (snt_runtime_key_index_snapshot_find_key(handle_, id, &key) != SNT_ABI_STATUS_OK ||
+        key.data == nullptr) {
         return std::nullopt;
     }
-    return data_->keys_by_id[id];
+    return std::string_view{reinterpret_cast<const char*>(key.data),
+                            static_cast<size_t>(key.size_bytes)};
 }
 
 uint64_t RuntimeKeyIndex::Snapshot::generation() const noexcept {
-    return data_ ? data_->generation : 0;
+    if (handle_ == nullptr) return 0;
+    SntRuntimeKeyIndexSnapshotInfo info = SNT_RUNTIME_KEY_INDEX_SNAPSHOT_INFO_INIT;
+    return snt_runtime_key_index_snapshot_query(handle_, &info) == SNT_ABI_STATUS_OK
+               ? info.generation
+               : 0;
 }
 
 size_t RuntimeKeyIndex::Snapshot::size() const noexcept {
-    return data_ ? data_->ids_by_key.size() : 0;
+    if (handle_ == nullptr) return 0;
+    SntRuntimeKeyIndexSnapshotInfo info = SNT_RUNTIME_KEY_INDEX_SNAPSHOT_INFO_INIT;
+    if (snt_runtime_key_index_snapshot_query(handle_, &info) != SNT_ABI_STATUS_OK ||
+        info.key_count > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        return 0;
+    }
+    return static_cast<size_t>(info.key_count);
+}
+
+RuntimeKeyIndex::RuntimeKeyIndex() {
+    SntRuntimeKeyIndexCreateInfo create_info = SNT_RUNTIME_KEY_INDEX_CREATE_INFO_INIT;
+    create_info.log = forward_abi_log;
+    const SntAbiStatus status = snt_runtime_key_index_create(&create_info, &handle_);
+    if (status != SNT_ABI_STATUS_OK || handle_ == nullptr) {
+        handle_ = nullptr;
+        SNT_LOG_ERROR("Zig runtime key-index create failed: %s", snt_abi_status_message(status));
+    }
+}
+
+RuntimeKeyIndex::~RuntimeKeyIndex() {
+    if (handle_ != nullptr) snt_runtime_key_index_destroy(handle_);
 }
 
 Expected<void> RuntimeKeyIndex::rebuild(std::span<const std::string_view> keys) {
-    if (keys.size() > static_cast<size_t>(std::numeric_limits<RuntimeKeyId>::max())) {
-        return Error{ErrorCode::kInvalidArgument,
-                     "Runtime key index contains more keys than its ID domain"};
-    }
-    if (data_ && data_->generation == std::numeric_limits<uint64_t>::max()) {
-        return Error{ErrorCode::kInvalidState,
-                     "Runtime key index generation is exhausted"};
+    if (handle_ == nullptr) {
+        return Error{ErrorCode::kInvalidState, "Runtime key index is not initialized"};
     }
 
-    std::vector<std::string> sorted_keys;
-    sorted_keys.reserve(keys.size());
+    std::vector<SntAbiByteView> abi_keys;
+    abi_keys.reserve(keys.size());
     for (const std::string_view key : keys) {
-        if (key.empty() || key.find('\0') != std::string_view::npos) {
-            return Error{ErrorCode::kInvalidArgument,
-                         "Runtime key index keys must be non-empty and contain no null character"};
-        }
-        sorted_keys.emplace_back(key);
-    }
-    std::sort(sorted_keys.begin(), sorted_keys.end());
-    const auto duplicate = std::adjacent_find(sorted_keys.begin(), sorted_keys.end());
-    if (duplicate != sorted_keys.end()) {
-        return Error{ErrorCode::kInvalidArgument,
-                     "Runtime key index keys must be unique"};
+        abi_keys.push_back(byte_view(key));
     }
 
-    // Build all owned storage before replacing data_. Any validation or
-    // allocation failure above leaves the old immutable snapshot available.
-    auto candidate = std::make_shared<Data>();
-    candidate->keys_by_id.reserve(sorted_keys.size() + 1);
-    for (const std::string& key : sorted_keys) {
-        const auto id = static_cast<RuntimeKeyId>(candidate->keys_by_id.size());
-        candidate->ids_by_key.emplace(key, id);
-        candidate->keys_by_id.push_back(key);
+    const SntAbiStatus status = snt_runtime_key_index_rebuild(
+        handle_, abi_keys.empty() ? nullptr : abi_keys.data(), static_cast<uint64_t>(abi_keys.size()));
+    if (status == SNT_ABI_STATUS_OK) return {};
+
+    return Error{error_code_for_status(status), snt_abi_status_message(status)};
+}
+
+RuntimeKeyIndex::Snapshot RuntimeKeyIndex::snapshot() const noexcept {
+    if (handle_ == nullptr) return {};
+    SntRuntimeKeyIndexSnapshot* snapshot_handle = nullptr;
+    if (snt_runtime_key_index_acquire_snapshot(handle_, &snapshot_handle) != SNT_ABI_STATUS_OK ||
+        snapshot_handle == nullptr) {
+        return {};
     }
-    candidate->generation = data_ ? data_->generation + 1 : 1;
-    data_ = std::move(candidate);
-    return {};
+    return Snapshot(snapshot_handle);
 }
 
 std::optional<RuntimeKeyId> RuntimeKeyIndex::find_id(std::string_view key) const noexcept {
@@ -106,8 +212,13 @@ size_t RuntimeKeyIndex::size() const noexcept {
     return snapshot().size();
 }
 
-void RuntimeKeyIndex::restore(Snapshot snapshot) noexcept {
-    if (snapshot.data_) data_ = std::move(snapshot.data_);
+void RuntimeKeyIndex::restore(const Snapshot& snapshot) noexcept {
+    if (handle_ == nullptr || snapshot.handle_ == nullptr) return;
+    const SntAbiStatus status =
+        snt_runtime_key_index_restore_snapshot(handle_, snapshot.handle_);
+    if (status != SNT_ABI_STATUS_OK) {
+        SNT_LOG_ERROR("Zig runtime key-index restore failed: %s", snt_abi_status_message(status));
+    }
 }
 
 }  // namespace snt::core

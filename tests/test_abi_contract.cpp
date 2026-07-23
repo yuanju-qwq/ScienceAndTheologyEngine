@@ -2,6 +2,7 @@
 #include "abi/render_snapshot_abi.h"
 #include "abi/runtime_abi.h"
 #include "abi/runtime_host_abi.h"
+#include "abi/runtime_key_index_abi.h"
 
 #include <gtest/gtest.h>
 
@@ -17,6 +18,8 @@ extern "C" SntAbiStatus snt_abi_c_smoke_hash(
     uint64_t text_size,
     uint64_t* out_hash);
 extern "C" SntAbiStatus snt_abi_c_smoke_create_host_contract(SntRuntimeHost** out_host);
+extern "C" SntAbiStatus snt_abi_c_smoke_create_runtime_key_index_contract(
+    SntRuntimeKeyIndex** out_index);
 
 namespace {
 
@@ -348,7 +351,8 @@ TEST(RuntimeAbi, DescriptorCanBeQueriedByCConsumer) {
         SNT_RUNTIME_ABI_CAPABILITY_HASH_FNV1A64 |
         SNT_RUNTIME_ABI_CAPABILITY_HOST_LIFECYCLE |
         SNT_RUNTIME_ABI_CAPABILITY_DETERMINISTIC_COMMANDS |
-        SNT_RUNTIME_ABI_CAPABILITY_RENDER_SNAPSHOT_LEASES;
+        SNT_RUNTIME_ABI_CAPABILITY_RENDER_SNAPSHOT_LEASES |
+        SNT_RUNTIME_ABI_CAPABILITY_RUNTIME_KEY_INDEX_SNAPSHOTS;
 
     ASSERT_EQ(snt_abi_c_smoke_query(&descriptor), SNT_ABI_STATUS_OK);
     EXPECT_EQ(descriptor.abi_major, SNT_RUNTIME_ABI_MAJOR);
@@ -381,6 +385,82 @@ TEST(RenderSnapshotAbi, IsCCompatibleValueOnlyContract) {
     EXPECT_EQ(lease.struct_size, sizeof(SntRenderSnapshotLease));
     EXPECT_EQ(lease.lease_id, SNT_RENDER_SNAPSHOT_LEASE_INVALID);
     EXPECT_EQ(lease.snapshot.struct_size, sizeof(SntRenderSnapshotView));
+}
+
+TEST(RuntimeKeyIndexAbi, CConsumerCanCreateTheZigOwnedIndex) {
+    SntRuntimeKeyIndex* index = nullptr;
+
+    ASSERT_EQ(snt_abi_c_smoke_create_runtime_key_index_contract(&index), SNT_ABI_STATUS_OK);
+    ASSERT_NE(index, nullptr);
+    snt_runtime_key_index_destroy(index);
+}
+
+TEST(RuntimeKeyIndexAbi, CopiesKeysAndKeepsAcquiredSnapshotAliveAfterIndexDestruction) {
+    SntRuntimeKeyIndexCreateInfo create_info = SNT_RUNTIME_KEY_INDEX_CREATE_INFO_INIT;
+    SntRuntimeKeyIndex* index = nullptr;
+    ASSERT_EQ(snt_runtime_key_index_create(&create_info, &index), SNT_ABI_STATUS_OK);
+    ASSERT_NE(index, nullptr);
+
+    std::array<uint8_t, 4> zinc{
+        static_cast<uint8_t>('z'), static_cast<uint8_t>('i'),
+        static_cast<uint8_t>('n'), static_cast<uint8_t>('c'),
+    };
+    const std::array<uint8_t, 8> charcoal{
+        static_cast<uint8_t>('c'), static_cast<uint8_t>('h'),
+        static_cast<uint8_t>('a'), static_cast<uint8_t>('r'),
+        static_cast<uint8_t>('c'), static_cast<uint8_t>('o'),
+        static_cast<uint8_t>('a'), static_cast<uint8_t>('l'),
+    };
+    const std::array<uint8_t, 4> iron{
+        static_cast<uint8_t>('i'), static_cast<uint8_t>('r'),
+        static_cast<uint8_t>('o'), static_cast<uint8_t>('n'),
+    };
+    const std::array<SntAbiByteView, 3> keys{
+        byte_view(zinc), byte_view(charcoal), byte_view(iron),
+    };
+    ASSERT_EQ(snt_runtime_key_index_rebuild(
+                  index, keys.data(), static_cast<uint64_t>(keys.size())),
+              SNT_ABI_STATUS_OK);
+    zinc[0] = static_cast<uint8_t>('X');
+
+    SntRuntimeKeyIndexSnapshot* snapshot = nullptr;
+    ASSERT_EQ(snt_runtime_key_index_acquire_snapshot(index, &snapshot), SNT_ABI_STATUS_OK);
+    ASSERT_NE(snapshot, nullptr);
+    ASSERT_EQ(snt_runtime_key_index_snapshot_retain(snapshot), SNT_ABI_STATUS_OK);
+
+    const std::array<SntAbiByteView, 2> duplicate_keys{
+        byte_view(iron), byte_view(iron),
+    };
+    EXPECT_EQ(snt_runtime_key_index_rebuild(
+                  index, duplicate_keys.data(), static_cast<uint64_t>(duplicate_keys.size())),
+              SNT_ABI_STATUS_INVALID_ARGUMENT);
+
+    SntRuntimeKeyIndexSnapshotInfo info = SNT_RUNTIME_KEY_INDEX_SNAPSHOT_INFO_INIT;
+    ASSERT_EQ(snt_runtime_key_index_snapshot_query(snapshot, &info), SNT_ABI_STATUS_OK);
+    EXPECT_EQ(info.generation, 1u);
+    EXPECT_EQ(info.key_count, 3u);
+
+    const std::array<uint8_t, 4> zinc_lookup{
+        static_cast<uint8_t>('z'), static_cast<uint8_t>('i'),
+        static_cast<uint8_t>('n'), static_cast<uint8_t>('c'),
+    };
+    SntRuntimeKeyId zinc_id = SNT_RUNTIME_KEY_ID_INVALID;
+    ASSERT_EQ(snt_runtime_key_index_snapshot_find_id(
+                  snapshot, byte_view(zinc_lookup), &zinc_id),
+              SNT_ABI_STATUS_OK);
+    EXPECT_EQ(zinc_id, 3u);
+
+    snt_runtime_key_index_destroy(index);
+
+    SntAbiByteView found_key{nullptr, 0u};
+    ASSERT_EQ(snt_runtime_key_index_snapshot_find_key(snapshot, zinc_id, &found_key),
+              SNT_ABI_STATUS_OK);
+    ASSERT_NE(found_key.data, nullptr);
+    ASSERT_EQ(found_key.size_bytes, zinc_lookup.size());
+    EXPECT_EQ(std::memcmp(found_key.data, zinc_lookup.data(), zinc_lookup.size()), 0);
+
+    snt_runtime_key_index_snapshot_release(snapshot);
+    snt_runtime_key_index_snapshot_release(snapshot);
 }
 
 TEST(RuntimeHostAbi, ZigHostOwnsDeterministicLifecycleAndSnapshotLeases) {

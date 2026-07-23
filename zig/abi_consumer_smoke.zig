@@ -6,6 +6,7 @@ const c = @cImport({
     @cInclude("abi/hash_abi.h");
     @cInclude("abi/runtime_abi.h");
     @cInclude("abi/runtime_host_abi.h");
+    @cInclude("abi/runtime_key_index_abi.h");
 });
 
 test "one snt_abi archive serves a Zig C ABI consumer" {
@@ -20,7 +21,8 @@ test "one snt_abi archive serves a Zig C ABI consumer" {
             c.SNT_RUNTIME_ABI_CAPABILITY_HASH_FNV1A64 |
             c.SNT_RUNTIME_ABI_CAPABILITY_HOST_LIFECYCLE |
             c.SNT_RUNTIME_ABI_CAPABILITY_DETERMINISTIC_COMMANDS |
-            c.SNT_RUNTIME_ABI_CAPABILITY_RENDER_SNAPSHOT_LEASES),
+            c.SNT_RUNTIME_ABI_CAPABILITY_RENDER_SNAPSHOT_LEASES |
+            c.SNT_RUNTIME_ABI_CAPABILITY_RUNTIME_KEY_INDEX_SNAPSHOTS),
         descriptor.capabilities,
     );
 
@@ -49,4 +51,14 @@ test "one snt_abi archive serves a Zig C ABI consumer" {
         @as(c_uint, c.SNT_ABI_STATUS_INVALID_ARGUMENT),
         c.snt_runtime_host_acquire_render_snapshot(null, &snapshot_lease),
     );
+
+    var key_index_create_info = std.mem.zeroes(c.SntRuntimeKeyIndexCreateInfo);
+    key_index_create_info.struct_size = @sizeOf(c.SntRuntimeKeyIndexCreateInfo);
+    var key_index: ?*c.SntRuntimeKeyIndex = null;
+    try std.testing.expectEqual(
+        @as(c_uint, c.SNT_ABI_STATUS_OK),
+        c.snt_runtime_key_index_create(&key_index_create_info, &key_index),
+    );
+    try std.testing.expect(key_index != null);
+    c.snt_runtime_key_index_destroy(key_index);
 }

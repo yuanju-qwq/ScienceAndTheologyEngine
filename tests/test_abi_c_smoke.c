@@ -2,6 +2,7 @@
 #include "abi/render_snapshot_abi.h"
 #include "abi/runtime_abi.h"
 #include "abi/runtime_host_abi.h"
+#include "abi/runtime_key_index_abi.h"
 
 #include <stdint.h>
 
@@ -97,4 +98,12 @@ SntAbiStatus snt_abi_c_smoke_create_host_contract(SntRuntimeHost** out_host) {
     create_info.session_callbacks.after_fixed_tick = snt_abi_c_smoke_host_fixed_tick;
     create_info.session_callbacks.shutdown = snt_abi_c_smoke_host_shutdown;
     return snt_runtime_host_create(&create_info, out_host);
+}
+
+SntAbiStatus snt_abi_c_smoke_create_runtime_key_index_contract(
+    SntRuntimeKeyIndex** out_index) {
+    SntRuntimeKeyIndexCreateInfo create_info = SNT_RUNTIME_KEY_INDEX_CREATE_INFO_INIT;
+
+    if (out_index == 0) return SNT_ABI_STATUS_INVALID_ARGUMENT;
+    return snt_runtime_key_index_create(&create_info, out_index);
 }

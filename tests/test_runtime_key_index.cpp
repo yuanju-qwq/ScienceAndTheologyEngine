@@ -77,4 +77,36 @@ TEST(RuntimeKeyIndexTest, CapturedSnapshotSurvivesAPublishedReplacement) {
     EXPECT_FALSE(new_snapshot.find_id("zinc"));
 }
 
+TEST(RuntimeKeyIndexTest, RestoreRepublishesTheCapturedZigSnapshot) {
+    RuntimeKeyIndex index;
+    const std::array<std::string_view, 2> initial_keys{"copper", "iron"};
+    ASSERT_TRUE(index.rebuild(initial_keys));
+    const auto captured = index.snapshot();
+
+    const std::array<std::string_view, 2> replacement_keys{"charcoal", "zinc"};
+    ASSERT_TRUE(index.rebuild(replacement_keys));
+    ASSERT_TRUE(index.find_id("zinc"));
+
+    index.restore(captured);
+    const auto restored = index.snapshot();
+    EXPECT_EQ(restored.generation(), captured.generation());
+    EXPECT_TRUE(restored.find_id("copper"));
+    EXPECT_TRUE(restored.find_id("iron"));
+    EXPECT_FALSE(restored.find_id("zinc"));
+}
+
+TEST(RuntimeKeyIndexTest, SnapshotOutlivesItsCxxFacadeOwner) {
+    RuntimeKeyIndex::Snapshot captured;
+    {
+        RuntimeKeyIndex index;
+        const std::array<std::string_view, 2> keys{"copper", "iron"};
+        ASSERT_TRUE(index.rebuild(keys));
+        captured = index.snapshot();
+    }
+
+    EXPECT_EQ(captured.generation(), 1u);
+    EXPECT_EQ(captured.find_id("copper"), 1u);
+    EXPECT_EQ(captured.find_key(2u), std::optional<std::string_view>{"iron"});
+}
+
 }  // namespace

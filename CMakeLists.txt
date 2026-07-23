@@ -60,6 +60,13 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/module_dependency_audit.cmake)
 # fetched via FetchContent from pre-downloaded archives.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/fetch_third_party.cmake)
 
+# ABI modules register native CTest contracts while the module graph is being
+# configured, so enable testing immediately after SNT_BUILD_TESTS is defined.
+# The test executable subdirectory remains below the complete engine graph.
+if(SNT_BUILD_TESTS)
+    enable_testing()
+endif()
+
 # ============================================================
 # Engine modules
 # ============================================================
@@ -286,6 +293,5 @@ add_subdirectory(tools)         # NEW: standalone dev tools (gen_default_scene, 
 # Tests are optional: gated by SNT_BUILD_TESTS (default ON). CI can
 # disable with -DSNT_BUILD_TESTS=OFF to speed up Release builds.
 if(SNT_BUILD_TESTS)
-    enable_testing()
     add_subdirectory(tests)
 endif()
