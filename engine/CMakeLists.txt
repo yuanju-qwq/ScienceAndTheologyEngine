@@ -6,10 +6,12 @@
 
 add_library(snt_simulation_runtime STATIC
     simulation_runtime.cpp
+    zig_simulation_runtime_host.cpp
 )
 target_include_directories(snt_simulation_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(snt_simulation_runtime PUBLIC
     snt_engine_settings
+    snt_abi
     snt_core
     snt_ecs
     snt_asset_content

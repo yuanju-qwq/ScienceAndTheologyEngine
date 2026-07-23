@@ -16,7 +16,11 @@ test "one snt_abi archive serves a Zig C ABI consumer" {
         c.snt_runtime_abi_query_descriptor(&descriptor),
     );
     try std.testing.expectEqual(
-        @as(c_ulonglong, c.SNT_RUNTIME_ABI_CAPABILITY_DESCRIPTOR_QUERY | c.SNT_RUNTIME_ABI_CAPABILITY_HASH_FNV1A64),
+        @as(c_ulonglong, c.SNT_RUNTIME_ABI_CAPABILITY_DESCRIPTOR_QUERY |
+            c.SNT_RUNTIME_ABI_CAPABILITY_HASH_FNV1A64 |
+            c.SNT_RUNTIME_ABI_CAPABILITY_HOST_LIFECYCLE |
+            c.SNT_RUNTIME_ABI_CAPABILITY_DETERMINISTIC_COMMANDS |
+            c.SNT_RUNTIME_ABI_CAPABILITY_RENDER_SNAPSHOT_LEASES),
         descriptor.capabilities,
     );
 

@@ -21,6 +21,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <thread>
@@ -81,6 +82,12 @@ const SimulationStats kStoppedStats{};
 }  // namespace
 
 struct SimulationRuntime::Impl {
+    enum class HostTickPhase : uint8_t {
+        kIdle,
+        kBeforeFixedTickComplete,
+        kFixedSystemsComplete,
+    };
+
     snt::core::RuntimeConfig config;
     std::optional<snt::core::RuntimePathResolver> paths;
     snt::core::RealClock real_clock;
@@ -102,6 +109,8 @@ struct SimulationRuntime::Impl {
     SimulationStats stats;
     uint64_t tick_index = 0;
     std::atomic_bool stop_requested = false;
+    std::optional<FixedTickContext> active_host_tick;
+    HostTickPhase active_host_tick_phase = HostTickPhase::kIdle;
     bool session_started = false;
     bool file_log_sink_open = false;
 };
@@ -291,32 +300,98 @@ snt::core::Expected<void> SimulationRuntime::attach_session(
 }
 
 snt::core::Expected<void> SimulationRuntime::run_one_fixed_tick() {
-    if (!impl_ || !impl_->session || !impl_->services || !impl_->world_session ||
-        !impl_->system_scheduler) {
+    if (!impl_ || impl_->tick_index == std::numeric_limits<uint64_t>::max()) {
         return snt::core::Error{snt::core::ErrorCode::kInvalidState,
                                 "SimulationRuntime fixed tick is unavailable"};
     }
 
-    constexpr float kFixedDeltaSeconds = TickStats::kTickMs / 1000.0f;
-    FixedTickContext context(*this, *impl_->services, *impl_->world_session,
-                             kFixedDeltaSeconds, ++impl_->tick_index);
-    if (auto result = impl_->session->fixed_tick(context); !result) {
-        auto error = result.error();
-        error.with_context("SimulationRuntime::run_one_fixed_tick(session pre-tick)");
-        return error;
-    }
-    if (auto result = impl_->system_scheduler->fixed_tick(impl_->world, kFixedDeltaSeconds);
+    const uint64_t expected_tick = impl_->tick_index + 1u;
+    if (auto result = begin_host_fixed_tick(expected_tick,
+                                            kSimulationFixedTickPeriodNanoseconds);
         !result) {
-        auto error = result.error();
-        error.with_context("SimulationRuntime::run_one_fixed_tick(SystemScheduler)");
-        return error;
+        return result.error();
     }
-    if (auto result = impl_->session->after_fixed_tick(context); !result) {
-        auto error = result.error();
-        error.with_context("SimulationRuntime::run_one_fixed_tick(session post-tick)");
-        return error;
+    if (auto result = run_host_fixed_systems(expected_tick); !result) {
+        return result.error();
+    }
+    if (auto result = finish_host_fixed_tick(expected_tick); !result) {
+        return result.error();
     }
     return {};
+}
+
+snt::core::Expected<void> SimulationRuntime::begin_host_fixed_tick(
+    uint64_t expected_tick,
+    uint64_t period_nanoseconds) {
+    if (!impl_ || !impl_->session || !impl_->services || !impl_->world_session ||
+        !impl_->system_scheduler || impl_->active_host_tick ||
+        period_nanoseconds != kSimulationFixedTickPeriodNanoseconds || expected_tick == 0u ||
+        impl_->tick_index == std::numeric_limits<uint64_t>::max() ||
+        expected_tick != impl_->tick_index + 1u) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "SimulationRuntime cannot begin the requested host fixed tick"};
+    }
+
+    constexpr float kNanosecondsPerSecond = 1000000000.0f;
+    const float delta_seconds = static_cast<float>(period_nanoseconds) / kNanosecondsPerSecond;
+    impl_->tick_index = expected_tick;
+    // FixedTickContext keeps construction private to SimulationRuntime.
+    // Construct it here, then move the value into optional so std::optional
+    // does not need access to that private constructor.
+    impl_->active_host_tick.emplace(FixedTickContext{
+        *this, *impl_->services, *impl_->world_session, delta_seconds, expected_tick});
+    if (auto result = impl_->session->fixed_tick(*impl_->active_host_tick); !result) {
+        auto error = result.error();
+        abort_host_fixed_tick();
+        error.with_context("SimulationRuntime::begin_host_fixed_tick(session pre-tick)");
+        return error;
+    }
+    impl_->active_host_tick_phase = Impl::HostTickPhase::kBeforeFixedTickComplete;
+    return {};
+}
+
+snt::core::Expected<void> SimulationRuntime::run_host_fixed_systems(uint64_t expected_tick) {
+    if (!impl_ || !impl_->active_host_tick ||
+        impl_->active_host_tick_phase != Impl::HostTickPhase::kBeforeFixedTickComplete ||
+        impl_->active_host_tick->tick_index() != expected_tick) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "SimulationRuntime fixed systems are out of host tick order"};
+    }
+
+    if (auto result = impl_->system_scheduler->fixed_tick(
+            impl_->world, impl_->active_host_tick->delta_seconds());
+        !result) {
+        auto error = result.error();
+        abort_host_fixed_tick();
+        error.with_context("SimulationRuntime::run_host_fixed_systems(SystemScheduler)");
+        return error;
+    }
+    impl_->active_host_tick_phase = Impl::HostTickPhase::kFixedSystemsComplete;
+    return {};
+}
+
+snt::core::Expected<void> SimulationRuntime::finish_host_fixed_tick(uint64_t expected_tick) {
+    if (!impl_ || !impl_->active_host_tick ||
+        impl_->active_host_tick_phase != Impl::HostTickPhase::kFixedSystemsComplete ||
+        impl_->active_host_tick->tick_index() != expected_tick) {
+        return snt::core::Error{snt::core::ErrorCode::kInvalidState,
+                                "SimulationRuntime post-tick is out of host tick order"};
+    }
+
+    if (auto result = impl_->session->after_fixed_tick(*impl_->active_host_tick); !result) {
+        auto error = result.error();
+        abort_host_fixed_tick();
+        error.with_context("SimulationRuntime::finish_host_fixed_tick(session post-tick)");
+        return error;
+    }
+    abort_host_fixed_tick();
+    return {};
+}
+
+void SimulationRuntime::abort_host_fixed_tick() noexcept {
+    if (!impl_) return;
+    impl_->active_host_tick.reset();
+    impl_->active_host_tick_phase = Impl::HostTickPhase::kIdle;
 }
 
 snt::core::Expected<void> SimulationRuntime::run_fixed_ticks(uint64_t tick_count) {
@@ -459,6 +534,7 @@ void SimulationRuntime::shutdown_services() noexcept {
 void SimulationRuntime::shutdown() {
     if (!impl_) return;
     request_stop();
+    abort_host_fixed_tick();
     shutdown_session();
     shutdown_execution();
     shutdown_services();

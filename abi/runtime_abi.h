@@ -1,8 +1,8 @@
 // Runtime ABI discovery and capability negotiation contract.
 //
-// Host lifecycle declarations live in runtime_host_abi.h. Their presence in
-// headers does not imply an implementation is linked: consumers must inspect
-// the advertised capability bits before calling an optional host feature.
+// Host lifecycle declarations live in runtime_host_abi.h. The shipped snt_abi
+// archive implements every listed host capability; consumers still negotiate
+// the descriptor before use so an alternate archive can be rejected cleanly.
 
 #pragma once
 
@@ -13,7 +13,7 @@ extern "C" {
 #endif
 
 #define SNT_RUNTIME_ABI_MAJOR 1u
-#define SNT_RUNTIME_ABI_MINOR 1u
+#define SNT_RUNTIME_ABI_MINOR 2u
 
 typedef uint64_t SntRuntimeAbiCapabilities;
 enum {

@@ -93,6 +93,7 @@ SntAbiStatus snt_abi_c_smoke_create_host_contract(SntRuntimeHost** out_host) {
     create_info.session_callbacks.initialize = snt_abi_c_smoke_host_initialize;
     create_info.session_callbacks.apply_command = snt_abi_c_smoke_host_apply_command;
     create_info.session_callbacks.before_fixed_tick = snt_abi_c_smoke_host_fixed_tick;
+    create_info.session_callbacks.run_fixed_systems = snt_abi_c_smoke_host_fixed_tick;
     create_info.session_callbacks.after_fixed_tick = snt_abi_c_smoke_host_fixed_tick;
     create_info.session_callbacks.shutdown = snt_abi_c_smoke_host_shutdown;
     return snt_runtime_host_create(&create_info, out_host);

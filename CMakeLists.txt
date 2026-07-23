@@ -257,12 +257,15 @@ snt_register_engine_module(
         engine/simulation_services.h
         engine/simulation_session.h
         engine/simulation_runtime_observer.h
+        engine/zig_simulation_runtime_host.h
     SOURCE_FILES
         "${SNT_ENGINE_SOURCE_DIR}/engine/simulation_runtime.cpp"
         "${SNT_ENGINE_SOURCE_DIR}/engine/simulation_runtime.h"
         "${SNT_ENGINE_SOURCE_DIR}/engine/simulation_services.h"
         "${SNT_ENGINE_SOURCE_DIR}/engine/simulation_session.h"
         "${SNT_ENGINE_SOURCE_DIR}/engine/simulation_runtime_observer.h"
+        "${SNT_ENGINE_SOURCE_DIR}/engine/zig_simulation_runtime_host.cpp"
+        "${SNT_ENGINE_SOURCE_DIR}/engine/zig_simulation_runtime_host.h"
 )
 snt_register_engine_module(
     TARGET snt_client_runtime

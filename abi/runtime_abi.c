@@ -57,7 +57,10 @@ SntAbiStatus snt_runtime_abi_query_descriptor(
                            sizeof(((SntRuntimeAbiDescriptor*)0)->capabilities))) {
         out_descriptor->capabilities =
             SNT_RUNTIME_ABI_CAPABILITY_DESCRIPTOR_QUERY |
-            SNT_RUNTIME_ABI_CAPABILITY_HASH_FNV1A64;
+            SNT_RUNTIME_ABI_CAPABILITY_HASH_FNV1A64 |
+            SNT_RUNTIME_ABI_CAPABILITY_HOST_LIFECYCLE |
+            SNT_RUNTIME_ABI_CAPABILITY_DETERMINISTIC_COMMANDS |
+            SNT_RUNTIME_ABI_CAPABILITY_RENDER_SNAPSHOT_LEASES;
     }
     return SNT_ABI_STATUS_OK;
 }

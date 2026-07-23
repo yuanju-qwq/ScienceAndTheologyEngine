@@ -57,7 +57,7 @@ function(snt_require_zig_toolchain)
 endfunction()
 
 function(snt_add_zig_static_library)
-    cmake_parse_arguments(SNT_ZIG_LIBRARY "" "TARGET" "SOURCES;INCLUDE_DIRECTORIES;DEPENDS" ${ARGN})
+    cmake_parse_arguments(SNT_ZIG_LIBRARY "LINK_LIBC" "TARGET" "SOURCES;INCLUDE_DIRECTORIES;DEPENDS" ${ARGN})
 
     if(NOT SNT_ZIG_LIBRARY_TARGET OR NOT SNT_ZIG_LIBRARY_SOURCES)
         message(FATAL_ERROR
@@ -93,6 +93,10 @@ function(snt_add_zig_static_library)
     foreach(_snt_zig_include_directory IN LISTS SNT_ZIG_LIBRARY_INCLUDE_DIRECTORIES)
         list(APPEND _snt_zig_include_arguments -I "${_snt_zig_include_directory}")
     endforeach()
+    set(_snt_zig_libc_arguments)
+    if(SNT_ZIG_LIBRARY_LINK_LIBC)
+        list(APPEND _snt_zig_libc_arguments -lc)
+    endif()
     set(_snt_zig_callsite_file "${CMAKE_CURRENT_LIST_FILE}")
 
     add_custom_command(
@@ -104,6 +108,7 @@ function(snt_add_zig_static_library)
             -O "${_snt_zig_optimize}"
             ${_snt_zig_target_arguments}
             ${_snt_zig_include_arguments}
+            ${_snt_zig_libc_arguments}
             --cache-dir "${_snt_zig_cache_directory}"
             --global-cache-dir "${_snt_zig_global_cache_directory}"
             "-femit-bin=${_snt_zig_archive}"

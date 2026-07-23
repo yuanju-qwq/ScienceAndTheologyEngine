@@ -1,7 +1,7 @@
 // Value-only runtime host contract for C, C++, and Zig integration.
 //
 // This boundary owns neither C++ session objects nor Zig internal state.
-// A concrete adapter copies create-time values, owns the opaque host, and
+// The concrete host copies create-time values, owns the opaque handle, and
 // invokes the supplied C callbacks at deterministic lifecycle boundaries.
 
 #pragma once
@@ -126,9 +126,10 @@ typedef SntAbiStatus (*SntRuntimeSessionFixedTickCallback)(
 typedef void (*SntRuntimeSessionShutdownCallback)(void* user_data,
                                                    SntRuntimeHost* host);
 
-// initialize, before_fixed_tick, after_fixed_tick, and shutdown are required.
-// apply_command is optional; an adapter rejects command enqueue when it is
-// absent. Callbacks must not call run_fixed_tick or shutdown reentrantly.
+// initialize, before_fixed_tick, run_fixed_systems, after_fixed_tick, and
+// shutdown are required. apply_command is optional; the host rejects command
+// enqueue when it is absent. Callbacks must not call run_fixed_tick or shutdown
+// reentrantly.
 typedef struct SntRuntimeSessionCallbacks {
     uint32_t struct_size;
     uint32_t reserved;
@@ -136,15 +137,16 @@ typedef struct SntRuntimeSessionCallbacks {
     SntRuntimeSessionInitializeCallback initialize;
     SntRuntimeSessionApplyCommandCallback apply_command;
     SntRuntimeSessionFixedTickCallback before_fixed_tick;
+    SntRuntimeSessionFixedTickCallback run_fixed_systems;
     SntRuntimeSessionFixedTickCallback after_fixed_tick;
     SntRuntimeSessionShutdownCallback shutdown;
 } SntRuntimeSessionCallbacks;
 
 #define SNT_RUNTIME_SESSION_CALLBACKS_INIT \
-    { (uint32_t)sizeof(SntRuntimeSessionCallbacks), 0u, 0, 0, 0, 0, 0, 0 }
+    { (uint32_t)sizeof(SntRuntimeSessionCallbacks), 0u, 0, 0, 0, 0, 0, 0, 0 }
 
 // Create-time values for one deterministic runtime host. flags and reserved
-// fields must be zero in v1. An adapter copies all byte views before create
+// fields must be zero in v1. The host copies all byte views before create
 // returns, then retains only the callback tables and their user_data pointers.
 typedef struct SntRuntimeHostCreateInfo {
     uint32_t struct_size;
@@ -199,8 +201,8 @@ typedef struct SntRuntimeFixedTickResult {
       SNT_RUNTIME_HOST_LIFECYCLE_RUNNING, UINT64_C(0), UINT64_C(0), UINT64_C(0) }
 
 // Creates a host after ABI negotiation. On any failure *out_host is set to
-// null. A host feature is callable only when its descriptor capability bit is
-// set; the declaration may otherwise return SNT_ABI_STATUS_UNSUPPORTED.
+// null. The shipped snt_abi archive advertises the lifecycle, deterministic
+// command, and snapshot-lease capabilities required by this contract.
 SntAbiStatus snt_runtime_host_create(const SntRuntimeHostCreateInfo* create_info,
                                      SntRuntimeHost** out_host);
 
@@ -216,7 +218,7 @@ SntAbiStatus snt_runtime_host_enqueue_command(SntRuntimeHost* host,
 
 // Runs exactly the tick named by expected_tick, which must equal the prior
 // completed tick plus one. The callback order is apply_command (sorted),
-// before_fixed_tick, engine fixed systems, and after_fixed_tick.
+// before_fixed_tick, run_fixed_systems, and after_fixed_tick.
 SntAbiStatus snt_runtime_host_run_fixed_tick(SntRuntimeHost* host,
                                              uint64_t expected_tick,
                                              SntRuntimeFixedTickResult* out_result);
