@@ -1,6 +1,7 @@
 # CMake and IDE build outputs
 build/
 build-*/
+build_*/
 bin/
 lib/
 CMakeCache.txt

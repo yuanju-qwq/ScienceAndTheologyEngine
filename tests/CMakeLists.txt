@@ -15,6 +15,7 @@ endif()
 # renderer/UI dependencies into a generic subsystem's test closure.
 add_executable(snt_tests
     test_main.cpp              # GoogleTest main entry (no TEST()s here)
+    test_json.cpp              # project JSON facade over the Zig ABI
     test_runtime_config.cpp
     test_abi_contract.cpp        # C-compatible runtime and render snapshot ABI
     test_abi_c_smoke.c           # compile/link the public ABI from a C TU

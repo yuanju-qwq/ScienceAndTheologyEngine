@@ -19,11 +19,13 @@ snt_add_zig_static_library(
         "${CMAKE_CURRENT_LIST_FILE}"
         "${SNT_ENGINE_SOURCE_DIR}/zig/abi.zig"
         "${SNT_ENGINE_SOURCE_DIR}/zig/hash.zig"
+        "${SNT_ENGINE_SOURCE_DIR}/zig/json.zig"
         "${SNT_ENGINE_SOURCE_DIR}/zig/runtime_host.zig"
         "${SNT_ENGINE_SOURCE_DIR}/zig/runtime_key_index.zig"
         "${SNT_ENGINE_SOURCE_DIR}/zig/uuid.zig"
         "${SNT_ENGINE_SOURCE_DIR}/abi/abi_common.h"
         "${SNT_ENGINE_SOURCE_DIR}/abi/hash_abi.h"
+        "${SNT_ENGINE_SOURCE_DIR}/abi/json_abi.h"
         "${SNT_ENGINE_SOURCE_DIR}/abi/render_snapshot_abi.h"
         "${SNT_ENGINE_SOURCE_DIR}/abi/runtime_abi.h"
         "${SNT_ENGINE_SOURCE_DIR}/abi/runtime_host_abi.h"
@@ -44,6 +46,16 @@ if(SNT_BUILD_TESTS)
             -O Debug
             ${_snt_zig_test_target_arguments}
             --cache-dir "${CMAKE_CURRENT_BINARY_DIR}/zig-hash-test-cache"
+            --global-cache-dir "${CMAKE_BINARY_DIR}/zig-global-cache"
+    )
+    add_test(
+        NAME ZigJson.NativeContract
+        COMMAND "${SNT_ZIG_EXECUTABLE}" test "${SNT_ENGINE_SOURCE_DIR}/zig/json.zig"
+            -O Debug
+            ${_snt_zig_test_target_arguments}
+            -I "${SNT_ENGINE_SOURCE_DIR}"
+            -lc
+            --cache-dir "${CMAKE_CURRENT_BINARY_DIR}/zig-json-test-cache"
             --global-cache-dir "${CMAKE_BINARY_DIR}/zig-global-cache"
     )
     add_test(
@@ -91,6 +103,10 @@ if(SNT_BUILD_TESTS)
     set_tests_properties(ZigHash.NativeContract PROPERTIES
         ENVIRONMENT
             "ZIG_GLOBAL_CACHE_DIR=${CMAKE_BINARY_DIR}/zig-global-cache;ZIG_LOCAL_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/zig-hash-test-cache"
+    )
+    set_tests_properties(ZigJson.NativeContract PROPERTIES
+        ENVIRONMENT
+            "ZIG_GLOBAL_CACHE_DIR=${CMAKE_BINARY_DIR}/zig-global-cache;ZIG_LOCAL_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/zig-json-test-cache"
     )
     set_tests_properties(ZigAbi.ConsumerStaticLink PROPERTIES
         ENVIRONMENT

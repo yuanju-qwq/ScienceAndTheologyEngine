@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 
+using snt::core::ErrorCode;
 using snt::core::RuntimeConfig;
 using snt::core::load_runtime_config;
 
@@ -52,9 +53,41 @@ TEST(RuntimeConfig, OverridesRuntimeFieldsAndIgnoresGameFields) {
     EXPECT_TRUE(result->window.resizable);
 }
 
+TEST(RuntimeConfig, LoadsUiSettingsAndFontPathsThroughJsonFacade) {
+    const auto path = write_temp_json("snt_runtime_config_ui.json", R"({
+        "ui": {
+            "scale": 1.25,
+            "font_paths": ["fonts/primary.ttf", "fonts/fallback.ttc"],
+            "locale": "en-US",
+            "icu_data_path": "content/icu.dat"
+        }
+    })");
+
+    auto result = load_runtime_config(path);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FLOAT_EQ(result->ui.scale, 1.25f);
+    ASSERT_EQ(result->ui.font_paths.size(), 2u);
+    EXPECT_EQ(result->ui.font_paths[0], "fonts/primary.ttf");
+    EXPECT_EQ(result->ui.font_paths[1], "fonts/fallback.ttc");
+    EXPECT_EQ(result->ui.locale, "en-US");
+    EXPECT_EQ(result->ui.icu_data_path, "content/icu.dat");
+}
+
+TEST(RuntimeConfig, RejectsInvalidFieldTypesAndRanges) {
+    const auto path = write_temp_json("snt_runtime_config_invalid_field.json", R"({
+        "render": { "max_entities": -1 }
+    })");
+
+    const auto result = load_runtime_config(path);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), ErrorCode::kInvalidArgument);
+    EXPECT_NE(result.error().message().find("render.max_entities"), std::string::npos);
+}
+
 TEST(RuntimeConfig, ParseErrorReturnsError) {
     const auto path = write_temp_json("snt_runtime_config_bad.json", "{ invalid json");
     const auto result = load_runtime_config(path);
     ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), ErrorCode::kInvalidArgument);
     EXPECT_NE(result.error().message().find("parse"), std::string::npos);
 }

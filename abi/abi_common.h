@@ -13,7 +13,7 @@ extern "C" {
 #endif
 
 #define SNT_ABI_VERSION_MAJOR 1u
-#define SNT_ABI_VERSION_MINOR 3u
+#define SNT_ABI_VERSION_MINOR 4u
 
 typedef uint32_t SntAbiStatus;
 enum {

@@ -4,6 +4,7 @@
 const std = @import("std");
 const c = @cImport({
     @cInclude("abi/hash_abi.h");
+    @cInclude("abi/json_abi.h");
     @cInclude("abi/runtime_abi.h");
     @cInclude("abi/runtime_host_abi.h");
     @cInclude("abi/runtime_key_index_abi.h");
@@ -24,7 +25,8 @@ test "one snt_abi archive serves a Zig C ABI consumer" {
             c.SNT_RUNTIME_ABI_CAPABILITY_DETERMINISTIC_COMMANDS |
             c.SNT_RUNTIME_ABI_CAPABILITY_RENDER_SNAPSHOT_LEASES |
             c.SNT_RUNTIME_ABI_CAPABILITY_RUNTIME_KEY_INDEX_SNAPSHOTS |
-            c.SNT_RUNTIME_ABI_CAPABILITY_UUID_GENERATOR),
+            c.SNT_RUNTIME_ABI_CAPABILITY_UUID_GENERATOR |
+            c.SNT_RUNTIME_ABI_CAPABILITY_JSON_DOCUMENTS),
         descriptor.capabilities,
     );
 
@@ -80,4 +82,36 @@ test "one snt_abi archive serves a Zig C ABI consumer" {
         c.snt_uuid_generator_next(&uuid_state, &uuid),
     );
     try std.testing.expect(uuid.low != 0 or uuid.high != 0);
+
+    const json_text = "{\"ready\":true}";
+    var json_document: ?*c.SntJsonDocument = null;
+    try std.testing.expectEqual(
+        @as(c_uint, c.SNT_ABI_STATUS_OK),
+        c.snt_json_document_parse(
+            .{ .data = json_text.ptr, .size_bytes = json_text.len },
+            &json_document,
+        ),
+    );
+    defer c.snt_json_document_destroy(json_document);
+    var json_root: ?*const c.SntJsonValue = null;
+    try std.testing.expectEqual(
+        @as(c_uint, c.SNT_ABI_STATUS_OK),
+        c.snt_json_document_root(json_document, &json_root),
+    );
+    const ready_key = "ready";
+    var ready: ?*const c.SntJsonValue = null;
+    try std.testing.expectEqual(
+        @as(c_uint, c.SNT_ABI_STATUS_OK),
+        c.snt_json_object_find(
+            json_root,
+            .{ .data = ready_key.ptr, .size_bytes = ready_key.len },
+            &ready,
+        ),
+    );
+    var ready_value: u32 = 0;
+    try std.testing.expectEqual(
+        @as(c_uint, c.SNT_ABI_STATUS_OK),
+        c.snt_json_value_read_bool(ready, &ready_value),
+    );
+    try std.testing.expectEqual(@as(u32, 1), ready_value);
 }

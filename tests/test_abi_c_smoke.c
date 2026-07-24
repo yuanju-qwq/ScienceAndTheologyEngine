@@ -1,4 +1,5 @@
 #include "abi/hash_abi.h"
+#include "abi/json_abi.h"
 #include "abi/render_snapshot_abi.h"
 #include "abi/runtime_abi.h"
 #include "abi/runtime_host_abi.h"
@@ -125,4 +126,33 @@ SntAbiStatus snt_abi_c_smoke_uuid_generate(SntUuid* out_uuid) {
     status = snt_uuid_generator_initialize(&state, &entropy);
     if (status != SNT_ABI_STATUS_OK) return status;
     return snt_uuid_generator_next(&state, out_uuid);
+}
+
+SntAbiStatus snt_abi_c_smoke_json_read_version(uint64_t* out_version) {
+    static const uint8_t kJson[] = "{\"version\":7}";
+    static const uint8_t kVersionKey[] = "version";
+    const SntAbiByteView source = { kJson, UINT64_C(13) };
+    const SntAbiByteView version_key = { kVersionKey, UINT64_C(7) };
+    SntJsonDocument* document = 0;
+    const SntJsonValue* root = 0;
+    const SntJsonValue* version = 0;
+    SntAbiStatus status;
+
+    if (out_version == 0) return SNT_ABI_STATUS_INVALID_ARGUMENT;
+
+    status = snt_json_document_parse(source, &document);
+    if (status == SNT_ABI_STATUS_OK) {
+        status = snt_json_document_root(document, &root);
+    }
+    if (status == SNT_ABI_STATUS_OK) {
+        status = snt_json_object_find(root, version_key, &version);
+    }
+    if (status == SNT_ABI_STATUS_OK && version == 0) {
+        status = SNT_ABI_STATUS_INTERNAL_ERROR;
+    }
+    if (status == SNT_ABI_STATUS_OK) {
+        status = snt_json_value_read_uint64(version, out_version);
+    }
+    snt_json_document_destroy(document);
+    return status;
 }

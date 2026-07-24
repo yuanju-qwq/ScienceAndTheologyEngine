@@ -1,4 +1,5 @@
 #include "abi/hash_abi.h"
+#include "abi/json_abi.h"
 #include "abi/render_snapshot_abi.h"
 #include "abi/runtime_abi.h"
 #include "abi/runtime_host_abi.h"
@@ -11,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 extern "C" SntAbiStatus snt_abi_c_smoke_query(SntRuntimeAbiDescriptor* descriptor);
 extern "C" uint32_t snt_abi_c_smoke_snapshot_layout_is_valid(void);
@@ -22,6 +24,7 @@ extern "C" SntAbiStatus snt_abi_c_smoke_create_host_contract(SntRuntimeHost** ou
 extern "C" SntAbiStatus snt_abi_c_smoke_create_runtime_key_index_contract(
     SntRuntimeKeyIndex** out_index);
 extern "C" SntAbiStatus snt_abi_c_smoke_uuid_generate(SntUuid* out_uuid);
+extern "C" SntAbiStatus snt_abi_c_smoke_json_read_version(uint64_t* out_version);
 
 namespace {
 
@@ -355,7 +358,8 @@ TEST(RuntimeAbi, DescriptorCanBeQueriedByCConsumer) {
         SNT_RUNTIME_ABI_CAPABILITY_DETERMINISTIC_COMMANDS |
         SNT_RUNTIME_ABI_CAPABILITY_RENDER_SNAPSHOT_LEASES |
         SNT_RUNTIME_ABI_CAPABILITY_RUNTIME_KEY_INDEX_SNAPSHOTS |
-        SNT_RUNTIME_ABI_CAPABILITY_UUID_GENERATOR;
+        SNT_RUNTIME_ABI_CAPABILITY_UUID_GENERATOR |
+        SNT_RUNTIME_ABI_CAPABILITY_JSON_DOCUMENTS;
 
     ASSERT_EQ(snt_abi_c_smoke_query(&descriptor), SNT_ABI_STATUS_OK);
     EXPECT_EQ(descriptor.abi_major, SNT_RUNTIME_ABI_MAJOR);
@@ -452,6 +456,73 @@ TEST(UuidAbi, DeterministicallyOwnsStateTransitions) {
     SntUuidGeneratorState uninitialized = SNT_UUID_GENERATOR_STATE_INIT;
     EXPECT_EQ(snt_uuid_generator_next(&uninitialized, &after_reset), SNT_ABI_STATUS_INVALID_STATE);
     EXPECT_EQ(snt_uuid_generator_next(nullptr, &after_reset), SNT_ABI_STATUS_INVALID_ARGUMENT);
+}
+
+TEST(JsonAbi, CConsumerReadsTheZigOwnedDocument) {
+    uint64_t version = 0;
+
+    ASSERT_EQ(snt_abi_c_smoke_json_read_version(&version), SNT_ABI_STATUS_OK);
+    EXPECT_EQ(version, 7u);
+    EXPECT_EQ(snt_abi_c_smoke_json_read_version(nullptr), SNT_ABI_STATUS_INVALID_ARGUMENT);
+}
+
+TEST(JsonAbi, DocumentCopiesInputAndSupportsNestedQueries) {
+    std::string source = R"({"name":"zig","items":["one","two"]})";
+    SntJsonDocument* document = nullptr;
+    const SntAbiByteView source_view{
+        reinterpret_cast<const uint8_t*>(source.data()),
+        static_cast<uint64_t>(source.size()),
+    };
+    ASSERT_EQ(snt_json_document_parse(source_view, &document), SNT_ABI_STATUS_OK);
+    ASSERT_NE(document, nullptr);
+
+    source[source.find("zig")] = 'X';
+
+    const SntJsonValue* root = nullptr;
+    ASSERT_EQ(snt_json_document_root(document, &root), SNT_ABI_STATUS_OK);
+    ASSERT_NE(root, nullptr);
+
+    const char kName[] = "name";
+    const SntAbiByteView name_key{
+        reinterpret_cast<const uint8_t*>(kName), sizeof(kName) - 1u,
+    };
+    const SntJsonValue* name = nullptr;
+    ASSERT_EQ(snt_json_object_find(root, name_key, &name), SNT_ABI_STATUS_OK);
+    ASSERT_NE(name, nullptr);
+    SntAbiByteView name_text{nullptr, 0u};
+    ASSERT_EQ(snt_json_value_read_string(name, &name_text), SNT_ABI_STATUS_OK);
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(name_text.data),
+                          static_cast<size_t>(name_text.size_bytes)),
+              "zig");
+
+    const char kItems[] = "items";
+    const SntAbiByteView items_key{
+        reinterpret_cast<const uint8_t*>(kItems), sizeof(kItems) - 1u,
+    };
+    const SntJsonValue* items = nullptr;
+    ASSERT_EQ(snt_json_object_find(root, items_key, &items), SNT_ABI_STATUS_OK);
+    uint64_t item_count = 0;
+    ASSERT_EQ(snt_json_array_count(items, &item_count), SNT_ABI_STATUS_OK);
+    EXPECT_EQ(item_count, 2u);
+    const SntJsonValue* second_item = nullptr;
+    ASSERT_EQ(snt_json_array_get(items, 1u, &second_item), SNT_ABI_STATUS_OK);
+    SntAbiByteView second_text{nullptr, 0u};
+    ASSERT_EQ(snt_json_value_read_string(second_item, &second_text), SNT_ABI_STATUS_OK);
+    EXPECT_EQ(std::string(reinterpret_cast<const char*>(second_text.data),
+                          static_cast<size_t>(second_text.size_bytes)),
+              "two");
+
+    const char kMissing[] = "missing";
+    const SntAbiByteView missing_key{
+        reinterpret_cast<const uint8_t*>(kMissing), sizeof(kMissing) - 1u,
+    };
+    const SntJsonValue* missing = nullptr;
+    EXPECT_EQ(snt_json_object_find(root, missing_key, &missing), SNT_ABI_STATUS_OK);
+    EXPECT_EQ(missing, nullptr);
+    EXPECT_EQ(snt_json_document_parse({nullptr, 1u}, &document),
+              SNT_ABI_STATUS_INVALID_ARGUMENT);
+
+    snt_json_document_destroy(document);
 }
 
 TEST(RuntimeKeyIndexAbi, CopiesKeysAndKeepsAcquiredSnapshotAliveAfterIndexDestruction) {

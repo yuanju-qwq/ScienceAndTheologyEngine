@@ -31,6 +31,7 @@ endif()
 
 add_library(snt_core STATIC
     job_system.cpp
+    json.cpp
     log.cpp
     memory_tracker.cpp
     runtime_config.cpp
@@ -43,7 +44,3 @@ target_link_libraries(snt_core PUBLIC
     snt_engine_settings
     snt_abi
 )
-# runtime_config.cpp uses nlohmann_json for JSON parsing. Linked PRIVATE
-# so the dependency doesn't leak to consumers of snt_core (the header
-# itself is dependency-free).
-target_link_libraries(snt_core PRIVATE nlohmann_json::nlohmann_json)
